@@ -24,10 +24,10 @@ jobs:
       - name: Syntax checks
         run: |
           node --check server.js
-          node --check bulk-upload-server.js
-          node --check bulk-upload-ledger.js
-          node --check owned-bulk-delete-server.js
-          node --check bulk-upload-preload.js
+          node --check server/bulk-upload-server.js
+          node --check server/bulk-upload-ledger.js
+          node --check server/owned-bulk-delete-server.js
+          node --check server/bulk-upload-preload.js
           node --check public/app.js
           node --check public/rescue-runtime.js
           node --check public/daily-driver-final.js

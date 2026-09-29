@@ -38,6 +38,8 @@ const owner = readPublic(OWNER_FILE)
 
 const publicScripts = fs.readdirSync(path.join(root, 'public')).filter(name => name.endsWith('.js'))
 const rootScripts = fs.readdirSync(root).filter(name => name.endsWith('.js') && fs.statSync(path.join(root, name)).isFile())
+const serverScripts = fs.readdirSync(path.join(root, 'server')).filter(name => name.endsWith('.js'))
+const readServer = name => fs.readFileSync(path.join(root, 'server', name), 'utf8')
 
 /* Files that task 9.1 deletes outright. They are still on disk while the owner is
  * being proven live (the plan deliberately lands the owner before stripping the
@@ -123,9 +125,9 @@ for (const at of persistCalls) {
   const caller = enclosingFunction(owner, at)
   assert.ok(ALLOWED_PERSIST_CALLERS.has(caller), `only commitDiscovery and commitAuthoritative may call writePersistent, saw ${caller}`)
 }
-for (const name of publicScripts.concat(rootScripts)) {
+for (const name of publicScripts.concat(rootScripts, serverScripts)) {
   if (name === OWNER_FILE) continue
-  const source = name.endsWith('.js') && publicScripts.includes(name) ? readPublic(name) : readRoot(name)
+  const source = name.endsWith('.js') && publicScripts.includes(name) ? readPublic(name) : (serverScripts.includes(name) ? readServer(name) : readRoot(name))
   assert.doesNotMatch(source, /writePersistent\s*\(/, `${name} must not call the owner's persistence boundary`)
 }
 

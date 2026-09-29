@@ -23,7 +23,7 @@ const os = require('node:os')
 const path = require('node:path')
 const assert = require('node:assert/strict')
 
-const { buildDedupeReport, signatureFor, sanitize } = require('../download-dedupe-preload.js')
+const { buildDedupeReport, signatureFor, sanitize } = require('../server/download-dedupe-preload.js')
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fg-dedupe-test-'))
 const write = (dir, name, bytes) => {

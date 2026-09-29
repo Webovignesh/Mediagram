@@ -419,7 +419,7 @@ function createBulkUploadHandler (options) {
 function installBulkUploadRoutes (app, getClient, options = {}) {
   if (!app || app.__fileGramBulkUploadRoutes) return
   app.__fileGramBulkUploadRoutes = true
-  const root = options.root || __dirname
+  const root = options.root || path.resolve(__dirname, '..')
   const ledger = new ScalableUploadLedger(root)
   const active = new Set()
   app.post('/api/bulk-upload/:chatId', createBulkUploadHandler({ root, getClient, ledger, active }))

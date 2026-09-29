@@ -19,7 +19,7 @@
 const fs = require('node:fs')
 const path = require('node:path')
 
-const root = __dirname
+const root = path.resolve(__dirname, '..')
 const tempDir = path.join(root, '.td_files', 'temp')
 const managementUploadDir = path.join(root, '.management_uploads')
 

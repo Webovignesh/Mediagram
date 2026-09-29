@@ -42,6 +42,21 @@ if (!global.__fileGramDownloadClientReliabilityInstalled) {
     return Number.isFinite(value) ? value : 0
   }
 
+  /* Telegram answers an overloaded download DC with FLOOD_WAIT_N or
+   * FLOOD_PREMIUM_WAIT_N and then delays every queued chunk query internally.
+   * Every NEW query sent during that window extends the wait for everyone on
+   * the connection, so a stall-recovery loop that keeps hammering turns a 4s
+   * flood into a permanent 0 B/s stall (measured: 3s -> 4s -> 12s -> 14s over
+   * ~20 min with the queue never draining). All retry/reassert paths must
+   * therefore wait out the full server-sent delay instead of retrying fast. */
+  function parseFloodWaitMs (error) {
+    const text = String((error && (error.message || error)) || '')
+    const match = /FLOOD_PREMIUM_WAIT_(\d+)|FLOOD_WAIT_(\d+)|retry after (\d+)/i.exec(text)
+    if (!match) return 0
+    const value = Number(match[1] || match[2] || match[3] || 0)
+    return value > 0 ? Math.min(60000, value * 1000) : 0
+  }
+
   function isTransientDownloadError (error) {
     const code = errorCode(error)
     if (code === 408 || code === 420 || code === 429 || (code >= 500 && code <= 599)) return true
@@ -50,6 +65,11 @@ if (!global.__fileGramDownloadClientReliabilityInstalled) {
   }
 
   function retryDelay (error, attempt) {
+    // A flood wait names its own delay. Retrying after the generic 250ms
+    // would just extend the flood, so honour the server-sent value plus a
+    // small margin instead of hammering at the exact expiry instant.
+    const flood = parseFloodWaitMs(error)
+    if (flood) return Math.min(60000, flood + 500)
     const message = String(error && (error.message || error) || '')
     const match = /retry\s*(?:after)?\s*(\d+)/i.exec(message)
     if (match) return Math.min(10000, Math.max(250, Number(match[1]) * 1000))
@@ -73,6 +93,16 @@ if (!global.__fileGramDownloadClientReliabilityInstalled) {
   function createActiveDownloadKeeper ({ invoke, emitUpdate, now = Date.now, setIntervalFn = setInterval, clearIntervalFn = clearInterval } = {}) {
     const tracked = new Map()
     let sweeping = false
+    // Telegram flood window. While it is in the future the keeper stays quiet:
+    // re-asserting into a flood only queues more delayed chunk requests behind
+    // TDLib's internal delayer and stretches the stall for every active file.
+    let blockedUntil = 0
+
+    function noteFlood (error) {
+      const wait = parseFloodWaitMs(error)
+      if (wait > 0) blockedUntil = Math.max(blockedUntil, now() + wait + 500)
+      return wait
+    }
 
     function fileIdOf (value) {
       const id = Number(value)
@@ -123,11 +153,26 @@ if (!global.__fileGramDownloadClientReliabilityInstalled) {
 
     async function checkOne (fileId, state) {
       const stamp = now()
+      if (stamp < blockedUntil) return
       if (stamp - state.lastProgressAt < ACTIVE_STALL_MS) return
       if (stamp - state.lastAssertAt < REASSERT_MIN_MS) return
       state.lastAssertAt = stamp
       try { console.log(`[keeper] reassert file=${fileId} stalled=${stamp - state.lastProgressAt}ms`) } catch {}
-      const info = normalizeFileShape(await invoke({ _: 'getFile', file_id: fileId }).catch(() => null))
+      let info = null
+      try {
+        info = normalizeFileShape(await invoke({ _: 'getFile', file_id: fileId }))
+      } catch (error) {
+        if (!tracked.has(fileId)) return
+        // A flood error means Telegram told us to wait: back off without
+        // queueing a follow-up downloadFile behind the same flood. Any other
+        // state-read failure keeps the previous behaviour (fall through and
+        // re-assert the download) since the transfer itself may be healthy.
+        if (noteFlood(error) > 0) {
+          state.lastAssertAt = now()
+          return
+        }
+        info = null
+      }
       if (!tracked.has(fileId)) return
       if (info && info.local && info.local.is_downloading_completed && info.local.path) {
         tracked.delete(fileId)
@@ -141,7 +186,16 @@ if (!global.__fileGramDownloadClientReliabilityInstalled) {
       }
 
       const before = state.lastBytes
-      const result = await invokeDownloadWithRetry(invoke, { ...state.query, priority: ACTIVE_PRIORITY }).catch(() => null)
+      let result = null
+      try {
+        result = await invokeDownloadWithRetry(invoke, { ...state.query, priority: ACTIVE_PRIORITY })
+      } catch (error) {
+        // invokeDownloadWithRetry already waited out any flood it saw; record
+        // the window so the next sweep does not immediately pile on again.
+        noteFlood(error)
+        if (tracked.has(fileId)) state.lastAssertAt = now()
+        return
+      }
       if (!tracked.has(fileId) || !result) return
       const local = result.local || {}
       if (local.is_downloading_completed && local.path) {
@@ -158,6 +212,7 @@ if (!global.__fileGramDownloadClientReliabilityInstalled) {
 
     async function sweep () {
       if (sweeping || !tracked.size) return
+      if (now() < blockedUntil) return
       sweeping = true
       try {
         for (const [fileId, state] of [...tracked.entries()]) await checkOne(fileId, state)
@@ -175,6 +230,7 @@ if (!global.__fileGramDownloadClientReliabilityInstalled) {
       observe,
       sweep,
       size: () => tracked.size,
+      floodBlockedUntil: () => blockedUntil,
       stop: () => clearIntervalFn(timer)
     }
   }
@@ -371,6 +427,8 @@ if (!global.__fileGramDownloadClientReliabilityInstalled) {
     WARM_AHEAD,
     normalizeFileShape,
     isTransientDownloadError,
+    parseFloodWaitMs,
+    retryDelay,
     invokeDownloadWithRetry,
     createActiveDownloadKeeper,
     createWarmDownloadBacklog

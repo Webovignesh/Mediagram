@@ -14,8 +14,8 @@ const { WebSocketServer } = require('ws')
 const dotenv = require('dotenv')
 const tdl = require('tdl')
 const { getTdjson } = require('prebuilt-tdlib')
-const packMedia = require('./packMedia')
-const packSelected = require('./packSelected')
+const packMedia = require('./server/pack-media')
+const packSelected = require('./server/pack-selected')
 
 dotenv.config()
 
@@ -64,12 +64,12 @@ let CONCURRENCY = Math.max(1, Number(process.env.CONCURRENCY || 2))
  * the browser can compare what answered it against the working tree. */
 const BUILD_SOURCES = [
   'server.js',
-  'tdlib-temp-preload.js',
-  'tdl-upload-compat.js',
-  'bulk-upload-preload.js',
-  'download-dedupe-preload.js',
-  'thumb-cache-preload.js',
-  'session-preload.js'
+  'server/tdlib-temp-preload.js',
+  'server/tdl-upload-compat.js',
+  'server/bulk-upload-preload.js',
+  'server/download-dedupe-preload.js',
+  'server/thumb-cache-preload.js',
+  'server/session-preload.js'
 ]
 
 function computeBuildId () {
@@ -261,6 +261,18 @@ class DownloadManager {
     if (!m) return 0
     const v = Number(m[1] || m[2] || m[3] || 0)
     return v > 0 ? v * 1000 : 0
+  }
+
+  /* AIMD spacing for downloadFile bursts. Telegram flood-waits the whole
+   * download connection when new chunk requests arrive too fast, so each flood
+   * doubles the burst gap (up to 5s) and every successful start eases it back
+   * toward the 600ms baseline. Left untouched when the rate is pinned to 0. */
+  backoffDownloadRate () {
+    if (this.downloadRateMs > 0) this.downloadRateMs = Math.min(5000, Math.max(600, this.downloadRateMs * 2))
+  }
+
+  easeDownloadRate () {
+    if (this.downloadRateMs > 600) this.downloadRateMs = Math.max(600, Math.floor(this.downloadRateMs / 2))
   }
 
   logPipeline () {
@@ -546,19 +558,27 @@ class DownloadManager {
     if (this.tryRunTimer && this.tryRunTimer.unref) this.tryRunTimer.unref()
   }
 
+  /* Schedules a pump retry without keeping the process alive on its own, so a
+   * flood backoff never holds the event loop open by itself. */
+  retryTryRunLater (delayMs) {
+    const timer = setTimeout(() => { try { this.tryRun() } catch {} }, Math.max(0, delayMs))
+    if (timer && typeof timer.unref === 'function') timer.unref()
+    return timer
+  }
+
   tryRun () {
     if (this.bulk) return
     const now = Date.now()
     if (now < this.floodWaitUntil) {
       const wait = this.floodWaitUntil - now
-      setTimeout(() => { try { this.tryRun() } catch {} }, wait + 50)
+      this.retryTryRunLater(wait + 50)
       return
     }
     // Burst-level rate-limit: allow up to CONCURRENCY to start together,
     // but space bursts by downloadRateMs to avoid FLOOD_PREMIUM_WAIT.
     if (this.metrics.starts > 0 && now - this.lastDownloadFileAt < this.downloadRateMs) {
       const wait = this.downloadRateMs - (now - this.lastDownloadFileAt)
-      setTimeout(() => { try { this.tryRun() } catch {} }, wait + 20)
+      this.retryTryRunLater(wait + 20)
       return
     }
     const t0 = Date.now()
@@ -695,6 +715,7 @@ class DownloadManager {
         const wait = this.parseFloodWaitMs(e)
         if (wait) {
           this.floodWaitUntil = Math.max(this.floodWaitUntil, Date.now() + wait)
+          this.backoffDownloadRate()
           console.log(`[flood] downloadFile file=${job.fileId} wait=${wait}ms until=${new Date(this.floodWaitUntil).toISOString()}`)
           try { fs.appendFileSync(path.join(ROOT, '.filegram_state', 'download-pipeline.log'), Date.now() + ` [flood] file=${job.fileId} wait=${wait}ms\n`) } catch {}
           // Requeue without counting as failed attempt; TDLib will retry after wait.
@@ -706,7 +727,7 @@ class DownloadManager {
           }
           job.speed = 0
           this.emitJob(job)
-          setTimeout(() => { try { this.tryRun() } catch {} }, wait + 100)
+          this.retryTryRunLater(wait + 100)
           return
         }
         throw e
@@ -715,6 +736,8 @@ class DownloadManager {
       // downloadFile can resolve after the job was cancelled or paused. Both are
       // deliberate terminations, so neither may be overwritten by done/error.
       if (job.status === 'paused' || job.status === 'cancelled') return
+      // A start that Telegram accepted means the burst rate is currently safe.
+      this.easeDownloadRate()
       const local = res && res.local
       if (local && local.is_downloading_completed && local.path) {
         job.downloaded = job.fileSize || local.downloaded_size || 0
@@ -728,6 +751,7 @@ class DownloadManager {
       const wait = this.parseFloodWaitMs(e)
       if (wait) {
         this.floodWaitUntil = Math.max(this.floodWaitUntil, Date.now() + wait)
+        this.backoffDownloadRate()
         console.log(`[flood] startJob error file=${job.fileId} wait=${wait}ms`)
         job.status = 'queued'
         if (job.active) {
@@ -737,7 +761,7 @@ class DownloadManager {
         }
         job.speed = 0
         this.emitJob(job)
-        setTimeout(() => { try { this.tryRun() } catch {} }, wait + 100)
+        this.retryTryRunLater(wait + 100)
         return
       }
       job.status = 'error'
@@ -1035,8 +1059,35 @@ class DownloadManager {
     const run = job.run
     const stale = () => job.run !== run || TERMINAL.includes(job.status) ||
       job.status === 'paused' || job.status === 'cancelled'
+    /* Telegram flood discipline. Re-asserting while a FLOOD_WAIT is in force
+     * queues another chunk request behind TDLib's internal delayer and extends
+     * the wait for every active file - measured as 3s -> 4s -> 12s -> 14s over
+     * ~20 min with one job wedged at 0 B/s for 500+s. Stay quiet until the
+     * wait drains, then re-assert exactly once. The window is refreshed so the
+     * 1s sweep does not spin on the same job. */
+    if (Date.now() < this.floodWaitUntil) {
+      job.lastProgressAt = Date.now()
+      job.speed = 0
+      return
+    }
     try {
-      const info = await client.invoke({ _: 'getFile', file_id: job.fileId })
+      let info = null
+      try {
+        info = await client.invoke({ _: 'getFile', file_id: job.fileId })
+      } catch (stateError) {
+        const wait = this.parseFloodWaitMs(stateError)
+        if (wait) {
+          this.floodWaitUntil = Math.max(this.floodWaitUntil, Date.now() + wait)
+          console.log(`[flood] reassert getFile file=${job.fileId} wait=${wait}ms until=${new Date(this.floodWaitUntil).toISOString()}`)
+          if (!stale()) {
+            job.lastProgressAt = Date.now()
+            job.speed = 0
+            this.emitJob(job)
+          }
+          return
+        }
+        throw stateError
+      }
       if (stale()) return
       const local = (info && info.local) || {}
 
@@ -1063,14 +1114,24 @@ class DownloadManager {
       job.idleChecks = (job.idleChecks || 0) + 1
       job.lastProgressAt = Date.now()
       if (local.downloaded_size) job.downloaded = Math.max(job.downloaded || 0, local.downloaded_size)
-      await client.invoke({
-        _: 'downloadFile',
-        file_id: job.fileId,
-        priority: 32,
-        offset: 0,
-        limit: 0,
-        synchronous: false
-      }).catch(() => {})
+      try {
+        await client.invoke({
+          _: 'downloadFile',
+          file_id: job.fileId,
+          priority: 32,
+          offset: 0,
+          limit: 0,
+          synchronous: false
+        })
+      } catch (invokeError) {
+        // Never let a re-assert extend a flood: record the wait so this and
+        // every other job stay quiet until Telegram drains it.
+        const wait = this.parseFloodWaitMs(invokeError)
+        if (wait) {
+          this.floodWaitUntil = Math.max(this.floodWaitUntil, Date.now() + wait)
+          console.log(`[flood] reassert downloadFile file=${job.fileId} wait=${wait}ms until=${new Date(this.floodWaitUntil).toISOString()}`)
+        }
+      }
       this.emitJob(job)
     } catch (e) {
       if (stale()) return
@@ -1106,8 +1167,14 @@ class DownloadManager {
       } else if (now - (job.lastProgressAt || now) >= STALL_AFTER_MS) {
         /* Re-assert rather than cancel. A quiet job is usually just waiting for
          * TDLib to schedule it, and cancelling would throw away whatever it has
-         * already fetched. */
-        Promise.resolve(this.reassert(job)).catch(() => {})
+         * already fetched. During a Telegram flood wait the re-assert is
+         * deferred instead: reassert() self-guards on floodWaitUntil, so just
+         * refresh the window here and let the next sweep fire after the drain. */
+        if (now < this.floodWaitUntil) {
+          job.lastProgressAt = now
+        } else {
+          Promise.resolve(this.reassert(job)).catch(() => {})
+        }
         recovered++
       }
     }
@@ -1533,7 +1600,8 @@ async function scanChat (chatId, { queue = false, mode, returnItems = false } = 
             mime: media.mime || 'application/octet-stream',
             caption: media.caption || null,
             thumbFileId: mediaThumbFileId(media.thumb),
-            thumbUrl: null
+            thumbUrl: null,
+            duration: Math.max(0, Number(media.duration || 0)) || 0
           }
           if (returnItems) {
             items.push(item)
@@ -1695,7 +1763,8 @@ async function scanMediaIndexV3 (chatId, force = false) {
             mime: media.mime || 'application/octet-stream',
             caption: media.caption || null,
             thumbFileId: mediaThumbFileId(media.thumb),
-            thumbUrl: null
+            thumbUrl: null,
+            duration: Math.max(0, Number(media.duration || 0)) || 0
           }
           job.items.push(item)
           batchItems.push(item)
@@ -2019,6 +2088,21 @@ function handleAuthState (state) {
     sendAll({ type: 'event', event: { name: 'login-prompt', kind: 'other-device', info: { link: state.link } } })
   } else if (state._ === 'authorizationStateWaitRegistration') {
     sendAll({ type: 'event', event: { name: 'login-prompt', kind: 'registration', info: null } })
+  } else if (state._ === 'authorizationStateLoggingOut' || state._ === 'authorizationStateClosing' || state._ === 'authorizationStateClosed') {
+    // TDLib is tearing down this client instance. It can never be reused
+    // (tdl throws "A closed client cannot be reused"). Mark not-ready so
+    // loadChats() reports "Not logged in / restarting" instead of the raw
+    // reuse error, drop the stale identity, and let the stable wrapper's
+    // auto-recreate (session-preload.js) supply a fresh client that will
+    // emit WaitPhoneNumber or Ready next.
+    ready = false
+    currentUser = null
+    try {
+      if (client && typeof client.ensureRealClient === 'function' && state._ === 'authorizationStateClosed') {
+        try { client.ensureRealClient() } catch {}
+      }
+    } catch {}
+    sendAll({ type: 'event', event: { name: 'auth', payload: { status: 'restarting', me: null } } })
   }
 }
 
@@ -2061,7 +2145,23 @@ const privateUserChatIds = new Map()
 /* ------------------------------ Client init ------------------------------ */
 
 function initClient (config) {
-  if (client) return
+  if (client) {
+    // The stable wrapper (session-preload.js) survives logOut/close but its
+    // inner TDLib client does not. Reusing the dead inner client throws "A
+    // closed client cannot be reused" on every invoke (empty chats + toast).
+    try {
+      if (typeof client.isClosed === 'function' ? !client.isClosed() : true) return
+      if (typeof client.ensureRealClient === 'function') {
+        client.ensureRealClient()
+        return
+      }
+    } catch {}
+    // Fall through and create a fresh client if the wrapper cannot recover.
+    try { client.removeAllListeners && client.removeAllListeners() } catch {}
+    client = null
+    ready = false
+    authState = null
+  }
   tdl.configure({ tdjson: getTdjson(), verbosityLevel: 2 })
 
   client = tdl.createClient({
@@ -2083,6 +2183,25 @@ function initClient (config) {
     console.error('TDLib error:', err)
     sendAll({ type: 'event', event: { name: 'error', error: String(err.message || err) } })
   })
+
+  // The stable wrapper re-emits the inner TDLib 'close'. Without this, `ready`
+  // stays true with a dead client and every get-chats toasts the raw reuse
+  // error from tdl. Reset here; the wrapper already recreated the real client,
+  // whose next auth update (Ready / WaitPhoneNumber) will set the real state.
+  try {
+    client.on('close', () => {
+      ready = false
+      authState = null
+      currentUser = null
+      try {
+        const cfg = loadConfig()
+        if (cfg && typeof client.ensureRealClient === 'function') {
+          try { client.ensureRealClient() } catch {}
+        }
+      } catch {}
+      sendAll({ type: 'event', event: { name: 'auth', payload: { status: 'restarting', me: null } } })
+    })
+  } catch {}
 
   client.on('update', (u) => {
     if (u._ === 'updateAuthorizationState') {
@@ -2257,31 +2376,55 @@ function resolveSenderName (msg) {
   return name
 }
 
+function mediaDurationOf (content) {
+  if (!content || !content._) return 0
+  try {
+    switch (content._) {
+      case 'messageVideo':
+        return Math.max(0, Math.round(Number((content.video && content.video.duration) || 0))) || 0
+      case 'messageAnimation':
+        return Math.max(0, Math.round(Number((content.animation && content.animation.duration) || 0))) || 0
+      case 'messageAudio': {
+        const audio = content.audio || {}
+        const inner = audio.audio || {}
+        return Math.max(0, Math.round(Number(inner.duration || audio.duration || 0))) || 0
+      }
+      case 'messageVoiceNote':
+        return Math.max(0, Math.round(Number((content.voice_note && content.voice_note.duration) || 0))) || 0
+      case 'messageVideoNote':
+        return Math.max(0, Math.round(Number((content.video_note && content.video_note.duration) || 0))) || 0
+      default:
+        return 0
+    }
+  } catch { return 0 }
+}
+
 function extractMedia (msg) {
   const c = msg.content
   if (!c) return null
   const base = { messageId: msg.id, date: msg.date, chatId: msg.chat_id }
+  const duration = mediaDurationOf(c)
   switch (c._) {
     case 'messageDocument':
-      return { ...base, type: 'document', file: c.document.document, name: c.document.file_name || `document_${msg.id}`, mime: c.document.mime_type || 'application/octet-stream', thumb: c.document.thumbnail, caption: c.caption?.text }
+      return { ...base, type: 'document', file: c.document.document, name: c.document.file_name || `document_${msg.id}`, mime: c.document.mime_type || 'application/octet-stream', thumb: c.document.thumbnail, caption: c.caption?.text, duration: 0 }
     case 'messagePhoto': {
       const sizes = (c.photo.sizes || []).sort((a, b) => a.size - b.size)
       const big = sizes[sizes.length - 1]
       if (!big) return null
-      return { ...base, type: 'photo', file: big.photo, name: `photo_${msg.id}.jpg`, mime: 'image/jpeg', thumb: sizes[0], caption: c.caption?.text }
+      return { ...base, type: 'photo', file: big.photo, name: `photo_${msg.id}.jpg`, mime: 'image/jpeg', thumb: sizes[0], caption: c.caption?.text, duration: 0 }
     }
     case 'messageVideo':
-      return { ...base, type: 'video', file: c.video.video, name: c.video.file_name || `video_${msg.id}.mp4`, mime: c.video.mime_type || 'video/mp4', thumb: c.video.thumbnail, caption: c.caption?.text }
+      return { ...base, type: 'video', file: c.video.video, name: c.video.file_name || `video_${msg.id}.mp4`, mime: c.video.mime_type || 'video/mp4', thumb: c.video.thumbnail, caption: c.caption?.text, duration }
     case 'messageAnimation':
-      return { ...base, type: 'gif', file: c.animation.animation, name: c.animation.file_name || `animation_${msg.id}.gif`, mime: c.animation.mime_type || 'image/gif', thumb: c.animation.thumbnail }
+      return { ...base, type: 'gif', file: c.animation.animation, name: c.animation.file_name || `animation_${msg.id}.gif`, mime: c.animation.mime_type || 'image/gif', thumb: c.animation.thumbnail, duration }
     case 'messageAudio':
-      return { ...base, type: 'audio', file: c.audio.audio, name: c.audio.file_name || `audio_${msg.id}.mp3`, mime: c.audio.mime_type || 'audio/mpeg', thumb: c.audio.album_cover_thumbnail }
+      return { ...base, type: 'audio', file: c.audio.audio, name: c.audio.file_name || `audio_${msg.id}.mp3`, mime: c.audio.mime_type || 'audio/mpeg', thumb: c.audio.album_cover_thumbnail, duration }
     case 'messageVoiceNote':
-      return { ...base, type: 'voice', file: c.voice_note.voice, name: `voice_${msg.id}.ogg`, mime: 'audio/ogg', thumb: null }
+      return { ...base, type: 'voice', file: c.voice_note.voice, name: `voice_${msg.id}.ogg`, mime: 'audio/ogg', thumb: null, duration }
     case 'messageVideoNote':
-      return { ...base, type: 'video_note', file: c.video_note.video, name: `video_note_${msg.id}.mp4`, mime: 'video/mp4', thumb: c.video_note.thumbnail || c.video_note.thumb || null }
+      return { ...base, type: 'video_note', file: c.video_note.video, name: `video_note_${msg.id}.mp4`, mime: 'video/mp4', thumb: c.video_note.thumbnail || c.video_note.thumb || null, duration }
     case 'messageSticker':
-      return { ...base, type: 'sticker', file: c.sticker.sticker, name: c.sticker.set_name ? `${c.sticker.emoji || 'sticker'}.webp` : `sticker_${msg.id}.webp`, mime: 'image/webp', thumb: null }
+      return { ...base, type: 'sticker', file: c.sticker.sticker, name: c.sticker.set_name ? `${c.sticker.emoji || 'sticker'}.webp` : `sticker_${msg.id}.webp`, mime: 'image/webp', thumb: null, duration: 0 }
     default:
       return null
   }
@@ -2312,7 +2455,8 @@ function mediaIndexItemFromSerialized (chatId, message) {
     mime: media.mime || 'application/octet-stream',
     caption: media.caption || null,
     thumbFileId: media.thumbFileId || mediaThumbFileId(media.thumb),
-    thumbUrl: media.thumbUrl || null
+    thumbUrl: media.thumbUrl || null,
+    duration: Math.max(0, Number(media.duration || 0)) || 0
   }
 }
 
@@ -2430,7 +2574,18 @@ async function serializeChatDetailed (chat) {
 }
 
 async function loadChats () {
-  if (!client || !ready) throw new Error('Not logged in')
+  if (!client) throw new Error('Not logged in')
+  try {
+    if (typeof client.isClosed === 'function' && client.isClosed()) {
+      if (typeof client.ensureRealClient === 'function') {
+        try { client.ensureRealClient() } catch {}
+      }
+      throw new Error('Telegram client is restarting, please retry in a few seconds')
+    }
+  } catch (e) {
+    if (e && /restarting/i.test(String(e.message || ''))) throw e
+  }
+  if (!ready) throw new Error('Not logged in')
   const chats = await client.invoke({
     _: 'getChats',
     chat_list: { _: 'chatListMain' },
@@ -3164,7 +3319,8 @@ async function searchMedia (chatId, query, fromMessageId, limit, filter) {
       mime: media.mime || 'application/octet-stream',
       caption: media.caption || null,
       thumbFileId: mediaThumbFileId(media.thumb),
-      thumbUrl: null
+      thumbUrl: null,
+      duration: Math.max(0, Number(media.duration || 0)) || 0
     })
   }
   return { items, totalCount: res.total_count || items.length, hasMore: raw.length === limit }

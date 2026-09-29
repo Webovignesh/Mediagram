@@ -1,7 +1,7 @@
 'use strict'
 
 const assert = require('node:assert/strict')
-const { DIRECT_LOOKUP_LIMIT, resolveDownloadItems } = require('../download-reference-resolver')
+const { DIRECT_LOOKUP_LIMIT, resolveDownloadItems } = require('../server/download-reference-resolver')
 
 function remoteIdFor (fileId, size) {
   return `remote:${fileId}:${size}`

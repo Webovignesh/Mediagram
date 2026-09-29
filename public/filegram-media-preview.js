@@ -77,6 +77,18 @@
     return `${unit ? value.toFixed(value >= 100 ? 0 : value >= 10 ? 1 : 2) : Math.round(value)} ${units[unit]}`
   }
 
+  function fmtDurationLocal (sec) {
+    sec = Math.max(0, Math.round(Number(sec || 0)))
+    if (!sec) return ''
+    if (typeof fmtDuration === 'function') { try { return fmtDuration(sec) } catch {} }
+    if (typeof fileDurationText === 'function') { try { return fileDurationText({ duration: sec }) } catch {} }
+    const h = Math.floor(sec / 3600)
+    const m = Math.floor((sec % 3600) / 60)
+    const s = sec % 60
+    if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+    return `${m}:${String(s).padStart(2, '0')}`
+  }
+
   function installStyles () {
     if ($('#fg-media-preview-style')) return
     const style = document.createElement('style')
@@ -151,7 +163,12 @@
     const kind = previewKind(item)
 
     title.textContent = String(item.name || 'Media preview')
-    meta.textContent = [String(item.type || '').replace('_', ' '), fmtSize(item.fileSize || 0)].filter(Boolean).join(' · ')
+    try {
+      const dur = fmtDurationLocal(item && item.duration)
+      meta.textContent = [String(item.type || '').replace('_', ' '), fmtSize(item.fileSize || 0), dur].filter(Boolean).join(' · ')
+    } catch {
+      meta.textContent = [String(item.type || '').replace('_', ' '), fmtSize(item.fileSize || 0)].filter(Boolean).join(' · ')
+    }
     open.href = url
     stage.innerHTML = '<div class="fg-preview-state">Preparing preview from Telegram…</div>'
     modal.classList.remove('hidden')

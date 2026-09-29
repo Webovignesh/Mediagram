@@ -128,6 +128,7 @@
     const q = String(state.files.query || '').trim().toLowerCase()
     if (q) list = list.filter(item => String(item.name || '').toLowerCase().includes(q) || String(item.caption || '').toLowerCase().includes(q))
     if (state.files.filter !== 'all') list = list.filter(item => item.type === state.files.filter)
+    if (typeof durationFilterActive === 'function' ? durationFilterActive() : (state.files.minDuration != null || state.files.maxDuration != null)) list = list.filter(typeof matchDurationFilter === 'function' ? matchDurationFilter : (item => item))
     const compareIds = (a, b) => {
       const aa = BigInt(String((a && a.messageId) || 0))
       const bb = BigInt(String((b && b.messageId) || 0))
@@ -225,6 +226,12 @@
     const meta = document.createElement('div')
     meta.className = 'gsize'
     meta.textContent = fmtSize(Number(item.fileSize || 0))
+    try {
+      const dur = typeof fileDurationText === 'function'
+        ? fileDurationText(item)
+        : (typeof fmtDuration === 'function' ? fmtDuration(item && item.duration) : '')
+      if (dur) meta.textContent += ` · ${dur}`
+    } catch {}
     if (item.date) meta.textContent += ` · ${fmtDate(item.date)}`
     body.append(name, meta)
     const statuses = document.createElement('div')
@@ -324,7 +331,14 @@
     const modal = teleFinalPreviewModal()
     const body = modal.querySelector('#tele-final-preview-body')
     modal.querySelector('#tele-final-preview-title').textContent = item.name || 'Media'
-    modal.querySelector('#tele-final-preview-meta').textContent = `${String(item.type || 'file').replace('_', ' ')} · ${fmtSize(Number(item.fileSize || 0))}`
+    try {
+      const previewDur = typeof fileDurationText === 'function'
+        ? fileDurationText(item)
+        : (typeof fmtDuration === 'function' ? fmtDuration(item && item.duration) : '')
+      modal.querySelector('#tele-final-preview-meta').textContent = `${String(item.type || 'file').replace('_', ' ')} · ${fmtSize(Number(item.fileSize || 0))}${previewDur ? ` · ${previewDur}` : ''}`
+    } catch {
+      modal.querySelector('#tele-final-preview-meta').textContent = `${String(item.type || 'file').replace('_', ' ')} · ${fmtSize(Number(item.fileSize || 0))}`
+    }
     modal.classList.remove('hidden')
     body.innerHTML = '<div class="tele-final-preview-state">Preparing preview…</div>'
 

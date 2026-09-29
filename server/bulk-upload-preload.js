@@ -251,7 +251,7 @@ if (!global.__fileGramBulkUploadPreloadInstalled) {
 
   function wrappedExpress (...args) {
     const app = originalExpress(...args)
-    const root = __dirname
+    const root = path.resolve(__dirname, '..')
     const ledger = new ScalableUploadLedger(root)
     const active = new Set()
     const handler = createBulkUploadHandler({ root, getClient: () => activeClient, ledger, active })
@@ -334,6 +334,6 @@ if (!global.__fileGramBulkUploadPreloadInstalled) {
     getClient: () => activeClient,
     getLedger: () => null,
     getActiveUploads: () => null,
-    root: path.resolve(__dirname)
+    root: path.resolve(__dirname, '..')
   }
 }

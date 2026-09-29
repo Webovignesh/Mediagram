@@ -9,8 +9,8 @@ const p1Css = fs.readFileSync('public/daily-driver-p1.css', 'utf8')
 const server = fs.readFileSync('server.js', 'utf8')
 const rescue = fs.readFileSync('public/rescue-runtime.js', 'utf8')
 const management = fs.readFileSync('public/management.js', 'utf8')
-const compatSource = fs.readFileSync('tdl-upload-compat.js', 'utf8')
-const dedupeSource = fs.readFileSync('download-dedupe-preload.js', 'utf8')
+const compatSource = fs.readFileSync('server/tdl-upload-compat.js', 'utf8')
+const dedupeSource = fs.readFileSync('server/download-dedupe-preload.js', 'utf8')
 const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'))
 
 /* Comments must not satisfy or break an assertion: the deletions this fix makes leave
@@ -93,8 +93,8 @@ const notificationRuntime = [p1, rescue, management, server].join('\n')
 assert.doesNotMatch(notificationRuntime, /Notification\.requestPermission|new Notification|showNotification|rescueNotificationServiceRegistration|renderNotificationSection|Desktop notifications|set-managed-muted|managedNotificationSettings/, 'notification implementation must be removed from active runtime sources')
 assert.equal(fs.existsSync('public/sw.js'), false, 'notification service worker must be deleted')
 
-const { normalizeAttachmentQuery, validateAttachmentQuery } = require('../tdl-upload-compat.js')
-const { signatureFor, sanitize } = require('../download-dedupe-preload.js')
+const { normalizeAttachmentQuery, validateAttachmentQuery } = require('../server/tdl-upload-compat.js')
+const { signatureFor, sanitize } = require('../server/download-dedupe-preload.js')
 
 assert.equal(sanitize('a:b?.mp4'), 'a_b_.mp4')
 assert.equal(signatureFor('Video.MP4', 1024), signatureFor('video.mp4', 1024), 'filename comparison must be case-insensitive')

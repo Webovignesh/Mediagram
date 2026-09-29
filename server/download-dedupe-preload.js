@@ -17,7 +17,7 @@ const fs = require('node:fs')
 const path = require('node:path')
 const { WebSocket } = require('ws')
 
-const ROOT = __dirname
+const ROOT = path.resolve(__dirname, '..')
 const SETTINGS_PATH = path.join(ROOT, 'settings.json')
 const DEFAULT_DOWNLOADS_DIR = path.join(ROOT, 'downloads')
 const REQUEST_TYPE = 'download-dedupe-preview'

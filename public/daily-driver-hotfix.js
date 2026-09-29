@@ -56,6 +56,7 @@ filesItems = function teleHotfixFilesItems () {
   const q = String(state.files.query || '').trim().toLowerCase()
   if (q) list = list.filter(it => (it.name || '').toLowerCase().includes(q) || (it.caption || '').toLowerCase().includes(q))
   if (state.files.filter !== 'all') list = list.filter(it => it.type === state.files.filter)
+  if (typeof durationFilterActive === 'function' ? durationFilterActive() : (state.files.minDuration != null || state.files.maxDuration != null)) list = list.filter(typeof matchDurationFilter === 'function' ? matchDurationFilter : (it => it))
 
   const compareIds = (a, b) => {
     const aa = BigInt(String((a && a.messageId) || 0))
@@ -170,7 +171,12 @@ rescuePreviewFile = async function teleHotfixPreviewFile (item) {
   const modal = teleHotfixPreviewModal()
   const body = modal.querySelector('#tele-hotfix-preview-body')
   modal.querySelector('#tele-hotfix-preview-title').textContent = item.name || 'Media'
-  modal.querySelector('#tele-hotfix-preview-meta').textContent = `${String(item.type || 'file').replace('_', ' ')} · ${fmtSize(item.fileSize || 0)}`
+  try {
+    const dur = typeof fileDurationText === 'function' ? fileDurationText(item) : (typeof fmtDuration === 'function' ? fmtDuration(item && item.duration) : '')
+    modal.querySelector('#tele-hotfix-preview-meta').textContent = `${String(item.type || 'file').replace('_', ' ')} · ${fmtSize(item.fileSize || 0)}${dur ? ` · ${dur}` : ''}`
+  } catch {
+    modal.querySelector('#tele-hotfix-preview-meta').textContent = `${String(item.type || 'file').replace('_', ' ')} · ${fmtSize(item.fileSize || 0)}`
+  }
   body.innerHTML = '<div class="tele-hotfix-preview-state">Opening media…</div>'
   modal.classList.remove('hidden')
 

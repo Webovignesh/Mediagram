@@ -87,7 +87,12 @@ rescuePreviewFile = async function teleP0v2PreviewFile (item) {
   const modal = teleHotfixPreviewModal()
   const body = modal.querySelector('#tele-hotfix-preview-body')
   modal.querySelector('#tele-hotfix-preview-title').textContent = item.name || 'Media'
-  modal.querySelector('#tele-hotfix-preview-meta').textContent = `${String(item.type || 'file').replace('_', ' ')} · ${fmtSize(item.fileSize || 0)}`
+  try {
+    const dur = typeof fileDurationText === 'function' ? fileDurationText(item) : (typeof fmtDuration === 'function' ? fmtDuration(item && item.duration) : '')
+    modal.querySelector('#tele-hotfix-preview-meta').textContent = `${String(item.type || 'file').replace('_', ' ')} · ${fmtSize(item.fileSize || 0)}${dur ? ` · ${dur}` : ''}`
+  } catch {
+    modal.querySelector('#tele-hotfix-preview-meta').textContent = `${String(item.type || 'file').replace('_', ' ')} · ${fmtSize(item.fileSize || 0)}`
+  }
   body.innerHTML = '<div class="tele-hotfix-preview-state">Opening…</div>'
   modal.classList.remove('hidden')
 

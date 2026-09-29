@@ -72,17 +72,23 @@ Do not commit or casually delete these paths.
 
 ## Project layout
 
-- `server.js` — TDLib, HTTP/WebSocket API, indexing, downloads, forwarding, and management backend
-- `public/` — browser application and UI runtime
-- `scripts/` — verification tests plus local install/launch/cleanup tooling
-- `FileGram.vbs` — silent desktop launcher target
-- `Install FileGram.cmd` — one-time Windows installer
-- `Clean Repo After Release.cmd` — guarded post-release Git cleanup
-- `download-dedupe-preload.js` — download dedupe preload
-- `tdl-upload-compat.js` — TDLib upload compatibility preload
-- `thumb-cache-preload.js` — thumbnail cache/runtime preload
-- `session-preload.js` — stable TDLib session/logout bridge
-- `packMedia.js` / `packSelected.js` — ZIP packaging helpers used by the server
+- `server.js` — Main TDLib, HTTP/WebSocket API, indexing, downloads, forwarding, and management backend
+- `server/` — Backend preloads, modular handlers, and server-side utilities
+  - `server/bulk-upload-*.js` — Bulk channel upload server, ledger, and preloads
+  - `server/download-*.js` — Download queue reliability, deduplication, and reference resolver preloads
+  - `server/owned-bulk-delete-server.js` — Channel/group bulk deletion handler
+  - `server/pack-media.js` / `server/pack-selected.js` — ZIP packaging helpers
+  - `server/session-preload.js` — Stable TDLib session/logout bridge
+  - `server/tdl-upload-compat.js` — TDLib upload compatibility preload
+  - `server/tdlib-temp-preload.js` — TDLib temp directory maintenance preload
+  - `server/thumb-cache-preload.js` — Thumbnail cache preload
+- `public/` — Browser application and UI runtime
+- `scripts/` — Verification tests plus local install/launch/cleanup tooling
+- `tests/` — End-to-end user-behavior and UI verification test suites
+- `FileGram.vbs` — Silent desktop launcher target
+- `Install FileGram.cmd` — One-time Windows installer
+- `Uninstall FileGram.cmd` — Uninstaller script
+- `Clean Repo After Release.cmd` — Guarded post-release Git cleanup
 
 ## Git workflow
 

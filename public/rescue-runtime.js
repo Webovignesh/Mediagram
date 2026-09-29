@@ -308,11 +308,15 @@ openChat = async function rescueOpenChat (chatId) {
   // state.mediaCount = null // REMOVED: owner is files-stability.js
   state.typeCounts = null
   state.counting = false
-  state.files = { query: '', filter: 'all', sort: 'newest', mode: 'browse', results: [], totalCount: 0, hasMore: false, fromMessageId: 0, searching: false, loadingAll: false }
+  state.files = { query: '', filter: 'all', sort: 'newest', mode: 'browse', results: [], totalCount: 0, hasMore: false, fromMessageId: 0, searching: false, loadingAll: false, minDuration: null, maxDuration: null }
 
   $('#file-search').value = ''
   $('#file-filter').value = 'all'
   $('#file-sort').value = 'newest'
+  try {
+    const durMin = $('#file-dur-min'); if (durMin) durMin.value = ''
+    const durMax = $('#file-dur-max'); if (durMax) durMax.value = ''
+  } catch {}
   updateSelectionBar()
   rescueMarkActiveChat(chatId)
 
@@ -592,7 +596,12 @@ function rescuePreviewFile (item) {
   const meta = modal.querySelector('#tele-preview-meta')
   const url = `/api/media-preview/${encodeURIComponent(item.fileId)}?name=${encodeURIComponent(item.name || 'file')}&mime=${encodeURIComponent(item.mime || '')}`
   title.textContent = item.name || 'Preview'
-  meta.textContent = `${String(item.type || '').replace('_', ' ')} · ${fmtSize(item.fileSize || 0)}`
+  try {
+    const dur = typeof fileDurationText === 'function' ? fileDurationText(item) : (typeof fmtDuration === 'function' ? fmtDuration(item && item.duration) : '')
+    meta.textContent = `${String(item.type || '').replace('_', ' ')} · ${fmtSize(item.fileSize || 0)}${dur ? ` · ${dur}` : ''}`
+  } catch {
+    meta.textContent = `${String(item.type || '').replace('_', ' ')} · ${fmtSize(item.fileSize || 0)}`
+  }
   body.innerHTML = '<div class="tele-preview-loading">Preparing preview…</div>'
   let node
   if (item.type === 'photo' || item.type === 'gif') {

@@ -34,7 +34,9 @@ const state = {
     hasMore: false,
     fromMessageId: 0,
     searching: false,
-    loadingAll: false
+    loadingAll: false,
+    minDuration: null, // seconds, null = no lower bound
+    maxDuration: null // seconds, null = no upper bound
   }
 }
 
@@ -119,6 +121,53 @@ function fmtEta (sec) {
 }
 
 function fmtDate (ts) { return new Date(ts * 1000).toLocaleDateString() }
+
+function fmtDuration (sec) {
+  sec = Math.max(0, Math.round(Number(sec || 0)))
+  if (!sec) return ''
+  const h = Math.floor(sec / 3600)
+  const m = Math.floor((sec % 3600) / 60)
+  const s = sec % 60
+  if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+  return `${m}:${String(s).padStart(2, '0')}`
+}
+
+function fileDurationText (item) {
+  const raw = Number(item && (item.duration ?? item.Duration ?? item.durationSec) || 0)
+  if (!raw) return ''
+  return fmtDuration(raw)
+}
+
+/* Duration filter: inputs accept plain seconds ("90") or clock form
+ * ("1:30", "1:02:30"). Returns integer seconds, or null for empty/invalid. */
+function parseDurationInput (text) {
+  if (text == null) return null
+  const t = String(text).trim()
+  if (!t) return null
+  if (/^\d+(\.\d+)?$/.test(t)) return Math.max(0, Math.floor(Number(t)))
+  const parts = t.split(':').map(p => p.trim())
+  if (parts.length < 2 || parts.length > 3) return null
+  if (parts.some(p => !/^\d+(\.\d+)?$/.test(p))) return null
+  let sec = 0
+  for (const p of parts) sec = sec * 60 + Number(p)
+  if (!isFinite(sec) || sec < 0) return null
+  return Math.floor(sec)
+}
+
+function durationFilterActive () {
+  return !!(state.files && (state.files.minDuration != null || state.files.maxDuration != null))
+}
+
+/* Numeric duration match used by every filesItems implementation and by the
+ * paged renderer. Items without Telegram duration metadata count as 0. */
+function matchDurationFilter (item) {
+  const files = state.files
+  if (!files || (files.minDuration == null && files.maxDuration == null)) return true
+  const dur = Math.max(0, Number(item && item.duration || 0)) || 0
+  if (files.minDuration != null && dur < files.minDuration) return false
+  if (files.maxDuration != null && dur > files.maxDuration) return false
+  return true
+}
 
 function avatarColor (title) {
   let hash = 0
@@ -518,10 +567,14 @@ async function openChat (chatId) {
   // state.mediaCount = null // REMOVED: owner is files-stability.js
   state.typeCounts = null
   state.counting = false
-  state.files = { query: '', filter: 'all', sort: 'newest', mode: 'browse', results: [], totalCount: 0, hasMore: false, fromMessageId: 0, searching: false, loadingAll: false }
+  state.files = { query: '', filter: 'all', sort: 'newest', mode: 'browse', results: [], totalCount: 0, hasMore: false, fromMessageId: 0, searching: false, loadingAll: false, minDuration: null, maxDuration: null }
   $('#file-search').value = ''
   $('#file-filter').value = 'all'
   $('#file-sort').value = 'newest'
+  try {
+    const durMin = $('#file-dur-min'); if (durMin) durMin.value = ''
+    const durMax = $('#file-dur-max'); if (durMax) durMax.value = ''
+  } catch {}
   updateSelectionBar()
   renderChats()
 
@@ -647,6 +700,9 @@ function filesItems () {
   if (state.files.filter !== 'all') {
     list = list.filter(it => it.type === state.files.filter)
   }
+  if (durationFilterActive()) {
+    list = list.filter(matchDurationFilter)
+  }
   const cmp = (a, b) => (String(a.messageId) < String(b.messageId) ? -1 : 1)
   switch (state.files.sort) {
     case 'oldest': list.sort(cmp); break
@@ -686,6 +742,10 @@ function buildGridCard (item) {
   name.title = item.name || 'file'
   body.appendChild(name)
   const sizes = h('div', 'gsize', fmtSize(item.fileSize || 0))
+  try {
+    const dur = typeof fileDurationText === 'function' ? fileDurationText(item) : ''
+    if (dur) sizes.textContent += ` · ${dur}`
+  } catch {}
   if (item.date) sizes.textContent += ` · ${fmtDate(item.date)}`
   body.appendChild(sizes)
   card.appendChild(body)
@@ -728,6 +788,10 @@ function buildMediaRow (m, includeSelection = true) {
   meta.appendChild(name)
   const size = h('div', 'size')
   size.appendChild(h('span', '', fmtSize(media.fileSize || 0)))
+  try {
+    const dur = typeof fileDurationText === 'function' ? fileDurationText(media) : ''
+    if (dur) size.appendChild(h('span', 'type-badge', dur))
+  } catch {}
   size.appendChild(h('span', 'type-badge', media.type))
   meta.appendChild(size)
   if (media.caption) meta.appendChild(h('div', 'msg-caption', escapeHtml(media.caption)))
@@ -1498,6 +1562,53 @@ $('#file-sort').addEventListener('change', e => {
   state.files.sort = e.target.value
   renderFiles()
 })
+
+/* Duration range filter (seconds or m:ss). Mounted here next to the type
+ * filter so it works no matter which later layer owns filesItems/renderFiles:
+ * every implementation funnels through matchDurationFilter. */
+function mountDurationFilter () {
+  try {
+    const toolbar = $('#files-toolbar')
+    if (!toolbar || $('#file-duration-tools')) return
+    if (!document.querySelector('#filegram-duration-filter-style')) {
+      const style = document.createElement('style')
+      style.id = 'filegram-duration-filter-style'
+      style.textContent = [
+        '.file-duration-tools{display:flex;align-items:center;gap:6px;flex:0 0 auto}',
+        '.file-duration-tools input[type="text"]{width:76px;height:30px;padding:0 7px;font-variant-numeric:tabular-nums}',
+        '.file-duration-tools input[type="text"]::placeholder{opacity:.55}',
+        '@media(max-width:900px){.file-duration-tools{display:none}}'
+      ].join('')
+      document.head.appendChild(style)
+    }
+    const box = h('div', 'file-range-tools file-duration-tools')
+    box.id = 'file-duration-tools'
+    box.innerHTML = '<span class="file-range-label">Duration</span><input id="file-dur-min" type="text" inputmode="numeric" placeholder="Min 0:00" aria-label="Minimum duration" title="Minimum duration: seconds or m:ss (e.g. 90 or 1:30)"><span class="file-range-separator">–</span><input id="file-dur-max" type="text" inputmode="numeric" placeholder="Max" aria-label="Maximum duration" title="Maximum duration: seconds or m:ss (e.g. 600 or 10:00)"><button id="file-dur-clear" class="ghost small" type="button" title="Clear duration filter">✕</button>'
+    const sort = $('#file-sort')
+    if (sort) sort.insertAdjacentElement('afterend', box)
+    else toolbar.appendChild(box)
+    const apply = () => {
+      const minEl = $('#file-dur-min')
+      const maxEl = $('#file-dur-max')
+      let min = parseDurationInput(minEl && minEl.value)
+      let max = parseDurationInput(maxEl && maxEl.value)
+      if (min != null && max != null && min > max) [min, max] = [max, min]
+      state.files.minDuration = min
+      state.files.maxDuration = max
+      renderFiles()
+    }
+    $('#file-dur-min').addEventListener('change', apply)
+    $('#file-dur-max').addEventListener('change', apply)
+    $('#file-dur-clear').onclick = () => {
+      $('#file-dur-min').value = ''
+      $('#file-dur-max').value = ''
+      state.files.minDuration = null
+      state.files.maxDuration = null
+      renderFiles()
+    }
+  } catch {}
+}
+try { mountDurationFilter() } catch {}
 
 $('#select-all-media').onclick = selectAllMedia
 $('#download-all-media').onclick = downloadAllMedia

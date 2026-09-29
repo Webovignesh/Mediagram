@@ -430,6 +430,85 @@ async function runStallTests () {
     assert.ok(job.lastProgressAt > Date.now() - 5000, 'the stall window must be refreshed')
   }
 
+  /* ---- reassert must stay quiet while a flood wait is in force ----
+   * Every new chunk request sent during FLOOD_PREMIUM_WAIT extends the wait
+   * for the whole download connection, so the 1s sweep re-asserting into it
+   * turned a seconds-long flood into a permanent 0 B/s stall. */
+  {
+    const { dm, invocations } = makeHarness(1)
+    enqueue(dm, 1)
+    // Let the initial start finish so only the watchdog's calls are counted.
+    await settle()
+    await settle()
+    const job = [...dm.jobs.values()][0]
+    job.lastProgressAt = Date.now() - 10 * 60 * 1000
+    dm.floodWaitUntil = Date.now() + 5000
+    invocations.length = 0
+
+    dm.sweep()
+    await settle()
+    await settle()
+
+    assert.equal(job.status, 'downloading', 'a flooded job must stay live, not fail')
+    assert.equal(
+      invocations.filter(i => i._ === 'downloadFile' || i._ === 'getFile').length, 0,
+      'no TDLib request may be issued while a flood wait is in force'
+    )
+    dm.floodWaitUntil = 0
+  }
+
+  /* ---- a flood error from reassert records the wait instead of spinning ---- */
+  {
+    const flood = Object.assign(new Error('FLOOD_PREMIUM_WAIT_1'), { code: 420 })
+    let downloads = 0
+    const { dm, invocations } = makeHarness(1, {
+      // Still pending inside TDLib: not active, not complete, some bytes fetched.
+      getFile: () => Promise.resolve({ size: 1000, local: { is_downloading_active: false, is_downloading_completed: false, downloaded_size: 250 } }),
+      // The initial start succeeds; only the watchdog re-assert hits the flood.
+      downloadFile: () => (++downloads <= 1
+        ? Promise.resolve({ local: { is_downloading_completed: false } })
+        : Promise.reject(flood))
+    })
+    enqueue(dm, 1)
+    await settle()
+    const job = [...dm.jobs.values()][0]
+    assert.equal(job.status, 'downloading')
+    job.lastProgressAt = Date.now() - 10 * 60 * 1000
+    invocations.length = 0
+
+    dm.sweep()
+    await settle()
+    await settle()
+    await settle()
+
+    assert.equal(job.status, 'downloading', 'a flooded re-assert must not fail the job')
+    assert.ok(dm.floodWaitUntil > Date.now(), 'the flood wait must be recorded')
+
+    const callsAfter = invocations.length
+    dm.sweep()
+    await settle()
+    await settle()
+    assert.equal(invocations.length, callsAfter, 'a second sweep inside the flood window must issue nothing')
+    dm.floodWaitUntil = 0
+  }
+
+  /* ---- burst spacing backs off on flood and eases back on success ---- */
+  {
+    const { dm } = makeHarness(1)
+    dm.downloadRateMs = 600
+    dm.backoffDownloadRate()
+    assert.equal(dm.downloadRateMs, 1200, 'each flood must double the burst gap')
+    dm.backoffDownloadRate()
+    assert.equal(dm.downloadRateMs, 2400)
+    for (let i = 0; i < 10; i++) dm.backoffDownloadRate()
+    assert.ok(dm.downloadRateMs <= 5000, 'the burst gap must be capped')
+    dm.easeDownloadRate()
+    assert.ok(dm.downloadRateMs < 5000, 'successful starts must ease the gap back')
+    dm.downloadRateMs = 600
+    dm.easeDownloadRate()
+    assert.equal(dm.downloadRateMs, 600, 'the gap must never ease below the baseline')
+  }
+
   /* ---- the watchdog finalizes a completion it had missed ---- */
   {
     const { dm, seed } = makeHarness(1, {

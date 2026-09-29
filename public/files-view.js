@@ -61,7 +61,9 @@
       state.files && state.files.mode,
       state.files && state.files.query,
       state.files && state.files.filter,
-      state.files && state.files.sort
+      state.files && state.files.sort,
+      state.files && state.files.minDuration,
+      state.files && state.files.maxDuration
     ].join('|')
   }
 
@@ -257,6 +259,21 @@
     if (filter !== 'all') {
       next = next.filter(item => String(item && item.type || '') === filter)
     }
+    try {
+      const min = state.files ? state.files.minDuration : null
+      const max = state.files ? state.files.maxDuration : null
+      if (min != null || max != null) {
+        const match = typeof matchDurationFilter === 'function'
+          ? matchDurationFilter
+          : (item => {
+              const dur = Math.max(0, Number(item && item.duration || 0)) || 0
+              if (min != null && dur < min) return false
+              if (max != null && dur > max) return false
+              return true
+            })
+        next = next.filter(match)
+      }
+    } catch {}
 
     if (sort === 'oldest') next = next.slice().reverse()
     else if (sort === 'name') next = next.slice().sort((a, b) => String(a && a.name || '').localeCompare(String(b && b.name || '')))

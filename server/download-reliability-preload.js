@@ -21,7 +21,7 @@ if (!global.__fileGramDownloadReliabilityPreloadInstalled) {
   const { resolveDownloadItems } = require('./download-reference-resolver')
 
   const REQUEST_TYPE = 'start-download'
-  const TD_FILES_DIR = path.resolve(__dirname, '.td_files')
+  const TD_FILES_DIR = path.resolve(__dirname, '..', '.td_files')
 
   function activeClient () {
     try {

@@ -34,12 +34,13 @@ fs.promises.mkdir = async function fileGramNoThumbDirAsync (target, options) {
 }
 
 // Repo-local leftovers from old builds.
-removeLegacyThumbDir(path.join(__dirname, '.thumbs'))
-removeLegacyThumbDir(path.join(__dirname, 'downloads', '.thumbs'))
+const root = path.resolve(__dirname, '..')
+removeLegacyThumbDir(path.join(root, '.thumbs'))
+removeLegacyThumbDir(path.join(root, 'downloads', '.thumbs'))
 
 // Saved download destination from the previous/current installation.
 try {
-  const settingsPath = path.join(__dirname, 'settings.json')
+  const settingsPath = path.join(root, 'settings.json')
   const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'))
   if (settings && settings.downloadsDir) {
     removeLegacyThumbDir(path.join(path.resolve(String(settings.downloadsDir)), '.thumbs'))

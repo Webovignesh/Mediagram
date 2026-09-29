@@ -134,6 +134,7 @@ filesItems = function teleDailyFilesItems () {
   const q = state.files.query.trim().toLowerCase()
   if (q) list = list.filter(it => (it.name || '').toLowerCase().includes(q) || (it.caption || '').toLowerCase().includes(q))
   if (state.files.filter !== 'all') list = list.filter(it => it.type === state.files.filter)
+  if (typeof durationFilterActive === 'function' ? durationFilterActive() : (state.files.minDuration != null || state.files.maxDuration != null)) list = list.filter(typeof matchDurationFilter === 'function' ? matchDurationFilter : (it => it))
 
   const cmp = (a, b) => {
     const aa = BigInt(String(a.messageId || 0))

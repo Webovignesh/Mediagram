@@ -4,7 +4,7 @@ const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
-const { ScalableUploadLedger } = require('../bulk-upload-ledger')
+const { ScalableUploadLedger } = require('../server/bulk-upload-ledger')
 
 ;(async () => {
   const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'filegram-upload-ledger-'))

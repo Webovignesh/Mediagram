@@ -35,8 +35,31 @@ function waitForAuthorizationClosed (client, timeoutMs = 15000) {
 
 function attachRealClient (real) {
   activeClient = real
-  real.on('update', update => stableClient.emit('update', update))
-  real.on('error', error => stableClient.emit('error', error))
+  real.on('update', update => {
+    try { stableClient.emit('update', update) } catch {}
+    // TDLib notifies close via updateAuthorizationState first; the 'close'
+    // event follows from _handleClose. Forwarding both lets server.js reset
+    // state promptly instead of invoking on a dead client.
+    if (update && update._ === 'updateAuthorizationState' && update.authorization_state && update.authorization_state._ === 'authorizationStateClosed') {
+      try { stableClient.emit('auth-closed', update) } catch {}
+    }
+  })
+  real.on('error', error => {
+    try { stableClient.emit('error', error) } catch {}
+  })
+  real.on('close', () => {
+    if (activeClient === real) activeClient = null
+    try { stableClient.emit('close') } catch {}
+    // Spontaneous close (crash, logOut from elsewhere, DB eviction) leaves
+    // server.js holding a stable wrapper with no live TDLib client. Every
+    // invoke would then throw "A closed client cannot be reused". Recreate
+    // immediately so the next get-chats works without a process restart.
+    // restartAfterLogout() sets `restarting` and manages its own swap, so
+    // don't fight it here.
+    if (!restarting) {
+      try { createRealClient() } catch {}
+    }
+  })
 }
 
 function createRealClient () {
@@ -48,8 +71,52 @@ function createRealClient () {
 
 class StableTdClient extends EventEmitter {
   invoke (query) {
-    if (!activeClient) return Promise.reject(new Error('Telegram client is restarting'))
+    if (!activeClient) {
+      // Lazily recover if the real client died and the 'close' handler could
+      // not recreate it (e.g. options not yet set is impossible here, but be
+      // safe). If recreation fails, report a retryable state instead of the
+      // raw tdl "closed client cannot be reused" error.
+      if (!restarting && createOptions) {
+        try { createRealClient() } catch {}
+      }
+      if (!activeClient) return Promise.reject(new Error('Telegram client is restarting'))
+    }
+    // The underlying tdl client may report isClosed() true just before our
+    // 'close' listener runs. Recreate once instead of throwing the raw reuse
+    // error to the UI.
+    try {
+      if (typeof activeClient.isClosed === 'function' && activeClient.isClosed()) {
+        if (!restarting && createOptions) {
+          try { createRealClient() } catch {}
+          if (!activeClient || (typeof activeClient.isClosed === 'function' && activeClient.isClosed())) {
+            return Promise.reject(new Error('Telegram client is restarting'))
+          }
+        } else {
+          return Promise.reject(new Error('Telegram client is restarting'))
+        }
+      }
+    } catch {}
     return activeClient.invoke(query)
+  }
+
+  isClosed () {
+    try {
+      if (!activeClient) return true
+      if (typeof activeClient.isClosed === 'function') return !!activeClient.isClosed()
+      return false
+    } catch { return true }
+  }
+
+  ensureRealClient () {
+    try {
+      if (activeClient && typeof activeClient.isClosed === 'function' && activeClient.isClosed()) {
+        try { activeClient.removeAllListeners && activeClient.removeAllListeners() } catch {}
+        activeClient = null
+      }
+    } catch { activeClient = null }
+    if (activeClient) return activeClient
+    if (!createOptions) throw new Error('TDLib client options are unavailable')
+    return createRealClient()
   }
 
   close () {
@@ -82,7 +149,23 @@ class StableTdClient extends EventEmitter {
 }
 
 tdl.createClient = function fileGramCreateStableClient (options) {
-  if (stableClient) return stableClient
+  if (stableClient) {
+    // server.js guards with `if (client) return` and would otherwise keep
+    // using a stable wrapper whose real client is dead. Ensure a live real
+    // client before handing the same stable reference back.
+    if (options && Object.keys(options).length) createOptions = { ...createOptions, ...options }
+    try {
+      const dead = !activeClient || (typeof activeClient.isClosed === 'function' && activeClient.isClosed())
+      if (dead && !restarting) {
+        if (activeClient) {
+          try { activeClient.removeAllListeners && activeClient.removeAllListeners() } catch {}
+          activeClient = null
+        }
+        createRealClient()
+      }
+    } catch {}
+    return stableClient
+  }
   createOptions = { ...options }
   stableClient = new StableTdClient()
   createRealClient()

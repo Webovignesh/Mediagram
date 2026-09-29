@@ -6,7 +6,7 @@ const {
   normalizeMessageIds,
   ensureReadyOwnedChat,
   deleteOwnedMessages
-} = require('../owned-bulk-delete-server')
+} = require('../server/owned-bulk-delete-server')
 
 function fakeClient ({ kind = 'channel', owner = true, ready = true } = {}) {
   const calls = []

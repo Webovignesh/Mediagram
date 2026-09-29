@@ -7,10 +7,12 @@ const {
   WARM_PRIORITY,
   normalizeFileShape,
   isTransientDownloadError,
+  parseFloodWaitMs,
+  retryDelay,
   invokeDownloadWithRetry,
   createActiveDownloadKeeper,
   createWarmDownloadBacklog
-} = require('../download-client-reliability-preload')
+} = require('../server/download-client-reliability-preload')
 
 function availabilityIsNormalized () {
   const file = { id: 7, local: { can_be_downloaded: false, is_downloading_completed: false } }
@@ -175,6 +177,55 @@ async function warmBacklogIsBoundedAndRolling () {
   assert.equal(warm.stats().pending, 0)
 }
 
+function floodWaitIsParsedAndHonoured () {
+  assert.equal(parseFloodWaitMs(new Error('FLOOD_PREMIUM_WAIT_14')), 14000)
+  assert.equal(parseFloodWaitMs(new Error('FLOOD_WAIT_3')), 3000)
+  assert.equal(parseFloodWaitMs(new Error('Too Many Requests: retry after 2')), 2000)
+  assert.equal(parseFloodWaitMs(new Error('network request failed')), 0)
+  // A flood wait must sleep out the server-sent delay, not the 250ms default:
+  // fast retries during a flood extend the wait for every active file.
+  assert.equal(retryDelay(new Error('FLOOD_PREMIUM_WAIT_14'), 0), 14500)
+  assert.equal(retryDelay(new Error('FLOOD_WAIT_3'), 0), 3500)
+}
+
+async function keeperStaysQuietDuringFlood () {
+  let clock = 1000
+  const calls = []
+  const flood = Object.assign(new Error('FLOOD_PREMIUM_WAIT_14'), { code: 420 })
+  const invoke = async query => {
+    calls.push({ ...query })
+    if (query._ === 'getFile') throw flood
+    if (query._ === 'downloadFile') {
+      return { id: query.file_id, local: { downloaded_size: 0, is_downloading_completed: false } }
+    }
+    throw new Error(`unexpected ${query._}`)
+  }
+  const keeper = createActiveDownloadKeeper({
+    invoke,
+    emitUpdate: () => {},
+    now: () => clock,
+    setIntervalFn: () => ({ unref () {} }),
+    clearIntervalFn: () => {}
+  })
+
+  keeper.track({ _: 'downloadFile', file_id: 55, priority: 32, offset: 0, limit: 0, synchronous: false })
+  clock += ACTIVE_STALL_MS + REASSERT_MIN_MS + 5
+  await keeper.sweep()
+  assert.deepEqual(calls.map(call => call._), ['getFile'], 'a flooded state read must not be followed by another downloadFile')
+  assert.ok(keeper.floodBlockedUntil() > clock, 'the flood window must be recorded')
+
+  // The next sweep lands inside the 14s flood window and must issue nothing.
+  clock += 1000
+  await keeper.sweep()
+  assert.equal(calls.length, 1, 're-asserting into a flood extends it for every file, so the keeper must stay quiet')
+
+  // After the window drains, recovery resumes exactly once.
+  clock = keeper.floodBlockedUntil() + REASSERT_MIN_MS + 1
+  await keeper.sweep()
+  assert.ok(calls.length > 1, 'stall recovery must resume after the flood drains')
+  keeper.stop()
+}
+
 Promise.resolve()
   .then(availabilityIsNormalized)
   .then(errorClassificationIsConservative)
@@ -183,6 +234,8 @@ Promise.resolve()
   .then(missedCompletionIsReturnedToExistingQueue)
   .then(byteProgressResetsTheQuietWindow)
   .then(warmBacklogIsBoundedAndRolling)
+  .then(floodWaitIsParsedAndHonoured)
+  .then(keeperStaysQuietDuringFlood)
   .then(() => console.log('download client reliability checks passed'))
   .catch(error => {
     console.error(error)

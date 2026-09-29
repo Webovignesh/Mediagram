@@ -3,7 +3,7 @@
 const assert = require('node:assert/strict')
 const { EventEmitter } = require('node:events')
 
-require('../bulk-upload-reliability-preload')
+require('../server/bulk-upload-reliability-preload')
 const { wrapRequestLifetime } = global.__fileGramBulkUploadReliability || {}
 assert.equal(typeof wrapRequestLifetime, 'function')
 

@@ -198,7 +198,7 @@
     // files-stability.js is now in index.html, loaded before daily-driver layers
     if (!document.querySelector('script[data-filegram-files-view]')) {
       const view = document.createElement('script')
-      view.src = 'files-view.js?v=2'
+      view.src = 'files-view.js?v=3'
       view.dataset.filegramFilesView = '1'
       view.addEventListener('load', () => setTimeout(installMessageTabRefreshGuard, 0), { once: true })
       document.body.appendChild(view)

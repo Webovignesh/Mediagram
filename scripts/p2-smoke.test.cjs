@@ -6,7 +6,7 @@ const fs = require('node:fs')
 const html = fs.readFileSync('public/index.html', 'utf8')
 const p2 = fs.readFileSync('public/daily-driver-p2.js', 'utf8')
 const p2Css = fs.readFileSync('public/daily-driver-p2.css', 'utf8')
-const thumbPreload = fs.readFileSync('thumb-cache-preload.js', 'utf8')
+const thumbPreload = fs.readFileSync('server/thumb-cache-preload.js', 'utf8')
 
 /* Comments must not satisfy or break an assertion: the deletions this fix makes leave
  * comments naming the removed code, so checks by ABSENCE read comment-stripped source. */

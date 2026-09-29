@@ -31,9 +31,11 @@ const html = read('public/index.html')
 const app = read('public/app.js')
 
 const publicDir = path.join(root, 'public')
+const serverDir = path.join(root, 'server')
 const publicJs = fs.readdirSync(publicDir).filter(name => name.endsWith('.js'))
 const publicCss = fs.readdirSync(publicDir).filter(name => name.endsWith('.css'))
 const rootJs = fs.readdirSync(root).filter(name => name.endsWith('.js') && fs.statSync(path.join(root, name)).isFile())
+const serverJs = fs.readdirSync(serverDir).filter(name => name.endsWith('.js'))
 
 /* Comments must not satisfy or break an invariant.
  *
@@ -72,6 +74,7 @@ function stripCssComments (source) {
 const codeOf = new Map()
 for (const name of publicJs) codeOf.set(`public/${name}`, stripJsComments(read(`public/${name}`)))
 for (const name of rootJs) codeOf.set(name, stripJsComments(read(name)))
+for (const name of serverJs) codeOf.set(`server/${name}`, stripJsComments(read(`server/${name}`)))
 const cssOf = new Map()
 for (const name of publicCss) cssOf.set(`public/${name}`, stripCssComments(read(`public/${name}`)))
 

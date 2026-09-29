@@ -240,6 +240,7 @@
     const q = String(state.files.query || '').trim().toLowerCase()
     if (q) list = list.filter(item => String(item.name || '').toLowerCase().includes(q) || String(item.caption || '').toLowerCase().includes(q))
     if (state.files.filter !== 'all') list = list.filter(item => item.type === state.files.filter)
+    if (typeof durationFilterActive === 'function' ? durationFilterActive() : (state.files.minDuration != null || state.files.maxDuration != null)) list = list.filter(typeof matchDurationFilter === 'function' ? matchDurationFilter : (item => item))
     const compareIds = (a, b) => {
       let aa = 0n; let bb = 0n
       try { aa = BigInt(String((a && a.messageId) || 0)) } catch {}

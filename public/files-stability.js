@@ -258,6 +258,16 @@
     const persisted = await writePersistent(chatId, next, options); return { snapshot: next, persisted }
   }
 
+  function needsDurationRefresh (snapshot) {
+    if (!snapshot || !Array.isArray(snapshot.items) || !snapshot.items.length) return false
+    for (const item of snapshot.items) {
+      if (!item) continue
+      const type = String(item.type || '')
+      if (type !== 'video' && type !== 'video_note' && type !== 'gif' && type !== 'audio' && type !== 'voice') continue
+      if (!Object.prototype.hasOwnProperty.call(item, 'duration')) return true
+    }
+    return false
+  }
   async function restore (chatId) {
     const key = idOf(chatId); const owned = committed.get(key)
     if (owned) { publishShared(chatId, owned); updateCountUi(chatId); return owned }
@@ -291,7 +301,7 @@
     if (chatId == null) return null; const key = idOf(chatId); if (loading.has(key)) return loading.get(key)
     const task = (async () => {
       let stable = await restore(chatId)
-      if (stable && isCompleteSnapshot(chatId, stable) && !options.hardRefresh) { cancelLegacyFullScan(chatId); reconcileRecent(chatId, stable).catch(() => {}); scheduleAutoReconcile(chatId); return stable }
+      if (stable && isCompleteSnapshot(chatId, stable) && !options.hardRefresh && !needsDurationRefresh(stable)) { cancelLegacyFullScan(chatId); reconcileRecent(chatId, stable).catch(() => {}); scheduleAutoReconcile(chatId); return stable }
       fullScanJobs.add(key)
       try {
         const result = await request('scan-media-v3', { chatId, force: !!options.hardRefresh })
@@ -426,7 +436,7 @@
   function installCompatibilityOwners () {
     ownCountLabel(); try { rescueEnsureAllFiles = ensure } catch {}
     try { rescueApplyCompleteFiles = function fileGramApplyFilesMetadataOnly (chatId) { const owned = committed.get(idOf(chatId)); if (owned) paint(chatId, owned); if (state) state.hasMore = state.hasMore !== false } } catch {}
-    try { filesItems = function fileGramStableFilesItems () { let list = state.files.mode === 'search' ? (state.files.results || []).slice() : ((committed.get(idOf(state.activeChatId)) || {}).items || []); const q = String(state.files.query || '').trim().toLowerCase(); const filtered = q || state.files.filter !== 'all'; if (q) list = list.filter(item => String(item.name || '').toLowerCase().includes(q) || String(item.caption || '').toLowerCase().includes(q)); if (state.files.filter !== 'all') list = list.filter(item => item.type === state.files.filter); if (state.files.sort === 'oldest') return list.slice().reverse(); if (state.files.sort === 'name') return list.slice().sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''))); if (state.files.sort === 'size') return list.slice().sort((a, b) => Number(b.fileSize || 0) - Number(a.fileSize || 0)); if (state.files.mode === 'search' && !filtered) return list.slice().sort((a, b) => compareIds(b.messageId, a.messageId)); return list } } catch {}
+    try { filesItems = function fileGramStableFilesItems () { let list = state.files.mode === 'search' ? (state.files.results || []).slice() : ((committed.get(idOf(state.activeChatId)) || {}).items || []); const q = String(state.files.query || '').trim().toLowerCase(); const durActive = (typeof durationFilterActive === 'function' ? durationFilterActive() : (state.files.minDuration != null || state.files.maxDuration != null)); const filtered = q || state.files.filter !== 'all' || durActive; if (q) list = list.filter(item => String(item.name || '').toLowerCase().includes(q) || String(item.caption || '').toLowerCase().includes(q)); if (state.files.filter !== 'all') list = list.filter(item => item.type === state.files.filter); if (durActive) list = list.filter(typeof matchDurationFilter === 'function' ? matchDurationFilter : (item => item)); if (state.files.sort === 'oldest') return list.slice().reverse(); if (state.files.sort === 'name') return list.slice().sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''))); if (state.files.sort === 'size') return list.slice().sort((a, b) => Number(b.fileSize || 0) - Number(a.fileSize || 0)); if (state.files.mode === 'search' && !filtered) return list.slice().sort((a, b) => compareIds(b.messageId, a.messageId)); return list } } catch {}
   }
   function installEventOwner () {
     try {

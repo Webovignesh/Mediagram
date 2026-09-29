@@ -6,7 +6,7 @@ const fs = require('node:fs')
 const html = fs.readFileSync('public/index.html', 'utf8')
 const p0 = fs.readFileSync('public/daily-driver-p0-v2.js', 'utf8')
 const p0Css = fs.readFileSync('public/daily-driver-p0.css', 'utf8')
-const compatSource = fs.readFileSync('tdl-upload-compat.js', 'utf8')
+const compatSource = fs.readFileSync('server/tdl-upload-compat.js', 'utf8')
 const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'))
 
 /* Comments must not satisfy or break an assertion: the deletions this fix makes leave
@@ -60,7 +60,7 @@ assert.match(compatSource, /inputDocument/, 'upload compatibility must adapt doc
 assert.match(compatSource, /realpathSync/, 'local InputFile paths must be canonicalized before TDLib upload')
 assert.match(pkg.scripts.start, /tdl-upload-compat\.js/, 'runtime must preload the TDLib attachment compatibility layer')
 
-const { normalizeAttachmentQuery } = require('../tdl-upload-compat.js')
+const { normalizeAttachmentQuery } = require('../server/tdl-upload-compat.js')
 const rawVideo = {
   _: 'sendMessage',
   chat_id: 1,

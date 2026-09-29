@@ -6,8 +6,8 @@ const os = require('node:os')
 const path = require('node:path')
 const { EventEmitter } = require('node:events')
 const { PassThrough } = require('node:stream')
-const { createBulkUploadHandler } = require('../bulk-upload-server')
-const { ScalableUploadLedger } = require('../bulk-upload-ledger')
+const { createBulkUploadHandler } = require('../server/bulk-upload-server')
+const { ScalableUploadLedger } = require('../server/bulk-upload-ledger')
 
 class FakeClient extends EventEmitter {
   constructor (options = {}) {
