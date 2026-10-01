@@ -1,37 +1,29 @@
 {
-  "verdict": "CHANGES_REQUESTED",
+  "verdict": "APPROVED",
   "findings": [
     {
       "id": 1,
-      "severity": "MEDIUM",
-      "title": "IPC sender check compares strings from two different URL canonicalizers, so a valid page can be rejected",
-      "where": "ARCHITECTURE > IPC contract > Bridge, step 1",
-      "problem": "rendererUrl is a Node/WHATWG href; e.senderFrame.url is Chromium's canonical spec. Chromium uppercases Windows drive letters in file URLs while pathToFileURL keeps the launch-path case from process.execPath, so a lowercase install path or launch yields 403 on every call (app unusable). Escape-set differences for rare characters unchecked; a URL parse error surfaces as 500.",
-      "fix": "Compare a pageKey: hash and query stripped, file: URLs as fileURLToPath(u).toLowerCase(), otherwise href.toLowerCase(); reject (403) on any parse error; keep pageKey pure in core/storage.ts with a node:test check (drive-letter case, sibling file, dev trailing slash)."
+      "severity": "NIT",
+      "title": "The failed scan set is cleared only when the connection leaves ready, so an error raised while offline sticks until the next outage",
+      "where": "ARCHITECTURE > Media index scan (failed set; Live upkeep clearing rule)",
+      "problem": "A page error during a connection outage (auth still ready) adds the chat to failed after the clear has already run, so the reconnect does not give it the promised new try; it waits for the next outage or a restart.",
+      "fix": "current is cleared whenever updateConnectionState leaves ready; failed is cleared whenever it enters ready."
     },
     {
       "id": 2,
-      "severity": "MEDIUM",
-      "title": "Active upload with no pending id after a crash is never settled",
-      "where": "ARCHITECTURE > Upload steps 4 and 6; Client lifecycle; TDLib call map 'Upload crash recovery'",
-      "problem": "Recovery is driven only by pendingIds and per-file settle events. A crash during the step-2 temp copy, between sendMessage and persisting pendingId, or between the last settle and the job update leaves the row active with no live state forever (Uploading pill, counted in badges, files never posted, possibly holding the upload slot).",
-      "fix": "On ready, every active upload with no pendingId left settles at once via step 4: all files have messageId -> completed; else settleUpload and fail 'Interrupted. Check the chat before retrying' (not retryable). Extend the settleUpload test for this case."
+      "severity": "NIT",
+      "title": "An upload TDLib is still sending after a restart has no live state, so it holds no slot and shows no progress",
+      "where": "ARCHITECTURE > Transfer engine > Pump (free = limit minus jobs with live state); Upload step 6 (sendingStatePending -> keep waiting)",
+      "problem": "With the review-4 free rule, a recovered pending upload does not count against maxUploads, so a second upload starts beside it; its updateFile events are unrouted, so its Queue bar is frozen until it settles. No duplicate posts; throughput and cosmetics only.",
+      "fix": "Either: a pending id in sendingStatePending gives its job live state (file id from extractMedia(m).file.id into inFlight), or add a ponytail: note with the upgrade path in Upload step 6 and PROGRESS."
     },
     {
       "id": 3,
       "severity": "NIT",
-      "title": "A scan that ends on an error restarts on every refetch",
-      "where": "ARCHITECTURE > Media index scan",
-      "problem": "Non-flood errors are unspecified; with the round-3 emit-on-finish, a failing scan emits media:<chatId>, Files View refetches, chats.media restarts the scan, and it fails again about once per second.",
-      "fix": "A non-flood page error ends the scan (warn) and adds the chat to an in-memory failed set cleared with current; chats.media does not start a scan for a chat in failed; scan.state reads idle."
-    },
-    {
-      "id": 4,
-      "severity": "NIT",
-      "title": "Cancel cleanup also fires TDLib calls for completed rows",
-      "where": "ARCHITECTURE > Methods notes (jobs.action cancel cleanup)",
-      "problem": "Remove on completed rows and Clear All match attempts > 0, so getMessages and deleteFile run for every completed download whose TDLib copy is already gone.",
-      "fix": "Restrict the cleanup to kind = 'download' AND status <> 'completed' AND (attempts > 0 OR done > 0)."
+      "title": "The review-4 response header will point at the wrong review file",
+      "where": "ARCHITECTURE > Design review 4: responses; PROGRESS > Phases > 1. Setup",
+      "problem": "docs/.design-review.md now holds review 5; the review-4 header does not say so, unlike earlier response sections.",
+      "fix": "Header: 'Review 4 (CHANGES_REQUESTED, 0 HIGH, 2 MEDIUM, 2 NIT; docs/.design-review.md now holds review 5, APPROVED)'; tick 'Design review 5 approved' in PROGRESS Phase 1."
     }
   ],
   "reviewDoc": "c:\\Users\\REBEL DUKER\\Downloads\\tele\\.worktrees\\teleflow\\docs/.design-review.md"

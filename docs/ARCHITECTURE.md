@@ -1,6 +1,6 @@
 # TeleFlow: Architecture
 
-Status: final design for v1 (2026-10-01, revised after design reviews 1 to 4; responses at the end). Keep this file in sync with the code; if they disagree, fix whichever is wrong in the same change.
+Status: final design for v1 (2026-10-01, revised after design reviews 1 to 4; review 5 approved; responses at the end). Keep this file in sync with the code; if they disagree, fix whichever is wrong in the same change.
 
 The IPC methods below are the app's API (the "routes"), and the IPC events are its push channel. There is no REST server and no WebSocket (user scope change, see PROGRESS decision log).
 
@@ -28,7 +28,7 @@ All versions are pinned exactly in `package.json` (no `^` or `~`).
 
 `dependencies` = `tdl` and `prebuilt-tdlib` only (externalized by electron-vite, shipped by electron-builder). Everything else is a devDependency, since Vite bundles the renderer and main.
 
-TypeScript conventions: ESM everywhere; every relative import has an explicit `.ts`/`.tsx` extension (Node 24 type stripping requires it). One `tsconfig.json`: `strict`, `noEmit`, `allowImportingTsExtensions`, `erasableSyntaxOnly`, `verbatimModuleSyntax`, `module: preserve`, `moduleResolution: bundler`, `jsx: react-jsx`, `lib: [ES2024, DOM, DOM.Iterable]`, `types: [node]`.
+TypeScript conventions: ESM everywhere; every relative import has an explicit `.ts`/`.tsx` extension (Node 24 type stripping requires it). One `tsconfig.json`: `strict`, `noEmit`, `allowImportingTsExtensions`, `erasableSyntaxOnly`, `verbatimModuleSyntax`, `module: preserve`, `moduleResolution: bundler`, `jsx: react-jsx`, `lib: [ES2024, DOM, DOM.Iterable]`, `types: [node, @prebuilt-tdlib/types, electron-vite/node]` (`tdl`'s `index.d.ts` imports `tdlib-types`, which `@prebuilt-tdlib/types` 0.1008066.0, an optional dependency of `prebuilt-tdlib`, declares; `electron-vite/node` types the `?asset` import that copies `assets/icon.png` into `out/main` for the window, tray, and notifications).
 
 Removed: Express, `ws`, `dotenv`, `archiver`, every `.cmd`/`.vbs`/`.ps1` launcher, the Edge `--app` shell.
 
@@ -58,13 +58,17 @@ Spike: `electron@44.5.1` installed in `%TEMP%\teleflow-spike`, a `main.js` run b
 electron/
   main.ts        app lifecycle: paths, single-instance lock, window + state, tray, login item,
                  teleflow:// protocol, IPC bridge (sender check, error envelope), notifications, quit
-  ipc.ts         the method table: name -> (args) => result, with argument validation
+  ipc.ts         createMethods(ctx): name -> { validate, run }; handleCall(): sender check, own-property
+                 lookup, validation, error envelope. Imports no `electron` (main passes native calls in
+                 through ctx), so node:test can load it
   preload.ts     contextBridge: window.teleflow = { call, on, pathOf }
 core/
   db.ts          SQLite schema, queries, settings defaults and validation
   telegram.ts    TDLib client lifecycle, auth, chat cache, messages, media extraction,
                  media index scan, thumbnails, link resolution
-  transfers.ts   download/upload queue engine, naming, gates, stats
+  transfers.ts   download/upload queue engine, naming, gates, stats: createEngine(deps) + pure helpers
+                 (deps = db, invoke, onUpdate, auth/chat lookups, emit, paths), so tests run a fresh
+                 engine on :memory: SQLite with a fake invoke
   storage.ts     paths (incl. the IPC pageKey), logger, library scan, storage report, clearing, FileGram import, fs helpers
 web/
   index.html
@@ -93,7 +97,7 @@ package.json      scripts, pinned deps, allowScripts, electron-builder "build" c
 docs/
 ```
 
-Split a file only when it passes roughly 400 lines or mixes unrelated concerns. Renderer types for IPC are inferred from `electron/ipc.ts` with a type-only import (`typeof import('../../electron/ipc.ts').methods`), so there is no hand-written contract file to drift.
+Split a file only when it passes roughly 400 lines or mixes unrelated concerns. Renderer types for IPC are inferred from `electron/ipc.ts` with a type-only import (`import type { Methods } from '../../electron/ipc.ts'`, where `Methods = ReturnType<typeof createMethods>`), so there is no hand-written contract file to drift.
 
 Removed in the rewrite: `server.js`, `server/`, `public/`, `scripts/*.test.cjs`, `scripts/*.ps1`, old `tests/`, `BULK_UPLOAD_TESTING.md`, `Clean Repo After Release.cmd`, `FileGram.vbs`, `Install FileGram.cmd`, `Uninstall FileGram.cmd`, `playwright.config.js`.
 
@@ -521,8 +525,8 @@ One function maps a message to media (FileGram's `extractMedia`, minus stickers)
 - Top-up: `getChatHistory` from the newest message down to `newest_id`. Only when the walk reaches the old `newest_id` is it set to the newest id seen (and the chat added to `current`, below), so a top-up interrupted by another chat restarts from the top next time instead of leaving a gap. Backfill: from `oldest_id` toward the start until an empty page sets `complete = 1`. Pages of 100, each inserted in one transaction (`INSERT OR REPLACE`, so pages that overlap live upkeep are harmless), `scans` updated, `invalidate: ['media:<chatId>']` at most once per second, and once more on each `scan.state` change (start, finish), so the index bar hides. With `newest_id` defined by messages walked, that invalidation cannot restart the scan.
 - `scans.total` = sum of `getChatMessageCount({ chat_id, filter, return_local: false })` at scan start over `searchMessagesFilterPhoto`, `Video`, `Document`, `Audio`, `Animation`, `VoiceNote`, `VideoNote` (7 calls; TDLib rejects `searchMessagesFilterEmpty` here). Any failed call → `NULL`. The counts are approximate (TDLib says so) and include stickers sent as documents, so the bar says "about".
 - `scan.indexed` = `SELECT COUNT(*) FROM media WHERE chat_id = ?`, clamped to `total`. `scan.state` = `scanning` while this chat's scan runs, `done` when `complete = 1` and the top-up is current, else `idle` (also for a chat in `failed`, below).
-- Flood waits sleep and continue. A scan stops when the client leaves `ready`. A page that fails with any other error while the client is still `ready` ends the scan (logged at warn) and adds the chat to an in-memory `failed` set, cleared together with `current` (below). `chats.media` does not start a scan for a chat in `failed`, so a chat that keeps failing (for example a channel that became private while selected) is not rescanned on every refetch the finish invalidation causes; it gets one new try after the next reconnect or restart. `// ponytail: a failed scan shows as idle with no reason in the UI; upgrade: scan.state 'failed' with the error text`.
-- Live upkeep: `updateNewMessage` in a chat that has a `scans` row inserts the media row (when the message has media) and, for any content, sets `newest_id = max(newest_id, message.id)`, but only for chats in the in-memory `current` set: chats whose top-up finished since the connection was last `ready`. `current` is cleared (together with `failed`) whenever `updateConnectionState` leaves `ready`, so after a restart or an outage (when TDLib may skip `updateNewMessage` for a gap) the next `chats.media` call runs one top-up over the gap instead of jumping past it. `updateDeleteMessages` with `is_permanent && !from_cache` deletes rows (TDLib cache evictions are ignored, a FileGram lesson). Edits are not tracked (`ponytail:` comment; upgrade path: handle `updateMessageContent`).
+- Flood waits sleep and continue. A scan stops when the client leaves `ready`. A page that fails with any other error while the client is still `ready` ends the scan (logged at warn) and adds the chat to an in-memory `failed` set, cleared whenever the connection enters `ready` (below). `chats.media` does not start a scan for a chat in `failed`, so a chat that keeps failing (for example a channel that became private while selected) is not rescanned on every refetch the finish invalidation causes; it gets one new try after the next reconnect or restart. `// ponytail: a failed scan shows as idle with no reason in the UI; upgrade: scan.state 'failed' with the error text`.
+- Live upkeep: `updateNewMessage` in a chat that has a `scans` row inserts the media row (when the message has media) and, for any content, sets `newest_id = max(newest_id, message.id)`, but only for chats in the in-memory `current` set: chats whose top-up finished since the connection was last `ready`. `current` is cleared whenever `updateConnectionState` leaves `ready`; `failed` is cleared whenever it enters `ready` (clearing it on leaving would let a scan that fails while offline restart in a loop, and would keep a chat that failed during an outage out until the next one). Because `current` is cleared, after a restart or an outage (when TDLib may skip `updateNewMessage` for a gap) the next `chats.media` call runs one top-up over the gap instead of jumping past it. `updateDeleteMessages` with `is_permanent && !from_cache` deletes rows (TDLib cache evictions are ignored, a FileGram lesson). Edits are not tracked (`ponytail:` comment; upgrade path: handle `updateMessageContent`).
 
 ### Link resolution
 
@@ -623,7 +627,7 @@ TDLib parses links: `getInternalLinkType(link)` after normalizing bare `@name` o
    ```ts
    for (const job of activeUploads) job.files.forEach((f, index) => { if (f.pendingId && !f.messageId) route.set(f.pendingId, { jobId: job.id, index }) })
    ```
-   On `ready`, each still-unsettled pending id gets `getMessage`: `sendingStatePending` → keep waiting; `sendingStateFailed` → delete it and settle the file as failed; gone → settled as failed. Both failures carry "Interrupted. Check the chat before retrying" (not retryable, to avoid duplicate posts: a message that vanished may have been sent before the crash).
+   On `ready`, each still-unsettled pending id gets `getMessage`: `sendingStatePending` → keep waiting; `sendingStateFailed` → delete it and settle the file as failed; gone → settled as failed. Both failures carry "Interrupted. Check the chat before retrying" (not retryable, to avoid duplicate posts: a message that vanished may have been sent before the crash). `// ponytail: an upload TDLib resumes after a crash has no live state, so it shows no progress and holds no slot until it settles; upgrade: give it live state from getMessage (extractMedia(m).file.id into inFlight)`.
 
    On the same `ready`, every `active` upload with no live state and no `pendingId` left settles at once through step 4's job-level rule, with no TDLib call: all files have `messageId` → `completed`; otherwise `settleUpload(job)` and fail "Interrupted. Check the chat before retrying" (not retryable, the same rule as a vanished pending id, because TDLib may have accepted a send whose id was never persisted). This covers a crash or auth change during step 2's copy, between `sendMessage` returning and `files` being persisted, and between the last file settling and the job update; without it the row would stay "Uploading" with no live state. A start checks that its live state still exists right before `sendMessage` (leaving `ready` drops it), so a job settled here is never also sent by the start it interrupted.
 
@@ -832,7 +836,7 @@ Review 3 (CHANGES_REQUESTED, 0 HIGH, 6 MEDIUM, 15 NIT; `docs/.design-review.md` 
 
 ## Design review 4: responses
 
-Review: `docs/.design-review.md` (CHANGES_REQUESTED, 0 HIGH, 2 MEDIUM, 2 NIT). All 4 findings are addressed; none backlogged or ignored. The one new deferral is a `ponytail:` note, also listed in PROGRESS.
+Review 4 (CHANGES_REQUESTED, 0 HIGH, 2 MEDIUM, 2 NIT; `docs/.design-review.md` now holds review 5, APPROVED with 3 NITs, applied in the planning commit). All 4 findings are addressed; none backlogged or ignored. The one new deferral is a `ponytail:` note, also listed in PROGRESS.
 
 | # | Response |
 |---|----------|
