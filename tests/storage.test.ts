@@ -6,7 +6,7 @@ import { after, test } from 'node:test'
 import { pathToFileURL } from 'node:url'
 import { type DB, downloadStates, openDb } from '../core/db.ts'
 import {
-  checkDownloadRoot, dirSize, libraryFile, libraryMissing, libType, log, openLog, pageKey, resolvePaths, scanLibrary, storageReport, trash,
+  checkDownloadRoot, dirSize, libraryFile, libraryMissing, libType, log, openLog, pageKey, realLocation, resolvePaths, scanLibrary, storageReport, trash,
 } from '../core/storage.ts'
 
 const env = { LOCALAPPDATA: 'C:\\Users\\u\\AppData\\Local' }
@@ -98,6 +98,16 @@ test('checkDownloadRoot: accepts D:\\Media and Downloads\\TeleFlow, normalized',
   assert.equal(checkDownloadRoot('D:/Media/TG/', lists), 'D:\\Media\\TG')
 })
 
+test('realLocation: follows junctions, also below them for folders that do not exist yet', async () => {
+  const target = tree({ 'x.txt': 'x' })
+  const base = tree({})
+  fs.symlinkSync(target, path.join(base, 'link'), 'junction')
+  const real = fs.realpathSync.native(target) // %TEMP% can be an 8.3 short path; the native realpath expands it
+  assert.equal(await realLocation(path.join(base, 'link')), real)
+  assert.equal(await realLocation(path.join(base, 'link', 'New', 'Sub')), path.join(real, 'New', 'Sub'))
+  assert.equal(await realLocation(path.join(base, 'plain')), path.join(fs.realpathSync.native(base), 'plain'))
+})
+
 test('libType: extension mapping, case-insensitive; everything else is a document', () => {
   const cases = { 'a.TS': 'video', 'b.3gp': 'video', 'c.heic': 'image', 'd.opus': 'audio', 'e.oga': 'audio', 'f.bz2': 'archive', 'g.docx': 'document', h: 'document' }
   for (const [name, type] of Object.entries(cases)) assert.equal(libType(name), type, name)
@@ -178,4 +188,14 @@ test('dirSize and storageReport: sizes by area and library type, injected Chromi
   assert.deepEqual(r.library, { video: 4, image: 0, audio: 0, document: 0, archive: 2, files: 2, total: 6 })
   assert.deepEqual(r.cache, { tdlib: 10, thumbs: 5, tmp: 3, chromium: 7, total: 25 })
   assert.ok(r.appData > 0)
+})
+
+test('storageReport: a download root on a missing drive reports the drive as 0 / 0; cache and app data still answer', async () => {
+  const home = tree({ 'thumbs\\1.jpg': '12345' })
+  const paths = resolvePaths({ env: { TELEFLOW_HOME: home }, packaged: true, appDir: repo })
+  const letter = [...'QRSTUVWXYZ'].find((l) => !fs.existsSync(`${l}:\\`))
+  assert.ok(letter, 'needs one unused drive letter')
+  const r = await storageReport(`${letter}:\\Media`, paths, async () => 7)
+  assert.deepEqual(r.drive, { root: `${letter}:\\`, total: 0, free: 0 })
+  assert.deepEqual([r.library.files, r.library.total, r.cache.thumbs, r.cache.total], [0, 0, 5, 12])
 })

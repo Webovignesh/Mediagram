@@ -1,0 +1,60 @@
+{
+  "verdict": "CHANGES_REQUESTED",
+  "findings": [
+    {
+      "id": 1,
+      "severity": "MEDIUM",
+      "blocking": true,
+      "confidence": "confirmed",
+      "title": "Stateful telegram.ts has no runnable check",
+      "detail": "Only the pure helpers in core/shapes.ts are tested. core/telegram.ts has no test for any of these: onClosed (delete tdlib\\db only after LoggingOut, restart with the same credentials), rejectCredentials (from the error event and from setAuthenticationPhoneNumber), the invoke 503 gate and onReady's ready transition, chatList() membership and order, messages() paging and `more`, or the logout() 15 s local fallback. The changelog marks all of them 'Not verified (no Telegram account)'. The session-deletion branch protects user data, and Ponytail requires a runnable check for non-trivial branches and loops. Testing needs no production seam: tdl exports createClient as a plain writable property (node_modules/tdl/dist/index.js:44), and telegram.ts calls tdl.createClient(...).",
+      "action": "Add tests/telegram.test.ts: assign tdl.createClient a fake EventEmitter client (a table-driven invoke, and a close() that emits 'close'), then drive update events and assert on authState(), chatList(), messages(), and whether tdlib\\db exists under a mkdtemp folder for each branch above."
+    },
+    {
+      "id": 2,
+      "severity": "LOW",
+      "blocking": false,
+      "confidence": "likely",
+      "title": "Chat positions merged instead of replaced",
+      "detail": "The TDLib 1.8.66 types document updateChatLastMessage.positions and updateChatDraftMessage.positions as 'The new chat positions in the chat lists', and updateChatPosition notes that those updates 'might be sent instead'. TDLib's reference client replaces chat.positions for these two updates. setPositions() in core/telegram.ts only overwrites the lists the vector names. A list TDLib drops by omission therefore keeps its old position, and chatList() keeps listing and sorting the chat by it until restart.",
+      "action": "Use `c.positions = u.positions` for updateChatLastMessage and updateChatDraftMessage, keep setPositions for updateChatPosition, and cover it in the test from finding 1."
+    },
+    {
+      "id": 3,
+      "severity": "LOW",
+      "blocking": false,
+      "confidence": "likely",
+      "title": "start() is not serialized",
+      "detail": "close() sets client = null before it awaits the old client's shutdown (up to 5 s). A second start() inside that window sees no client and creates client B. The first start() then creates client A and overwrites `client` without closing B. B keeps TDLib's lock on tdlib\\db, so A cannot open the database. The trigger is two overlapping auth.credentials calls while a client exists, for example a double-submit after going Back from the phone step.",
+      "action": "In start(), loop `while (client) await close()` after the first close, or chain start and close through one promise."
+    },
+    {
+      "id": 4,
+      "severity": "LOW",
+      "blocking": false,
+      "confidence": "confirmed",
+      "title": "app.storage fails when the download root's drive is gone",
+      "detail": "storageReport() runs fs.promises.statfs(path.parse(root).root) in the same Promise.all as the cache and app-data sizes. With the root on a removable or disconnected drive, app.storage is a 500. Settings then loses the drive bar, the App cache size, and the sizes on the Clear cache / Clear app data buttons.",
+      "action": "Catch the statfs failure and report the drive as unavailable (for example total and free 0) so the rest of the report still answers."
+    },
+    {
+      "id": 5,
+      "severity": "NIT",
+      "blocking": false,
+      "confidence": "confirmed",
+      "title": "shell.openPath errors surface as generic 500s",
+      "detail": "electron/ipc.ts `open()` throws `new Error(error)` with the shell.openPath text for library.open and app.openPath. handleCall logs that as a 500 and shows 'Something went wrong. Details are in the log.' for common cases such as a file type with no associated app.",
+      "action": "Throw fail(409, <readable sentence or the shell text>) instead."
+    },
+    {
+      "id": 6,
+      "severity": "NIT",
+      "blocking": false,
+      "confidence": "confirmed",
+      "title": "Download root check ignores junctions and symlinks",
+      "detail": "checkDownloadRoot uses only path.resolve. A root such as D:\\Media that is a junction into Documents or AppData passes both the sealed and guarded lists, and the Library scan reads through it. Clear All Data with 'Also delete downloaded files' (item 3.6) deletes every file the Library lists.",
+      "action": "In settings.set, after mkdir, re-run checkDownloadRoot on fs.promises.realpath(root). Or have 3.6 refuse to delete when the root's real path differs from the stored path."
+    }
+  ],
+  "reviewDoc": "c:\\Users\\REBEL DUKER\\Downloads\\tele\\.worktrees\\teleflow\\docs/.phase2-review.md"
+}

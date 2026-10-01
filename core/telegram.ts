@@ -62,8 +62,17 @@ export const invoke: Td.Invoke = (req) => {
   return call(req)
 }
 
-/** Creates the client (closing any previous one); tdl answers WaitTdlibParameters with these options. */
-export async function start(c: Creds) {
+let starting = Promise.resolve()
+/** Creates the client, closing any previous one. Calls run one after another, so overlapping starts (a double submit)
+ *  never leave a second client locking tdlib\db, and the last credentials win. */
+export function start(c: Creds) {
+  const run = starting.then(() => launch(c))
+  starting = run.catch(() => {})
+  return run
+}
+
+// tdl answers WaitTdlibParameters with these options.
+async function launch(c: Creds) {
   await close()
   creds = c
   credError = undefined
@@ -152,11 +161,10 @@ export async function loadLists() {
 }
 
 const sameList = (a: Td.ChatList, b: Td.ChatList) => a._ === b._ && (a._ !== 'chatListFolder' || a.chat_folder_id === (b as Td.chatListFolder).chat_folder_id)
-function setPositions(c: Td.chat, positions: Td.chatPosition[]) {
-  for (const p of positions) {
-    c.positions = c.positions.filter((x) => !sameList(x.list, p.list))
-    if (p.order !== '0') c.positions.push(p)
-  }
+// updateChatPosition changes one list (order 0 = removed from it); last-message and draft updates carry the full list.
+function setPosition(c: Td.chat, p: Td.chatPosition) {
+  c.positions = c.positions.filter((x) => !sameList(x.list, p.list))
+  if (p.order !== '0') c.positions.push(p)
 }
 function patch(id: number, fn: (c: Td.chat) => void) {
   const c = chats.get(id)
@@ -187,9 +195,9 @@ function onTdUpdate(cl: Client, u: Td.Update) {
     case 'updateChatTitle': patch(u.chat_id, (c) => { c.title = u.title }); break
     case 'updateChatPhoto': patch(u.chat_id, (c) => { c.photo = u.photo }); break
     case 'updateChatPermissions': patch(u.chat_id, (c) => { c.permissions = u.permissions }); break
-    case 'updateChatPosition': patch(u.chat_id, (c) => setPositions(c, [u.position])); break
-    case 'updateChatLastMessage': patch(u.chat_id, (c) => { c.last_message = u.last_message; setPositions(c, u.positions) }); break
-    case 'updateChatDraftMessage': patch(u.chat_id, (c) => setPositions(c, u.positions)); break // positions only
+    case 'updateChatPosition': patch(u.chat_id, (c) => setPosition(c, u.position)); break
+    case 'updateChatLastMessage': patch(u.chat_id, (c) => { c.last_message = u.last_message; c.positions = u.positions }); break
+    case 'updateChatDraftMessage': patch(u.chat_id, (c) => { c.positions = u.positions }); break // positions only
     case 'updateChatAddedToList': patch(u.chat_id, (c) => { c.chat_lists = [...c.chat_lists.filter((l) => !sameList(l, u.chat_list)), u.chat_list] }); break
     case 'updateChatRemovedFromList': patch(u.chat_id, (c) => { c.chat_lists = c.chat_lists.filter((l) => !sameList(l, u.chat_list)) }); break
     case 'updateChatReadInbox': patch(u.chat_id, (c) => { c.unread_count = u.unread_count }); break

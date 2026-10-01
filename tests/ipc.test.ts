@@ -174,6 +174,35 @@ test('settings.set: download root rules, folder creation, login item, and topics
   assert.deepEqual(f.events, [{ type: 'invalidate', topics: ['settings', 'library', 'storage'] }])
 })
 
+test('settings.set: a root whose real location is protected (through a junction) is rejected, and nothing is created', async () => {
+  const f = fixture()
+  const docs = path.join(temp, `Documents${Math.random()}`)
+  for (const d of [docs, f.paths.home]) fs.mkdirSync(d, { recursive: true })
+  f.ctx.roots = { sealed: [fs.realpathSync.native(f.paths.home)], guarded: [fs.realpathSync.native(docs)] } // main's lists are real paths
+  const links = path.join(temp, `links${Math.random()}`)
+  fs.mkdirSync(links)
+  fs.symlinkSync(docs, path.join(links, 'docs'), 'junction')
+  fs.symlinkSync(f.paths.home, path.join(links, 'home'), 'junction')
+  const set = (downloadRoot: string) => f.methods['settings.set'].run(f.methods['settings.set'].validate({ downloadRoot }))
+  await assert.rejects(set(path.join(links, 'docs')), { status: 400, message: /subfolder/ })
+  await assert.rejects(set(path.join(links, 'home', 'media')), { status: 400, message: /system or app data/ })
+  assert.ok(!fs.existsSync(path.join(f.paths.home, 'media')))
+  assert.deepEqual(f.events, [])
+  const ok = path.join(links, 'docs', 'TeleFlow') // a subfolder of a known folder is fine; the picked path is stored
+  assert.equal((await set(ok)).downloadRoot, ok)
+  assert.ok(fs.statSync(path.join(docs, 'TeleFlow')).isDirectory())
+})
+
+test('library.open and app.openPath: a shell refusal is a readable 409, not a 500', async () => {
+  const f = fixture()
+  const refusal = 'No application is associated with the specified file for this operation.'
+  f.ctx.native.openPath = async () => refusal
+  fs.mkdirSync(path.join(f.root, 'Chat'), { recursive: true })
+  fs.writeFileSync(path.join(f.root, 'Chat', 'a.fixture'), 'x')
+  await assert.rejects(f.methods['library.open'].run({ path: 'Chat\\a.fixture' }), { status: 409, message: `Windows couldn't open a.fixture: ${refusal}` })
+  await assert.rejects(f.methods['app.openPath'].run({ target: 'downloads' }), { status: 409, message: `Windows couldn't open ${path.basename(f.root)}: ${refusal}` })
+})
+
 test('protocolFile: thumb ids, saved thumbnails, and images confined to the download root', async () => {
   const f = fixture({ thumbFile: async (remoteId: string) => `X:\\cache\\${remoteId}.jpg` } as Partial<Ctx['tg']>)
   fs.mkdirSync(f.paths.thumbs, { recursive: true })

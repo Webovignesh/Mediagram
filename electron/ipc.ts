@@ -5,7 +5,7 @@ import path from 'node:path'
 import { type AppError, checkSettings, type DB, type DownloadState, downloadStates, type Emit, fail, type MediaItem, putSetting, setSettings, type StoredSettings } from '../core/db.ts'
 import {
   checkDownloadRoot, dirSize, library, libraryCached, libraryFile, libraryItems, libraryList, libraryMissing, libType, log,
-  pageKey, type Paths, type RootLists, storageReport, trash, within, withPreview,
+  pageKey, type Paths, realLocation, type RootLists, storageReport, trash, within, withPreview,
 } from '../core/storage.ts'
 import type * as telegram from '../core/telegram.ts'
 import { type Chat, isTelegramLink, linkKind, type Media, type Message } from '../core/shapes.ts'
@@ -101,7 +101,10 @@ export function createMethods(ctx: Ctx) {
   const invalidate = (...topics: string[]) => ctx.emit({ type: 'invalidate', topics })
   const root = () => ctx.settings().downloadRoot
   const settings = () => ({ ...ctx.settings(), startWithSystem: ctx.native.loginItem.get() })
-  const open = async (target: string) => { const error = await ctx.native.openPath(target); if (error) throw new Error(error) }
+  const open = async (target: string) => { // shell.openPath fails for expected reasons (no app for the file type)
+    const error = await ctx.native.openPath(target)
+    if (error) throw fail(409, `Windows couldn't open ${path.basename(target)}: ${error}`)
+  }
 
   return {
     'app.info': method(shape({}), () => ({
@@ -171,7 +174,10 @@ export function createMethods(ctx: Ctx) {
     'settings.set': method(checkSettings, async (patch) => {
       const before = ctx.settings()
       const next = { ...patch }
-      if (next.downloadRoot !== undefined) next.downloadRoot = checkDownloadRoot(next.downloadRoot, ctx.roots)
+      if (next.downloadRoot !== undefined) {
+        next.downloadRoot = checkDownloadRoot(next.downloadRoot, ctx.roots)
+        checkDownloadRoot(await realLocation(next.downloadRoot), ctx.roots) // the stored path stays the one picked
+      }
       if (next.defaultUploadChat != null && !tg.chat(next.defaultUploadChat)?.canPost) throw fail(400, 'defaultUploadChat must be a chat you can post to')
       if (next.downloadRoot !== undefined) {
         await fs.promises.mkdir(next.downloadRoot, { recursive: true }).catch(() => { throw fail(400, "TeleFlow couldn't create that folder. Pick another one.") })

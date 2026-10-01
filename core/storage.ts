@@ -65,6 +65,15 @@ export function checkDownloadRoot(p: string, lists: RootLists) {
   return root
 }
 
+/** Where `p` really is, following junctions and symlinks; a part that does not exist yet is joined to its nearest
+ *  existing parent's real path. checkDownloadRoot runs on this too, so a junction cannot lead into a protected folder. */
+export async function realLocation(p: string): Promise<string> {
+  const real = await fs.promises.realpath(p).catch(() => null)
+  if (real) return real
+  const parent = path.dirname(p)
+  return parent === p ? p : path.join(await realLocation(parent), path.basename(p))
+}
+
 // ---- Library ----
 
 export type LibType = 'video' | 'image' | 'audio' | 'document' | 'archive'
@@ -214,13 +223,14 @@ export type StorageReport = {
 export async function storageReport(root: string, paths: Paths, cacheSize: () => Promise<number>): Promise<StorageReport> {
   const drive = path.parse(root).root
   const [disk, entries, tdlib, thumbs, tmp, chromium, appData] = await Promise.all([
-    fs.promises.statfs(drive), library(root), dirSize(path.join(paths.tdlib, 'files')), dirSize(paths.thumbs), dirSize(paths.tmp), cacheSize(),
+    fs.promises.statfs(drive).catch(() => null), // an unplugged or unmapped drive reports 0 / 0; the rest still answers
+    library(root), dirSize(path.join(paths.tdlib, 'files')), dirSize(paths.thumbs), dirSize(paths.tmp), cacheSize(),
     statAll(['', '-wal', '-shm'].map((s) => paths.db + s)).then((s) => s.reduce((sum, [, st]) => sum + st.size, 0)),
   ])
   const lib = { video: 0, image: 0, audio: 0, document: 0, archive: 0, files: entries.length, total: 0 }
   for (const e of entries) { lib[e.type] += e.size; lib.total += e.size }
   return {
-    drive: { root: drive, total: disk.blocks * disk.bsize, free: disk.bavail * disk.bsize },
+    drive: { root: drive, total: disk ? disk.blocks * disk.bsize : 0, free: disk ? disk.bavail * disk.bsize : 0 },
     library: lib, cache: { tdlib, thumbs, tmp, chromium, total: tdlib + thumbs + tmp + chromium }, appData,
   }
 }
