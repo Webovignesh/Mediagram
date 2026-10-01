@@ -47,7 +47,7 @@ TeleFlow is an installable Windows desktop app for downloading, uploading, and o
 - Pick a destination the user can post to: owned/admin channels, groups where sending files is allowed, Saved Messages.
 - Add files with the file picker or drag and drop, optional caption.
 - Options: send photos/videos as albums (up to 10 per album), keep original file names.
-- Persistent upload queue with progress, pause (restarts that file's upload on resume), cancel, retry.
+- Persistent upload queue with progress, pause (restarts that file's upload on resume), cancel, retry. When part of an album fails, the files already posted are recorded as done and leave the job, so Retry never posts a file twice.
 
 ### 5. Queue
 - One queue for downloads and uploads. Tabs: Downloads, Uploads, Completed, Failed.
@@ -84,7 +84,8 @@ Borrowed from the reference repo and lessons in this repo's git history:
 - Interrupted downloads (quit, crash, logout) go back to the queue in their old position on the next start.
 - Stall detection (only while connected): no progress for the stall timeout re-asserts the download; three stalls in a row restart it. Each restart counts as an attempt; once the retry attempts are used up, the job fails with "Download keeps stalling".
 - Skip existing: a file with the same name and size at the target path is marked completed without downloading.
-- Naming: original file name; untitled media becomes `Video_<msgId>.mp4`, `Photo_<msgId>.jpg`, and so on, where `<msgId>` is the id shown in `t.me` links; optional `YYYY-MM-DD_` prefix from the message date; collisions get ` (2)`, ` (3)`.
+- Naming: original file name; untitled media becomes `Video_<msgId>.mp4`, `Photo_<msgId>.jpg`, and so on, where `<msgId>` is the id shown in `t.me` links; optional `YYYY-MM-DD_` prefix from the message date; collisions get ` (2)`, ` (3)`, also between downloads finishing at the same moment, so no download ever overwrites another file.
+- Downloaded files are marked as coming from the internet (Mark-of-the-Web), so Windows SmartScreen and Office Protected View apply when they are opened.
 - Folder per chat from a template with `{chat}` and `{chat_id}` placeholders.
 - Auto-retry failed jobs (setting): backoff, capped attempts, only for retryable errors.
 - Speed shown with EMA smoothing.
@@ -92,8 +93,8 @@ Borrowed from the reference repo and lessons in this repo's git history:
 ## Storage and FileGram import
 
 - App data: `%LOCALAPPDATA%\TeleFlow\` (TDLib session and cache, SQLite, thumbnails, logs, temp files, Chromium data). `TELEFLOW_HOME` overrides it for development and tests.
-- Download root: `%USERPROFILE%\Downloads\TeleFlow` by default, configurable. It may not be inside the install folder or the app data folder, and may not be a drive root, the user folder, or a known folder (Desktop, Documents, Downloads, Pictures, Videos, Music) itself or an ancestor of one, because Clear All Data can delete every file under it. Subfolders such as `Downloads\TeleFlow` are fine.
-- Import from FileGram (never automatic, never a hardcoded path): the user picks their FileGram folder. TeleFlow shows what it found, then, with FileGram closed:
+- Download root: `%USERPROFILE%\Downloads\TeleFlow` by default, configurable. Clear All Data can delete every file under it, so it may not be a drive root; may not be, sit inside, or contain the app data folder, the install folder, `AppData`, or the Windows system folders (Windows, Program Files, ProgramData); and may not be the user folder or a known folder (Desktop, Documents, Downloads, Pictures, Videos, Music) itself or an ancestor of one. Subfolders such as `Downloads\TeleFlow` and other folders such as `D:\Media` are fine.
+- Import from FileGram (never automatic, never a hardcoded path): the user picks their FileGram folder, which TeleFlow recognizes by `.td_database`, `.filegram_state`, or FileGram's `package.json` (any other folder is refused and left untouched). TeleFlow shows what it found, then, with FileGram closed:
   - moves the `.td_database` session into app data so the login carries over (skipped when TeleFlow is already logged in),
   - imports the API ID/hash (`.env`, then `config.json`) and the FileGram download folder setting into SQLite (those files are never written),
   - moves a download folder that sits inside the FileGram folder into the download root; a folder outside it becomes the download root as is, unless it breaks the download root rules (then the current root stays and the dialog says why).

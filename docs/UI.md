@@ -45,8 +45,8 @@ Dark navy, glassy panels, thin blue-tinted borders, soft blue glow on active ele
 
 | Token | Value | Use |
 |-------|-------|-----|
-| `bg` | `#060b18` with a subtle radial blue glow near the top | App background |
-| `sidebar` | `#070d1d`, right border `border` | Sidebar, title bar overlay color |
+| `bg` | `#060b18` with a subtle radial blue glow near the top | App background, top bar, title bar overlay color |
+| `sidebar` | `#070d1d`, right border `border` | Sidebar |
 | `panel` | `#0c1530` at ~85% opacity | Panels |
 | `tile` | `#0f1a38` | Stat tiles and rows inside panels |
 | `border` | `rgba(96,140,255,0.14)` | Panel, tile, input borders |
@@ -94,7 +94,7 @@ Dark navy, glassy panels, thin blue-tinted borders, soft blue glow on active ele
 
 - Electron window with the native title bar hidden; the native min/max/close buttons are drawn by Windows over the top-right of the top bar (`titleBarOverlay`). The top bar is the drag region (`app-region: drag`); its inputs and buttons are `no-drag`, and it reserves the overlay width with `env(titlebar-area-width)`.
 - Sidebar 170px fixed: logo (blue paper-plane mark, "TeleFlow" bold, tagline "Download. Upload. Organize." 11px `muted`), then nav. Queue badge = open jobs (`<live.counts.*.queued + active + paused>`), hidden at 0.
-- Top bar: global search input (left, max ~670px): "Search channels, chats, files, or paste a Telegram link…". Results popover: Chats (`<chat.title>`, `<chat.username>`), Downloaded files (`<item.name>`, `<item.chat>`), and, when the text is a Telegram link, "Download media from this link" and "Open chat". Right side: user menu (avatar from `<me.photo>` or initial of `<me.firstName>`, `<me.name>`, chevron). Menu: account (`<me.name>`, `<me.phone>`, `@<me.username>`), Settings, Log out.
+- Top bar: 40px tall (matches the `titleBarOverlay` height), background `bg`. Global search input (left, max ~670px): "Search channels, chats, files, or paste a Telegram link…". Results popover: Chats (`<chat.title>`, `<chat.username>`), Downloaded files (`<item.name>`, `<item.chat>`), and, when the text is a Telegram link, "Download media from this link" and "Open chat". Right side: user menu (avatar from `<me.photo>` or initial of `<me.firstName>`, `<me.name>`, chevron). Menu: account (`<me.name>`, `<me.phone>`, `@<me.username>`), Settings, Log out.
 - Content: page title + subtitle, optional page action top-right, then a grid. Pages with a side column use main + 290px right column.
 - Routes: `#/overview` (default), `#/downloads?chat=<id>&view=files|chat` (`view` defaults to `files`), `#/uploads?chat=<id>`, `#/queue?tab=downloads|uploads|completed|failed` (default `downloads`), `#/library?q=`, `#/settings?section=<id>`. Any auth step other than `ready` shows Login instead.
 - Target 1440×900; must stay usable at 1280×720. Minimum window 1024×640. Below 1280px wide, the right column moves under the main area.
@@ -130,6 +130,7 @@ Shared primitives live in `web/src/ui.tsx`. Components used by one page stay in 
 | Export | What it is | Used by |
 |--------|------------|---------|
 | `fmtBytes`, `fmtSpeed`, `fmtEta`, `fmtAgo`, `fmtDuration`, `fmtCount`, `fmtDate` | `Intl.NumberFormat` / `RelativeTimeFormat` / `DateTimeFormat` formatters | All pages |
+| `typeLabel` | One map from media/history `type` to words: `video_note` → "video message", `voice` → "voice message", `animation` → "GIF", `album` → "album", others as is | Recent Activity, Chat View |
 | `Panel` | Glass panel; optional title, icon, subtitle, action slot | All pages |
 | `IconTile` | 40px tinted icon tile (tone) | `Stat`, Recent Activity, cards |
 | `Stat` | Icon tile + label + value (+ split line); renders a skeleton while `value` is undefined | Overview KPIs, side panels, Library strip, Queue Overview |
@@ -168,7 +169,7 @@ Layout (mockup):
 - Row of 3 panels:
   - **Transfer Activity**, "Downloads and uploads over time", range select. Area chart, Downloads (blue) and Uploads (purple), gradient fills, y gridlines, x labels (24h: every 3 hours; 7d: weekdays; 30d: every 5 days). Hover/focus shows a vertical guide, dots, and a tooltip ("`<bucket label>` / Downloads `<n>` / Uploads `<n>`"). Legend below.
   - **Channel Activity**, "Top channels by transfer volume", range select. Rows: avatar, `<top.title>`, horizontal bar (alternating blue/purple, length relative to the top row), "`<top.count>` files".
-  - **Recent Activity** with "View All". Rows: direction tile (download blue / upload purple), thumbnail, text ("Downloaded `<type>` from `<chatTitle>`", "Uploaded `<type>` to `<chatTitle>`", "Failed to download `<name>`", "Failed to upload `<name>`"), time ago, size right, green check circle or red x.
+  - **Recent Activity** with "View All". Rows: direction tile (download blue / upload purple), thumbnail, text ("Downloaded `typeLabel(<type>)` from `<chatTitle>`", "Uploaded `typeLabel(<type>)` to `<chatTitle>`", "Failed to download `<name>`", "Failed to upload `<name>`"), time ago, size right, green check circle or red x.
 - KPI and chart definitions (completed history rows, local-day and hour buckets) are in ARCHITECTURE.md > Methods notes.
 - **Current Jobs** panel, "Active downloads and uploads", filter select. Columns: #, Source (avatar, `<job.chatTitle>`, `@<job.chatUsername>`), Name, Size, Direction (↓ Download blue / ↑ Upload purple), Progress bar + %, Status pill, ETA, Actions (round pause/play button + "…" menu). Footer link "View queue".
 
@@ -215,12 +216,12 @@ Layout (mockup):
   - Filter row(s): Media Type, File Type (options = `<media.exts>`), Duration, Size, Status, Sort By, "Reset" (rotate icon).
   - Table: checkbox, #, Thumbnail, File Name, Type chip, Size, Duration, Status pill. A selection bar appears when rows are checked: "`<n>` selected • Download selected • Download all `<media.total>` matching" (the count makes the scope visible while indexing is still running).
   - Pagination at the bottom.
-  - Chat View: message list with `<message.sender>`, time, `<message.text>`, media card (type, `<media.size>`, Download button, or progress/status, or Show in folder when downloaded). "Load older messages" at the end while `chats.messages` returns `more: true`; at the 1000-message cap it is replaced by "Older media are in Files View" (switches the view).
+  - Chat View: message list with `<message.sender>`, time, `<message.text>`, media card (`typeLabel(<media.type>)`, `<media.size>`, Download button, or progress/status, or Show in folder when downloaded). "Load older messages" at the end while `chats.messages` returns `more: true`; when `limit === 1000 && more` it is replaced by "Older media are in Files View" (switches the view).
 - **Right column**:
   - **Download Overview** (bar-chart icon): 2×2 tiles: Speed (lightning, cyan), Active (green download-circle), Remaining (purple clock, pink value), Total Files (doc icon).
   - **Transfer Queue** (doc icon): `TransferCard`s with thumbnail 44px, `<job.name>`, status pill, progress + %, detail line by status: active "`<done>` / `<size>` • `<eta>` left", finalizing "`<size>` • Finalizing", paused "`<done>` / `<size>` • Paused", queued "`<done>` / `<size>` • Waiting to start", flood wait "Waiting for Telegram • `<seconds>`s". Shows the first 5 open jobs; link "View all".
 
-Data needs: `chats.list` (`chats`), `chats.media({ chatId, ...filters, page })` (`media:<chatId>`), `chats.messages({ chatId, limit })` (`messages:<chatId>`), `jobs.list({ kind: 'download', status: 'open', pageSize: 5 })` (`jobs`), `stats.overview` (`history`, for Total Files), `stats.live`. The engine emits the chat's `media:` and `messages:` topics on every job change in that chat, so both views refetch only for their own chat; row and card progress comes from `live.active` by `jobId`.
+Data needs: `chats.list` (`chats`), `chats.media({ chatId, ...filters, page })` (`media:<chatId>`), `chats.messages({ chatId, limit })` (`messages:<chatId>`), `jobs.list({ kind: 'download', status: 'open', pageSize: 5 })` (`jobs`), `stats.overview` (`history`, for Total Files), `stats.live`. The engine emits the chat's `media:` and `messages:` topics on every download job insert, status change, finalize, or delete in that chat and on trash (ARCHITECTURE > Events), so both views refetch only for their own chat, including right after a cancel from the Transfer Queue card; row and card progress comes from `live.active` by `jobId`.
 
 ### Control inventory
 
@@ -247,7 +248,7 @@ Data needs: `chats.list` (`chats`), `chats.media({ chatId, ...filters, page })` 
 | Pagination | Changes page | `chats.media({ ..., page })` |
 | Chat View: Download (media card) | Queues that message | `downloads.add({ items: [{ chatId, messageId }] })` |
 | Chat View: Show in folder | Reveals the file | `library.reveal({ path })` |
-| Load older messages | Loads 30 more older messages (scroll position kept) | `chats.messages({ chatId, limit: limit + 30 })` |
+| Load older messages | Loads up to 30 more older messages (scroll position kept) | `chats.messages({ chatId, limit: Math.min(limit + 30, 1000) })` |
 | Older media are in Files View | Switches to Files View | `#/downloads?chat=<id>&view=files` |
 | Transfer Queue card actions | Pause/resume, cancel | `jobs.action(...)` |
 | View all | Opens Queue | `#/queue?tab=downloads` |
@@ -279,9 +280,9 @@ Layout (mockup):
 - Table: checkbox, # (rank in the current list: open jobs by queue position, finished ones newest first), Name (thumbnail + `<job.name>`; Completed/Failed tabs add a direction icon), Size, Progress (bar + % + "`<done>` / `<size>`" under it), ETA ("`<eta>`", green "Completed", `muted` "Queued", amber "Paused" pill, red "Failed: `<job.error>`", "Retrying in `<retryAt>`"). Row hover or focus reveals actions.
 - Footer: "Showing `<from>`–`<to>` of `<total>` items" left, pagination right.
 - Right column:
-  - **Queue Overview**: 2×2 tiles: Total (blue doc), Downloading/Uploading/Active (green ↓ circle), Queued (purple clock), Paused (amber pause circle). Kind tabs count that kind; Completed/Failed tabs count both kinds and label the second tile "Active".
-  - **Live Activity**: blue sparkline of total speed (`<live.history>`, last 60 s), big cyan `fmtSpeed(<live.speed.download + live.speed.upload>)`, caption "Total transfer speed" (amber "Telegram asked to wait · resumes in `<seconds>`s" during a flood wait), legend with colored squares: "`<active>` Active", "`<queued>` Queued", "`<paused>` Paused".
-  - **Queue Actions**: 2×2 tinted buttons: Pause All (blue), Resume All (green), Clear Completed (neutral), Clear All (red, confirm).
+  - **Queue Overview**: 2×2 tiles: Total (blue doc), Downloading/Uploading/Active (green ↓ circle), Queued (purple clock), Paused (amber pause circle). Kind tabs count that kind; Completed/Failed tabs count both kinds and label the second tile "Active". Total = all job rows of the counted kind(s), every status (sum of `<live.counts[kind].*>`).
+  - **Live Activity**: blue sparkline of total speed (`<live.history>`, last 60 s), big cyan `fmtSpeed(<live.speed.download + live.speed.upload>)`, caption "Total transfer speed" (amber "Telegram asked to wait · resumes in `<seconds>`s" during a flood wait), legend with colored squares: "`<active>` Active", "`<queued>` Queued", "`<paused>` Paused", each summed over both kinds on every tab.
+  - **Queue Actions**: 2×2 tinted buttons: Pause All (blue), Resume All (green), Clear Completed (neutral), Clear All (red, confirm). Clear All's `<n>` = sum of every `<live.counts>` value (all job rows, both kinds).
 
 Data needs: `jobs.list({ kind?, status, q, page })` (`jobs`; kind tabs always pass `status`, `'open'` for All), `stats.live` + `stats` events.
 
@@ -303,7 +304,7 @@ Data needs: `jobs.list({ kind?, status, q, page })` (`jobs`; kind tabs always pa
 | Pause All | All open jobs | `jobs.action({ action: 'pause' })` |
 | Resume All | All paused jobs | `jobs.action({ action: 'resume' })` |
 | Clear Completed | Removes completed rows (history kept) | `jobs.action({ action: 'clear-completed' })` |
-| Clear All | Confirm "Remove all `<n>` jobs? Partial downloads are deleted." | `jobs.action({ action: 'cancel' })` |
+| Clear All | Confirm "Remove all `<n>` jobs? Partial downloads are deleted." (`<n>` = sum of all `<live.counts>`) | `jobs.action({ action: 'cancel' })` |
 
 ### Data bindings
 
@@ -396,7 +397,7 @@ Data needs: `library.list({ q, type, chat, sort, page })` (`library`), `library.
 | Uploads | Defaults and limits | Default destination (select of `canPost` chats + None), Upload as album, Keep original file names, Max concurrent uploads (stepper 1–3) |
 | Telegram | Account, session, import | Account (avatar, `<me.name>`, `@<me.username>`, `<me.phone>`), API ID (`<settings.apiId>`; "API hash saved", never shown), Import from FileGram, Log out |
 | Channels | Chat list | Show archived chats |
-| Queue | Retries and cleanup | Auto-retry failed transfers, Retry attempts (stepper 1–10, disabled when auto-retry is off), Stall timeout (5 / 10 / 30 / 60 s), Clear completed after (Never / 1 / 7 / 30 days) |
+| Queue | Retries and cleanup | Auto-retry failed transfers, Retry attempts (stepper 1–10, always enabled; description "Starts per transfer, including stall restarts"), Stall timeout (5 / 10 / 30 / 60 s), Clear completed after (Never / 1 / 7 / 30 days) |
 | Files & Folders | App data and leftovers | App data folder (`<app.home>` + Open), Logs (Open), Leftover FileGram data (`<leftovers.dir>`, `<leftovers.total>` + Remove; row shown only when leftovers exist) |
 | Notifications | Desktop alerts | Notify when transfers complete, Notify on failures |
 | Privacy & Security | Cache and data | Clear cache (`<storage.cache.total>`), Clear app data (`<storage.appData>`) |
@@ -406,7 +407,7 @@ Language is not shown (English only in v1). Appearance is removed (dark is the o
 
 - Section card: header with icon, title, subtitle; rows of label (bold) + description (`muted`) on the left, control on the right; rows divided by 1px lines. Changes save immediately; success shows a small "Saved" toast, a validation error shows inline under the row and reverts the control.
 - Right column:
-  - **App Status**: status line (green "All systems operational" when signed in and `<auth.connection>` is `ready`; amber "Connecting to Telegram…" while connecting/updating; red "Telegram is offline" when offline; amber "Not signed in" otherwise), Version `<app.version>`, Installed `fmtDate(<app.installedAt>)` (hidden when null), Telegram connection (● + state), Active downloads `<live.counts.download.active>`, Active uploads `<live.counts.upload.active>`.
+  - **App Status**: status line (green "All systems operational" when `<auth.connection>` is `ready`; amber "Connecting to Telegram…" while connecting/updating; red "Telegram is offline" when offline; Settings renders only while signed in, so there is no signed-out state), Version `<app.version>`, Installed `fmtDate(<app.installedAt>)` (hidden when null), Telegram connection (● + state), Active downloads `<live.counts.download.active>`, Active uploads `<live.counts.upload.active>`.
   - **Storage**: indigo progress bar with %, "`<storage.drive.total − storage.drive.free>` of `<storage.drive.total>` used" on `<storage.drive.root>`; breakdown rows with colored squares: Videos (indigo), Images (green), Audio (cyan), Documents (blue), Archives (amber) from `<storage.library.*>`; App cache `<storage.cache.total>` with a "Clear cache" button.
   - **Danger Zone** (red trash icon, "These actions are permanent and cannot be undone."): red-tinted buttons "Clear All Data — Remove settings, history, cache, and your session" (deleting downloaded files is an unchecked option in its confirm) and "Disconnect Telegram — Log out and remove the saved session". Both use a typed confirmation (DELETE / DISCONNECT).
 
@@ -419,7 +420,7 @@ Data needs: `settings.get` (`settings`), `app.info`, `app.storage` (`storage`, r
 | Category nav item | Scrolls to section, updates `section` in URL | – |
 | Start with Windows | Login item on/off | `settings.set({ startWithSystem })` → `app.setLoginItemSettings` |
 | Minimize to tray on close | Close hides to tray | `settings.set({ closeToTray })` |
-| Download folder > Change | Native folder dialog, then save; inline error on 400 (for example "Pick or create a subfolder, for example Downloads\TeleFlow" for the profile or a known folder itself) | `app.pickFolder()` → `settings.set({ downloadRoot })` |
+| Download folder > Change | Native folder dialog, then save; inline error on 400 with the reason from `checkDownloadRoot` (for example "Pick or create a subfolder, for example Downloads\TeleFlow" for the profile or a known folder itself, "TeleFlow can't use a system or app data folder…" for AppData or Program Files) | `app.pickFolder()` → `settings.set({ downloadRoot })` |
 | Download folder > Open | Explorer | `app.openPath({ target: 'downloads' })` |
 | Max concurrent downloads − / + | 1–5 | `settings.set({ maxDownloads })` |
 | Skip existing files / Prefix with date | Toggles | `settings.set({ skipExisting })`, `settings.set({ datePrefix })` |
@@ -431,7 +432,7 @@ Data needs: `settings.get` (`settings`), `app.info`, `app.storage` (`storage`, r
 | Log out (Telegram) | Confirm, then log out; toast "Logged out" (+ Devices hint when `local`) | `auth.logout()` |
 | Show archived chats | Toggle | `settings.set({ showArchived })` |
 | Auto-retry failed transfers | Toggle | `settings.set({ autoRetry })` |
-| Retry attempts − / + | 1–10 | `settings.set({ retryAttempts })` |
+| Retry attempts − / + | 1–10; enabled whether or not auto-retry is on (it also caps stall restarts) | `settings.set({ retryAttempts })` |
 | Stall timeout | Select | `settings.set({ stallSeconds })` |
 | Clear completed after | Select | `settings.set({ clearCompletedDays })` |
 | App data folder > Open / Logs > Open | Explorer | `app.openPath({ target: 'appData' \| 'logs' })` |
@@ -477,7 +478,7 @@ Data needs: `auth.get` + `auth` events (step, phone, via, hint, error, connectio
 |---------|----------|------|
 | Continue (API Keys) | Saves credentials, starts TDLib | `auth.credentials({ apiId, apiHash })` |
 | Get them at my.telegram.org | External browser | `<a href="https://my.telegram.org" target="_blank">` |
-| Import from FileGram | Folder dialog → summary of `<fg.*>` (session, credentials, `<fg.downloadsDir>` + `<fg.downloadsSize>`, and `<fg.downloadsWarning>` in amber when that folder cannot become the download folder) → Import; "Close FileGram first" + Retry on 409; the result's `warning` (if any) stays visible; then "Remove leftover FileGram data (`<leftovers.total>`)" or "Not now" | `app.pickFolder()` → `fileGram.inspect({ dir })` → `fileGram.import({ dir })` → `fileGram.removeLeftovers()` |
+| Import from FileGram | Folder dialog → inline error "This doesn't look like a FileGram folder" on 400 (nothing is changed; Cancel and pick again) → summary of `<fg.*>` (session, credentials, `<fg.downloadsDir>` + `<fg.downloadsSize>`, and `<fg.downloadsWarning>` in amber when that folder cannot become the download folder) → Import; "Close FileGram first" + Retry on 409; the result's `warning` (if any) stays visible; then "Remove leftover FileGram data (`<leftovers.total>`)" or "Not now" | `app.pickFolder()` → `fileGram.inspect({ dir })` → `fileGram.import({ dir })` → `fileGram.removeLeftovers()` |
 | Send code | Submits phone | `auth.phone({ phone })` |
 | Back (Phone) | Shows API Keys step; resubmitting restarts TDLib | – |
 | Sign in (Code) | Submits code | `auth.code({ code })` |

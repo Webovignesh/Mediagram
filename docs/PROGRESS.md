@@ -22,8 +22,9 @@ After every step:
 - [x] Worktree and branch created; docs copied in
 - [x] Design step finalizes API, schema, file layout; docs updated
 - [x] Design review 1 (39 findings) resolved in the docs
+- [x] Design review 2 (25 findings) resolved in the docs
 - [ ] Old FileGram code removed; new `package.json` (exact pins, `dependencies` = `tdl` + `prebuilt-tdlib` only, `allowScripts` for `electron@44.5.1`, electron-builder `build` config), `tsconfig.json`, `electron.vite.config.ts` (incl. `__LICENSES__` define), `playwright.config.ts` (`--allow-file-access-from-files`); `.gitignore` adds `out/`, drops `.teleflow/`, un-ignores `.kiro/steering/`; `.kiro/steering/ponytail.md` committed
-- [ ] Packaging spike: `npm run dist` produces `release\TeleFlow-Setup-<version>.exe`; `release\win-unpacked\TeleFlow.exe` boots, loads TDLib from `app.asar.unpacked` (logs the TDLib version), and shows the Login screen; spike also confirms the sandboxed CJS preload, `webUtils.getPathForFile`, `env(titlebar-area-width)`, and `session.getCacheSize()` / `clearCodeCaches()`
+- [ ] Packaging spike: `npm run dist` produces `release\TeleFlow-Setup-<version>.exe`; `release\win-unpacked\TeleFlow.exe` boots, loads TDLib from `app.asar.unpacked` (logs the TDLib version), and shows the Login screen; spike also confirms the sandboxed CJS preload, `webUtils.getPathForFile`, `env(titlebar-area-width)`, `session.getCacheSize()` / `clearCodeCaches()`, and whether the single-instance lock is keyed by `userData` (dev and installed runs side by side)
 - [ ] `npm run typecheck`, `npm test`, `npm run build` all run (even if near-empty)
 
 ### 2. Core and shell
@@ -55,7 +56,8 @@ After every step:
 - [ ] Settings (incl. Storage, clearing, Danger Zone, leftovers)
 
 ### 6. Desktop and ship
-- [ ] Tray, minimize to tray on close, start with Windows, notifications, window state
+- [ ] Tray, minimize to tray on close, start with Windows (toggle reads back on after restart, packaged and dev), notifications (`setAppUserModelId` toast identity), window state
+- [ ] Mark-of-the-Web verified manually: `Get-Item <file> -Stream Zone.Identifier` shows `ZoneId=3`; opening a downloaded `.exe` from the Library triggers SmartScreen
 - [ ] FileGram import and leftover removal verified on a copy of a FileGram folder
 - [ ] Icon (`assets/icon.svg` → `icon.png`, `icon.ico`), NSIS installer options
 - [ ] README rewritten, CI updated (Windows runner: `npm ci`, typecheck, test, build, test:ui)
@@ -120,8 +122,27 @@ After every step:
 | 2026-10-01 | Group uploads send photos/videos as documents when the group forbids them (`updateChatPermissions`) | `canPost` only checked documents (review 1 #29) |
 | 2026-10-01 | Licenses list built at build time (`__LICENSES__` define); `installedAt` from the install folder's birth time | Bundled renderer deps have no `package.json` at runtime (review 1 #9) |
 | 2026-10-01 | `Stepper` and `FileGramImportDialog` live in `pages/Settings.tsx` | Single-page component rule; keeps `ui.tsx` under 400 lines (review 1 #18, #19) |
+| 2026-10-01 | Download root rule split into `sealed` (home, appDir, AppData, Windows, Program Files, ProgramData: not equal, inside, or containing) and `guarded` (profile, known folders: not equal or containing) | An ancestor of AppData or Program Files passed and Clear All Data could delete it (review 2 #1) |
+| 2026-10-01 | Start with Windows reads and writes through one `loginItem` object; read `executableWillLaunchAtLogin` | `getLoginItemSettings` only matches the same `args`, so the toggle read back off (review 2 #2) |
+| 2026-10-01 | Uploads record `messageId` per file; a partly failed album keeps only unsent files (`settleUpload`) | Retry re-posted files that were already sent (review 2 #4) |
+| 2026-10-01 | FileGram folders need a marker (`.td_database`, `.filegram_state`, or `package.json` name `filegram`) | A wrong folder with a `config.json` would have its downloads moved and config deleted (review 2 #5) |
+| 2026-10-01 | `uniquePath` honors an in-memory `reserved` set; failed cross-volume copies remove the partial file | Concurrent finalizes could pick the same name, and `fs.rename` replaces on Windows (review 2 #6) |
+| 2026-10-01 | Downloads get Mark-of-the-Web (`Zone.Identifier`, ZoneId=3) | Library Open would run executables and macros without SmartScreen or Protected View (review 2 #7) |
+| 2026-10-01 | Startup order written down (paths → AUMID → lock → scheme → DB + requeue + pending ids → ready → TDLib → Library scan) | Correctness depends on it (review 2 #10, #24, #25) |
+| 2026-10-01 | Thumbnails only for Jpeg/Png/Webp/Gif; dropped `jobs.started_at`, `scans.updated_at`, `stats.chats[].username` | `<img>` cannot render Mpeg4/Webm/Tgs; unused fields (review 2 #12, #14) |
+| 2026-10-01 | Top bar 40px with the title bar overlay in the top bar color `#060b18` | Overlay matched the sidebar instead of the bar it sits on (review 2 #17) |
+| 2026-10-01 | The design brief again lists Express + `ws`, Edge `--app`, and an Analytics page; the Electron/IPC design and the removal of Analytics stand | Both are user scope changes recorded above; the brief predates them |
 
 ## Changelog
+
+### 2026-10-01 · Phase 1 · Design review 2 resolved
+- Resolved all 25 findings of `docs/.design-review.md` (0 HIGH, 7 MEDIUM, 18 NIT); per-finding responses are at the end of ARCHITECTURE.md. None backlogged or ignored.
+- ARCHITECTURE.md: `checkDownloadRoot(path, { sealed, guarded })`; `loginItem` read/write; one `media:`/`messages:` topic rule incl. job deletes and trash; per-file upload `messageId` + `settleUpload`; FileGram markers; `uniquePath` reservations and partial-copy cleanup; Mark-of-the-Web at finalize + Security bullets; `stats` drains the idle sparkline; link 404 → 400, `isTelegramLink` in core; Startup list; upload state on leaving `ready`; thumbnail formats; `updateChatDraftMessage`; dropped `jobs.started_at`, `scans.updated_at`, `stats.chats[].username`; `repository` normalization; overlay color; Clear cache `done` reset; duration `> 0`; background Library scan; pending ids before `start(creds)`; three new invariants with owners; tests list extended.
+- UI.md: top bar 40px and overlay color; `typeLabel` in the `ui.tsx` inventory; Downloads topic sentence; Load older capped at 1000; Queue Total/legend/Clear All scopes; Retry attempts always enabled; App Status signed-out branch removed; download-folder and FileGram-folder error texts.
+- PRODUCT.md: download root rule (system and app data folders), FileGram folder markers, partial album retry, collision-safe naming, Mark-of-the-Web.
+- Verified in `@prebuilt-tdlib/types` 0.1008066.0: `getInternalLinkType` 404 for non-internal links, `updateChatDraftMessage.positions`, `ThumbnailFormat` incl. `Mpeg4`/`Webm`/`Tgs`, `updateMessageSendFailed` note about `updateDeleteMessages`. FileGram `package.json` name is `filegram`; `server.js` uses `.filegram_state`.
+- Not verified (carried to spikes): single-instance lock keyed by `userData` (Phase 1), Mark-of-the-Web triggering SmartScreen via `shell.openPath` (Phase 6), TDLib behavior when one album file fails (design is safe either way).
+- Next: Phase 1 scaffolding and packaging spike.
 
 ### 2026-10-01 · Phase 1 · Design review 1 resolved
 - Resolved all 39 findings of `docs/.design-review.md` (2 HIGH, 15 MEDIUM, 22 NIT); per-finding responses are at the end of ARCHITECTURE.md. #10 is fixed differently (limit-based `chats.messages`); #31 is applied in the Phase 1 scaffolding commit.
