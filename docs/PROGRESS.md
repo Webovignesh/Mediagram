@@ -21,8 +21,9 @@ After every step:
 ### 1. Setup
 - [x] Worktree and branch created; docs copied in
 - [x] Design step finalizes API, schema, file layout; docs updated
-- [ ] Old FileGram code removed; new `package.json` (exact pins, `allowScripts` for `electron@44.5.1`, electron-builder `build` config), `tsconfig.json`, `electron.vite.config.ts`, `playwright.config.ts`; `.gitignore` adds `out/`
-- [ ] Packaging spike: `npm run dist` produces `release\TeleFlow-Setup-<version>.exe`; `release\win-unpacked\TeleFlow.exe` boots, loads TDLib from `app.asar.unpacked` (logs the TDLib version), and shows the Login screen
+- [x] Design review 1 (39 findings) resolved in the docs
+- [ ] Old FileGram code removed; new `package.json` (exact pins, `dependencies` = `tdl` + `prebuilt-tdlib` only, `allowScripts` for `electron@44.5.1`, electron-builder `build` config), `tsconfig.json`, `electron.vite.config.ts` (incl. `__LICENSES__` define), `playwright.config.ts` (`--allow-file-access-from-files`); `.gitignore` adds `out/`, drops `.teleflow/`, un-ignores `.kiro/steering/`; `.kiro/steering/ponytail.md` committed
+- [ ] Packaging spike: `npm run dist` produces `release\TeleFlow-Setup-<version>.exe`; `release\win-unpacked\TeleFlow.exe` boots, loads TDLib from `app.asar.unpacked` (logs the TDLib version), and shows the Login screen; spike also confirms the sandboxed CJS preload, `webUtils.getPathForFile`, `env(titlebar-area-width)`, and `session.getCacheSize()` / `clearCodeCaches()`
 - [ ] `npm run typecheck`, `npm test`, `npm run build` all run (even if near-empty)
 
 ### 2. Core and shell
@@ -32,8 +33,8 @@ After every step:
 - [ ] `electron/main.ts`, `electron/ipc.ts`, `electron/preload.ts`: single instance, window + state, `teleflow://` protocol, IPC bridge with sender check and validation, CSP
 
 ### 3. Transfer engine
-- [ ] Downloads: queue, concurrency, pause/resume/cancel/retry/move, naming, dedupe, folder template, finalize
-- [ ] Gates: flood wait, start spacing with backoff, stall detection, auto-retry with backoff
+- [ ] Downloads: queue, concurrency, pause/resume/cancel/retry/move, naming, dedupe (incl. after Clear Completed), folder template, finalize, `requeueActiveDownloads`
+- [ ] Gates: flood wait, start spacing with backoff, stall detection (online only, capped by retry attempts), auto-retry with backoff
 - [ ] Uploads: single and album, captions, progress, pause/cancel, quit and crash recovery
 - [ ] Media index scan (top-up, backfill, live upkeep)
 - [ ] History + stats queries
@@ -106,8 +107,30 @@ After every step:
 | 2026-10-01 | No bundled font; Inter only when installed, else Segoe UI Variable | No font dependency |
 | 2026-10-01 | Icons in `assets/` (`build/` is gitignored); `scripts/icon.ts` renders them once | electron-builder `buildResources: assets` |
 | 2026-10-01 | D4 (default port) is obsolete; D1–D3 keep their defaults | Electron uses IPC, no port |
+| 2026-10-01 | The design-step brief still lists Express 5 + `ws` + Edge `--app`; ARCHITECTURE's Electron stack stands, and the brief's "REST routes" / "WebSocket events" are the IPC methods / events | The brief predates the Electron user scope change above |
+| 2026-10-01 | `chats.messages` takes `limit` (1–1000) instead of a cursor; "Load older" raises it | One contiguous refetch after invalidations; per-cursor refetch drops messages at page boundaries (review 1 #10, fixed differently) |
+| 2026-10-01 | Interrupted downloads are requeued at startup and when auth leaves `ready` (`requeueActiveDownloads`) | Rows left `active` had no live state and never resumed (review 1 #2) |
+| 2026-10-01 | One stall rule: online only; third stall requeues as an attempt; fails "Download keeps stalling" once attempts are spent | Old rules conflicted and could loop forever (review 1 #12) |
+| 2026-10-01 | Download root may not be the profile, a known folder itself, or an ancestor of one | Clear All Data with "delete downloads" deletes everything under the root (review 1 #15) |
+| 2026-10-01 | Trash forgets the download (`history.path = NULL`, completed job deleted); upsert never touches open rows; non-forced adds skip downloaded items | Status, Verify, and dedupe stayed consistent only while job rows existed (review 1 #5, #6) |
+| 2026-10-01 | Stats count completed history rows (files): today since local midnight, hour/day buckets, top 5 chats | KPIs and charts had no definition (review 1 #8) |
+| 2026-10-01 | Media index progress counts media: 7 per-filter `getChatMessageCount` calls, "about" in the UI | TDLib rejects `searchMessagesFilterEmpty` there (review 1 #1) |
+| 2026-10-01 | `chats.list` = main list (+ archive), Saved Messages via `createPrivateChat`, chats opened this session | Cache holds chats seen via forwards/search; uploads need Saved Messages (review 1 #11) |
+| 2026-10-01 | TDLib auth states TeleFlow cannot complete (email, sign-up, Premium, other device) map to the phone step with an error | Login got stuck with no screen (review 1 #17) |
+| 2026-10-01 | Group uploads send photos/videos as documents when the group forbids them (`updateChatPermissions`) | `canPost` only checked documents (review 1 #29) |
+| 2026-10-01 | Licenses list built at build time (`__LICENSES__` define); `installedAt` from the install folder's birth time | Bundled renderer deps have no `package.json` at runtime (review 1 #9) |
+| 2026-10-01 | `Stepper` and `FileGramImportDialog` live in `pages/Settings.tsx` | Single-page component rule; keeps `ui.tsx` under 400 lines (review 1 #18, #19) |
 
 ## Changelog
+
+### 2026-10-01 · Phase 1 · Design review 1 resolved
+- Resolved all 39 findings of `docs/.design-review.md` (2 HIGH, 15 MEDIUM, 22 NIT); per-finding responses are at the end of ARCHITECTURE.md. #10 is fixed differently (limit-based `chats.messages`); #31 is applied in the Phase 1 scaffolding commit.
+- ARCHITECTURE.md: `requeueActiveDownloads`; unified stall rule; enqueue upsert and dedupe after Clear Completed; trash forgets downloads; `jobs.list` order and `jobs.action` scopes; stats definitions; topic emission table; `appDir`; `checkDownloadRoot` with `userDirs` and invalid characters; auth state mapping; chat list membership, Saved Messages, group media permissions; media index totals; `app.info` sources; StorageReport trimmed; Chromium cache via `getCacheSize`/`clearCodeCaches`; FileGram `.thumbs` and import warning; protocol privileges; sender URL check; 403; tsconfig and `dependencies` split; Playwright file-access flag.
+- UI.md: Shell Control inventory and Data bindings; skeleton-vs-refetch rule; Stepper and FileGramImportDialog page-local; index bar text; "Download all `<n>` matching"; Chat View "Load older" via `limit`; Downloads Total Files = `totalFiles.download`; Queue tab calls; Login "Signing out…" and phone-step error; Danger Zone subtitle; Clear buttons gated on live counts.
+- PRODUCT.md: interrupted-download requeue, stall cap, download root rules, FileGram `.thumbs`, trash behavior, Chat View 1000-message cap, where the Ponytail rules live.
+- Verified: `@prebuilt-tdlib/types` 0.1008066.0 says `searchMessagesFilterEmpty` is unsupported in `getChatMessageCount`; `authorizationStateWaitEmailAddress/EmailCode/Registration/OtherDeviceConfirmation/PremiumPurchase`, `updateChatPermissions`, `updateOption`, `chatPermissions.can_send_photos/can_send_videos` exist; `server.js` puts `.thumbs` under `downloadsDir`.
+- Not verified locally: Electron `session.getCacheSize()` / `clearCodeCaches()` (no Electron typings in the repo; check in the Phase 1 spike), upload limits 2000/4000 MiB (Telegram's published limits).
+- Next: Phase 1 scaffolding and packaging spike.
 
 ### 2026-10-01 · Phase 1 · Design finalized
 - Rewrote PRODUCT.md, ARCHITECTURE.md, UI.md for the final design and four user scope changes: Analytics removed; every control real with a Control inventory; app data out of the repo with clear-cache/data actions; no hardcoded data (placeholders + grep gate); Electron + NSIS installer replacing Edge `--app`, Express, and launcher scripts.

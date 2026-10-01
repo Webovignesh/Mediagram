@@ -8,7 +8,7 @@ TeleFlow is an installable Windows desktop app for downloading, uploading, and o
 - Built on Electron. No local web server, no open port, no script launchers.
 - Feature reference: [vinodkr494/telegram-media-downloader](https://github.com/vinodkr494/telegram-media-downloader).
 - Visual reference: four UI mockups, transcribed in [UI.md](./UI.md). The mockups are visual reference only; their sample data is never shipped.
-- Code style: Ponytail rules (`.kiro/steering/ponytail.md`): minimal, readable, no speculative code.
+- Code style: Ponytail rules (`.kiro/steering/ponytail.md`): minimal, readable, no speculative code. The file lives in the main workspace and is added to the branch by the Phase 1 scaffolding commit (`.kiro/steering/` un-ignored).
 
 ## Principles
 
@@ -37,7 +37,7 @@ TeleFlow is an installable Windows desktop app for downloading, uploading, and o
 - Chat list: all chats, filter chips (All, Channels, Groups, Folders), search, unread badges, last-activity time.
 - Add chat (+): open or join by `t.me` link, invite link, or `@username`.
 - Two views of the selected chat:
-  - Chat View: message timeline with media previews and per-message download.
+  - Chat View: message timeline with media previews and per-message download (newest 1000 messages; Files View covers the full history).
   - Files View: media table with filters (media type, file type, duration, size, download status), sort, search, pagination. Backed by a per-chat media index built in the background.
 - Select rows and download, or download everything matching the current filters.
 - Paste a `t.me/<chat>/<msg>` link into the global search to download that message's media (whole album when the message is part of one).
@@ -59,7 +59,7 @@ TeleFlow is an installable Windows desktop app for downloading, uploading, and o
 ### 6. Media Library
 - Lists files on disk under the download root, enriched with chat/message metadata from history when known. Files downloaded by FileGram show up once they are in the download root.
 - Search, type chips, chat filter, sort, grid/list toggle.
-- Open, Show in folder, Move to Recycle Bin (with confirm).
+- Open, Show in folder, Move to Recycle Bin (with confirm). A trashed file is forgotten: it shows as not downloaded and can be downloaded again.
 - Verify: lists history entries whose file is missing and offers re-download.
 
 ### 7. Settings
@@ -81,7 +81,8 @@ Borrowed from the reference repo and lessons in this repo's git history:
 - Each download re-reads its message right before starting, so stale TDLib file ids never reach `downloadFile`.
 - Concurrency default 2 (range 1–5). Higher values triggered `FLOOD_PREMIUM_WAIT` in FileGram.
 - Honor `FLOOD_WAIT` / `retry after`: hold new starts of that kind until the wait ends, then continue. Start bursts are spaced and back off after each flood.
-- Stall detection: no progress for the stall timeout re-asserts the download; three stalls in a row restart it.
+- Interrupted downloads (quit, crash, logout) go back to the queue in their old position on the next start.
+- Stall detection (only while connected): no progress for the stall timeout re-asserts the download; three stalls in a row restart it. Each restart counts as an attempt; once the retry attempts are used up, the job fails with "Download keeps stalling".
 - Skip existing: a file with the same name and size at the target path is marked completed without downloading.
 - Naming: original file name; untitled media becomes `Video_<msgId>.mp4`, `Photo_<msgId>.jpg`, and so on, where `<msgId>` is the id shown in `t.me` links; optional `YYYY-MM-DD_` prefix from the message date; collisions get ` (2)`, ` (3)`.
 - Folder per chat from a template with `{chat}` and `{chat_id}` placeholders.
@@ -91,13 +92,13 @@ Borrowed from the reference repo and lessons in this repo's git history:
 ## Storage and FileGram import
 
 - App data: `%LOCALAPPDATA%\TeleFlow\` (TDLib session and cache, SQLite, thumbnails, logs, temp files, Chromium data). `TELEFLOW_HOME` overrides it for development and tests.
-- Download root: `%USERPROFILE%\Downloads\TeleFlow` by default, configurable. It may not be inside the install folder, the app data folder, or a drive root.
+- Download root: `%USERPROFILE%\Downloads\TeleFlow` by default, configurable. It may not be inside the install folder or the app data folder, and may not be a drive root, the user folder, or a known folder (Desktop, Documents, Downloads, Pictures, Videos, Music) itself or an ancestor of one, because Clear All Data can delete every file under it. Subfolders such as `Downloads\TeleFlow` are fine.
 - Import from FileGram (never automatic, never a hardcoded path): the user picks their FileGram folder. TeleFlow shows what it found, then, with FileGram closed:
   - moves the `.td_database` session into app data so the login carries over (skipped when TeleFlow is already logged in),
   - imports the API ID/hash (`.env`, then `config.json`) and the FileGram download folder setting into SQLite (those files are never written),
-  - moves a download folder that sits inside the FileGram folder into the download root; a folder outside it becomes the download root as is.
+  - moves a download folder that sits inside the FileGram folder into the download root; a folder outside it becomes the download root as is, unless it breaks the download root rules (then the current root stays and the dialog says why).
   - If a file is locked, it says "Close FileGram first" with a Retry button.
-- After import, Settings shows the leftover FileGram data (`.td_files`, `.filegram_state`, `.management_uploads`, `.thumbs`, `config.json`, `settings.json`, any session or downloads not moved) with its size and a "Remove leftover FileGram data" button (confirm).
+- After import, Settings shows the leftover FileGram data (`.td_files`, `.filegram_state`, `.management_uploads`, `.thumbs` (FileGram keeps it inside its downloads folder), `config.json`, `settings.json`, any session or downloads not moved) with its size and a "Remove leftover FileGram data" button (confirm). A leftover downloads folder goes to the Recycle Bin; the rest is deleted.
 - Clearing (Settings), each with current size, a confirm dialog, and the freed size in a toast:
   - Clear cache: TDLib file cache (`optimizeStorage`), thumbnails, temp files, Chromium cache. Keeps login, history, queue, downloads. Refused while transfers are active; paused downloads restart from zero.
   - Clear app data: history, queue, media index, settings reset to defaults (including the download folder), plus the cache. Keeps login and downloaded files.
