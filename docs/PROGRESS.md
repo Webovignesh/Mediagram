@@ -19,7 +19,7 @@ After every step:
 - [x] PRODUCT.md, ARCHITECTURE.md, UI.md, PROGRESS.md drafted
 
 ### 1. Setup
-- [ ] Worktree and branch created; docs copied in
+- [x] Worktree and branch created; docs copied in
 - [ ] Design step finalizes API, schema, file layout; docs updated
 - [ ] Old FileGram code removed; new `package.json`, `tsconfig.json`, Vite + Tailwind config
 - [ ] `npm run typecheck`, `npm test`, `npm run build` all run (even if near-empty)
@@ -69,6 +69,14 @@ After every step:
 | 2026-10-01 | Forwarding, bulk delete, ZIP export out of v1 | Not in mockups; can return on request (PRODUCT.md D1) |
 
 ## Changelog
+
+### 2026-10-01 · Phase 1 · Setup
+- `git worktree add .worktrees/teleflow -b revamp/teleflow main` → new branch at `ca7ee901`.
+- Added `.worktrees/` to `.git/info/exclude` (local only, not committed).
+- Copied docs into the worktree; added `.teleflow/` and `.scratch/` to `.gitignore`.
+- `git add docs .gitignore && git commit -m "docs: TeleFlow rewrite spec"` → `ca362cc0`.
+- Old FileGram server and `.td_database` untouched.
+- Next: design step (API, schema, file layout).
 
 ### 2026-10-01 · Phase 0 · Docs
 - Wrote PRODUCT.md, ARCHITECTURE.md, UI.md (mockups transcribed), PROGRESS.md.
