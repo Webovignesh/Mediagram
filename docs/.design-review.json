@@ -1,27 +1,38 @@
 {
   "verdict": "CHANGES_REQUESTED",
   "findings": [
-    { "id": 1, "severity": "MEDIUM", "title": "IPC sender check 'origin + pathname equals the packaged index.html file URL' never matches: file: URL origin is \"null\" (verified), dev adds a trailing slash; invites loosening the only IPC trust check", "where": "ARCHITECTURE IPC contract > Bridge step 1", "fix": "Compare normalized hrefs with hash/search stripped: pageUrl(senderFrame.url) === pageUrl(dev ? ELECTRON_RENDERER_URL : pathToFileURL(indexHtml).href); reject with 403." },
-    { "id": 2, "severity": "MEDIUM", "title": "Cancel of paused/queued/failed downloads skips TDLib (no live state), leaving partial data in tdlib\\files; contradicts Clear All confirm 'Partial downloads are deleted'", "where": "ARCHITECTURE jobs.action notes; TDLib call map Download pause/cancel; UI.md Queue Clear All", "fix": "For started (attempts > 0) non-live download jobs being canceled while ready: getMessages (100/call) then deleteFile best effort; ponytail note for offline; update call map row." },
-    { "id": 3, "severity": "MEDIUM", "title": "jobs.pending stores only temp ids; after partial success + crash the file index cannot be recovered, so a sent file is re-posted and an unsent file is marked done", "where": "ARCHITECTURE schema jobs.pending; Upload steps 3, 4, 6; call map Upload crash recovery", "fix": "Drop the pending column; store pendingId on each files[i]; settle clears it; startup rebuilds the routing map from files with pendingId && !messageId; extend settleUpload test." },
-    { "id": 4, "severity": "MEDIUM", "title": "Quit/crash during an EXDEV copy leaves a truncated file under the final name; next run saves the real file as ' (2)' and the truncated one stays in the Library", "where": "ARCHITECTURE Download step 6; Quit", "fix": "Copy to dot-prefixed <dir>\\.teleflow-<jobId>.part (rm stale first), then fs.rename to dest; rm part on error; ponytail note for unswept parts." },
-    { "id": 5, "severity": "MEDIUM", "title": "Skip-existing completion (step 4) does not insert history, so after Clear Completed the item reverts to 'Not downloaded' and dedupe/stats/Library metadata break", "where": "ARCHITECTURE Download step 4 vs step 6", "fix": "Step 4 uses the same complete(job, path) transaction as finalize (job + history row + thumbnail + invalidations), minus move/MOTW/deleteFile; add a test." },
-    { "id": 6, "severity": "MEDIUM", "title": "scans.newest_id 'newest message id indexed' reads as newest media id; in chats ending with text every chats.media call restarts a top-up, flickers the index bar, and loops via media:<chatId> invalidations", "where": "ARCHITECTURE schema scans; Media index scan start condition and live upkeep", "fix": "newest_id/oldest_id = newest/oldest message walked (any content); live upkeep bumps newest_id on every updateNewMessage in scanned chats; compare to chat.last_message.id; emit media: on scan state change." },
-    { "id": 7, "severity": "NIT", "title": "supports_streaming is a field of inputVideo, not inputMessageVideo (verified)", "where": "Upload step 3", "fix": "{ _: 'inputMessageVideo', video: { _: 'inputVideo', video: inputFileLocal, supports_streaming: true }, caption }." },
-    { "id": 8, "severity": "NIT", "title": "Failed album messages have a new id (updateMessageSendFailed.message.id); deleting by temp id leaves them", "where": "Upload step 4", "fix": "deleteMessages(chat_id, [update.message.id], revoke: true); pause/cancel keep temp ids for still-pending messages." },
-    { "id": 9, "severity": "NIT", "title": "TDLib-to-shape mappings unstated: Folder.name is chatFolderName object; avatar size; 5 connection states to 4; fileGram.import session type", "where": "Shared shapes; Chat cache; fileGram.import", "fix": "Folder.name = name.text.text; photo = photo.small.remote.id; Ready/Updating/Connecting+ConnectingToProxy/WaitingForNetwork -> ready/updating/connecting/offline (offline without a client); session: boolean." },
-    { "id": 10, "severity": "NIT", "title": "jobs.action ids up to 50000 exceeds SQLite's 32766 bound-parameter limit (verified)", "where": "jobs.action args", "fix": "WHERE id IN (SELECT value FROM json_each(?)) or cap ids at 1000." },
-    { "id": 11, "severity": "NIT", "title": "electron-builder default npmRebuild may rebuild tdl from binding.gyp (needs Python/MSVC) although its N-API prebuild already loads", "where": "Build > electron-builder config", "fix": "Set \"npmRebuild\": false; confirm in the Phase 1 packaging spike." },
-    { "id": 12, "severity": "NIT", "title": "After a download root change, Show in folder/Open 404 for earlier downloads that still show Downloaded", "where": "Methods notes library.* path rule; Queue/Chat View reuse of library.reveal", "fix": "Accept paths inside the root or equal to a completed download's jobs.path/history.path; note in Settings that existing downloads stay where they are." },
-    { "id": 13, "severity": "NIT", "title": "Topic table omits storage on downloadRoot change; window setting writes would emit settings on every drag", "where": "Events > Who emits which topic; Settings keys", "fix": "Add 'download root change' to storage; state window writes emit nothing." },
-    { "id": 14, "severity": "NIT", "title": "history 'one row per file' vs 'a final failure inserts one history row'", "where": "Schema history comment; Transfer engine auto-retry", "fix": "Completed: one row per file; failed: one row per job (name = job name)." },
-    { "id": 15, "severity": "NIT", "title": "chats.media exts scope unstated; Files View with zero rows while scanning would show 'No media in this chat'", "where": "chats.media; UI.md Downloads File rows", "fix": "exts = distinct ext of the whole chat index (ignores filters); scanning + no rows shows index bar + skeleton rows." },
-    { "id": 16, "severity": "NIT", "title": "downloads.add partial resolution (deleted/no-media/null getMessages results) unspecified", "where": "downloads.add errors", "fix": "Unresolvable items count as skipped; 404 only for unknown chat; 400 no media only for { link }." },
-    { "id": 17, "severity": "NIT", "title": "Login item survives Clear All Data and uninstall (stale HKCU Run value)", "where": "Storage Clear All Data; Build NSIS", "fix": "Clear All Data sets openAtLogin false; assets/installer.nsh customUnInstall deletes HKCU Run 'com.teleflow.app'; confirm value name in Phase 6." },
-    { "id": 18, "severity": "NIT", "title": "Trash matches lower(path) on history and jobs without an index (full scan per file)", "where": "library.trash note", "fix": "CREATE INDEX history_path ON history (lower(path)); CREATE INDEX jobs_path ON jobs (lower(path)) (verified used by the planner)." },
-    { "id": 19, "severity": "NIT", "title": "Logout's effect on the queue unstated; jobs run under the next account and fail confusingly", "where": "Client lifecycle; PRODUCT Log out", "fix": "State it with a ponytail note (jobs not tied to an account; upgrade: store me.id on jobs)." },
-    { "id": 20, "severity": "NIT", "title": "position 'starts as id' is not expressible in one INSERT; retry keeps the old position implicitly", "where": "Schema jobs.position; enqueue upsert", "fix": "position = (SELECT IFNULL(MAX(position), 0) + 1 FROM jobs) or UPDATE position = id in the same transaction; state retry order." },
-    { "id": 21, "severity": "NIT", "title": "Unused shape fields: Chat.archived, Message.outgoing, Job.fileCount, Job.attempts, Job.createdAt", "where": "Shared shapes vs UI.md bindings", "fix": "Drop them or bind them (e.g. outgoing bubble alignment, '<fileCount> files' on upload cards)." }
+    {
+      "id": 1,
+      "severity": "MEDIUM",
+      "title": "IPC sender check compares strings from two different URL canonicalizers, so a valid page can be rejected",
+      "where": "ARCHITECTURE > IPC contract > Bridge, step 1",
+      "problem": "rendererUrl is a Node/WHATWG href; e.senderFrame.url is Chromium's canonical spec. Chromium uppercases Windows drive letters in file URLs while pathToFileURL keeps the launch-path case from process.execPath, so a lowercase install path or launch yields 403 on every call (app unusable). Escape-set differences for rare characters unchecked; a URL parse error surfaces as 500.",
+      "fix": "Compare a pageKey: hash and query stripped, file: URLs as fileURLToPath(u).toLowerCase(), otherwise href.toLowerCase(); reject (403) on any parse error; keep pageKey pure in core/storage.ts with a node:test check (drive-letter case, sibling file, dev trailing slash)."
+    },
+    {
+      "id": 2,
+      "severity": "MEDIUM",
+      "title": "Active upload with no pending id after a crash is never settled",
+      "where": "ARCHITECTURE > Upload steps 4 and 6; Client lifecycle; TDLib call map 'Upload crash recovery'",
+      "problem": "Recovery is driven only by pendingIds and per-file settle events. A crash during the step-2 temp copy, between sendMessage and persisting pendingId, or between the last settle and the job update leaves the row active with no live state forever (Uploading pill, counted in badges, files never posted, possibly holding the upload slot).",
+      "fix": "On ready, every active upload with no pendingId left settles at once via step 4: all files have messageId -> completed; else settleUpload and fail 'Interrupted. Check the chat before retrying' (not retryable). Extend the settleUpload test for this case."
+    },
+    {
+      "id": 3,
+      "severity": "NIT",
+      "title": "A scan that ends on an error restarts on every refetch",
+      "where": "ARCHITECTURE > Media index scan",
+      "problem": "Non-flood errors are unspecified; with the round-3 emit-on-finish, a failing scan emits media:<chatId>, Files View refetches, chats.media restarts the scan, and it fails again about once per second.",
+      "fix": "A non-flood page error ends the scan (warn) and adds the chat to an in-memory failed set cleared with current; chats.media does not start a scan for a chat in failed; scan.state reads idle."
+    },
+    {
+      "id": 4,
+      "severity": "NIT",
+      "title": "Cancel cleanup also fires TDLib calls for completed rows",
+      "where": "ARCHITECTURE > Methods notes (jobs.action cancel cleanup)",
+      "problem": "Remove on completed rows and Clear All match attempts > 0, so getMessages and deleteFile run for every completed download whose TDLib copy is already gone.",
+      "fix": "Restrict the cleanup to kind = 'download' AND status <> 'completed' AND (attempts > 0 OR done > 0)."
+    }
   ],
-  "reviewDoc": "c:\\Users\\REBEL DUKER\\Downloads\\tele\\.worktrees\\teleflow/docs/.design-review.md"
+  "reviewDoc": "c:\\Users\\REBEL DUKER\\Downloads\\tele\\.worktrees\\teleflow\\docs/.design-review.md"
 }

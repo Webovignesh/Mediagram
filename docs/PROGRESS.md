@@ -24,21 +24,22 @@ After every step:
 - [x] Design review 1 (39 findings) resolved in the docs
 - [x] Design review 2 (25 findings) resolved in the docs
 - [x] Design review 3 (21 findings) resolved in the docs
+- [x] Design review 4 (4 findings) resolved in the docs
 - [ ] Old FileGram code removed; new `package.json` (exact pins, `dependencies` = `tdl` + `prebuilt-tdlib` only, `allowScripts` for `electron@44.5.1`, electron-builder `build` config), `tsconfig.json`, `electron.vite.config.ts` (incl. `__LICENSES__` define), `playwright.config.ts` (`--allow-file-access-from-files`); `.gitignore` adds `out/`, drops `.teleflow/`, un-ignores `.kiro/steering/`; `.kiro/steering/ponytail.md` committed
-- [ ] Packaging spike: `npm run dist` produces `release\TeleFlow-Setup-<version>.exe`; `release\win-unpacked\TeleFlow.exe` boots, loads TDLib from `app.asar.unpacked` (logs the TDLib version), and shows the Login screen (which also proves the IPC sender check passes for the packaged `file:` page); spike also confirms that `npmRebuild: false` keeps `tdl`'s prebuild (no node-gyp run), the sandboxed CJS preload, `webUtils.getPathForFile`, `env(titlebar-area-width)`, `session.getCacheSize()` / `clearCodeCaches()`, and whether the single-instance lock is keyed by `userData` (dev and installed runs side by side)
+- [ ] Packaging spike: `npm run dist` produces `release\TeleFlow-Setup-<version>.exe`; `release\win-unpacked\TeleFlow.exe` boots, loads TDLib from `app.asar.unpacked` (logs the TDLib version), and shows the Login screen when launched through its lowercased path (which also proves the case-insensitive IPC sender check passes for the packaged `file:` page); spike also confirms that `npmRebuild: false` keeps `tdl`'s prebuild (no node-gyp run), the sandboxed CJS preload, `webUtils.getPathForFile`, `env(titlebar-area-width)`, `session.getCacheSize()` / `clearCodeCaches()`, and whether the single-instance lock is keyed by `userData` (dev and installed runs side by side)
 - [ ] `npm run typecheck`, `npm test`, `npm run build` all run (even if near-empty)
 
 ### 2. Core and shell
 - [ ] `core/db.ts`: schema, queries, settings defaults and validation, `fail()`
-- [ ] `core/storage.ts`: `resolvePaths`, `checkDownloadRoot`, logger, library scan, storage report
+- [ ] `core/storage.ts`: `resolvePaths`, `checkDownloadRoot`, `pageKey`, logger, library scan, storage report
 - [ ] `core/telegram.ts`: client lifecycle, auth flow, chat cache, messages, media extraction, link resolution, thumbnails
 - [ ] `electron/main.ts`, `electron/ipc.ts`, `electron/preload.ts`: single instance, window + state, `teleflow://` protocol, IPC bridge with sender check and validation, CSP
 
 ### 3. Transfer engine
 - [ ] Downloads: queue, concurrency, pause/resume/cancel/retry/move, naming, dedupe (incl. after Clear Completed), folder template, finalize, `requeueActiveDownloads`
 - [ ] Gates: flood wait, start spacing with backoff, stall detection (online only, capped by retry attempts), auto-retry with backoff
-- [ ] Uploads: single and album, captions, progress, pause/cancel, quit and crash recovery
-- [ ] Media index scan (top-up, backfill, live upkeep)
+- [ ] Uploads: single and album, captions, progress, pause/cancel, quit and crash recovery (incl. `active` uploads with no pending id settled on `ready`)
+- [ ] Media index scan (top-up, backfill, live upkeep, `failed` set for erroring chats)
 - [ ] History + stats queries
 - [ ] Clear cache, Clear app data, Clear All Data, logout cleanup
 - [ ] `engine.test.ts` covers naming, folder template, paths, dedupe, scheduling, gates, retry, albums, media filters
@@ -62,7 +63,7 @@ After every step:
 - [ ] Cross-volume download (download root on a second drive): no `.teleflow-*.part` left, file has Mark-of-the-Web; canceling a paused download frees its `tdlib\files` data
 - [ ] Mark-of-the-Web verified manually: `Get-Item <file> -Stream Zone.Identifier` shows `ZoneId=3`; opening a downloaded `.exe` from the Library triggers SmartScreen
 - [ ] FileGram import and leftover removal verified on a copy of a FileGram folder
-- [ ] Icon (`assets/icon.svg` → `icon.png`, `icon.ico`), NSIS installer options
+- [ ] Icon (`assets/icon.svg` → `icon.png`, `icon.ico`), NSIS installer options; an install into a custom folder typed in lowercase reaches the Login screen (IPC sender check)
 - [ ] README rewritten, CI updated (Windows runner: `npm ci`, typecheck, test, build, test:ui)
 - [ ] Playwright UI suite with screenshots of every page at 1440×900 and 1280×720
 - [ ] Every Control inventory row in UI.md exercised by `ui.spec.ts`
@@ -145,8 +146,28 @@ After every step:
 | 2026-10-01 | Dropped unused shape fields `Chat.archived`, `Message.outgoing`, `Job.fileCount`, `Job.attempts`, `Job.createdAt` | Nothing in UI.md binds them (review 3 #21) |
 | 2026-10-01 | `library.*` also accepts recorded download paths outside the current root | Show in folder and Open broke for downloads made before a root change (review 3 #12) |
 | 2026-10-01 | `npmRebuild: false`; NSIS `customUnInstall` removes the Start with Windows Run value unless `isUpdated`; Clear All Data turns the login item off | No node-gyp toolchain needed for `tdl`; no dead startup entry after uninstall or Clear All Data (review 3 #11, #17) |
+| 2026-10-01 | IPC sender check compares `pageKey()`s: `file:` pages as decoded, lowercased paths, dev URLs as lowercased `href`s, hash and query stripped; parse errors → 403; `test:app` launches the exe through its lowercased path | Node and Chromium canonicalize file URLs differently (Chromium uppercases the drive letter), so a lowercase install path made every call 403 (review 4 #1) |
+| 2026-10-01 | On `ready`, an `active` upload with no live state and no pending id settles at once: all sent → completed, else failed "Interrupted" (not retryable); a start re-checks its live state before `sendMessage` | A crash during the temp copy, before `files` was persisted, or before the job update left the row "Uploading" forever (review 4 #2) |
+| 2026-10-01 | A media scan page error (not a flood wait) puts the chat in an in-memory `failed` set until the next reconnect; no scan starts for it | The finish invalidation restarted a failing scan on every refetch (review 4 #3) |
+| 2026-10-01 | Cancel's TDLib cleanup skips completed downloads | Their TDLib copy is already gone; Clear All over a long history made thousands of useless calls (review 4 #4) |
 
 ## Changelog
+
+### 2026-10-01 · Phase 1 · Design review 4 resolved
+- Resolved all 4 findings of `docs/.design-review.md` (0 HIGH, 2 MEDIUM, 2 NIT); per-finding responses are at the end of ARCHITECTURE.md. None backlogged or ignored. `docs/.design-review.md` and `.design-review.json` are committed with this change.
+- ARCHITECTURE.md:
+  - IPC: `pageUrl()` replaced by a pure `pageKey()` in `core/storage.ts` (hash and query stripped; `file:` → `fileURLToPath` lowercased, other URLs → `href` lowercased; never origins); parse errors and disposed frames → 403; unit cases (drive-letter case, sibling page, dev trailing slash, encoded slash); `test:app` launches the exe through its lowercased path; Security bullet and Layout updated.
+  - Uploads: Upload step 6 settles `active` uploads with no live state and no pending id on `ready` (all sent → `completed`, else `settleUpload` + "Interrupted", not retryable); a start re-checks its live state before `sendMessage`; new invariant; call map and Client lifecycle updated; `settleUpload` test extended. Pump `free` = limit minus jobs with live state.
+  - Media index: non-flood page errors while `ready` end the scan (warn) and add the chat to `failed`, cleared with `current`; no scan starts for a chat in `failed`; scan start test extended.
+  - Cancel cleanup: only unfinished downloads (`status <> 'completed'`); call map row updated.
+  - Manual checks: installer install into a lowercase custom folder.
+- PRODUCT.md: a crashed upload fails as "Interrupted. Check the chat before retrying" instead of staying "Uploading".
+- UI.md: no change (a failed scan reads `idle`, which the existing Files View states already cover).
+- PROGRESS.md: Phase 1 spike, Phase 2 `pageKey`, Phase 3 upload recovery and scan `failed` set, Phase 6 lowercase install check.
+- Verified: nothing run this pass; every change is a doc edit checked by reading and grepping the docs for stale `pageUrl` references (none outside the review-history tables and older changelog entries).
+- Deferred (`ponytail:` note in ARCHITECTURE > Media index scan): a failed scan shows as `idle` with no reason in the UI. Upgrade: a `failed` scan state with the error text. Reason: rare (a chat that became inaccessible), and it retries after the next reconnect or restart.
+- Not verified (carried to spikes): Chromium uppercasing the drive letter and `process.execPath` keeping the launch case (from the reviewer; `test:app` with the lowercased path proves the check either way in Phase 1); `fileURLToPath` behavior is from Node's documentation, not run.
+- Next: Phase 1 scaffolding and packaging spike.
 
 ### 2026-10-01 · Phase 1 · Design review 3 resolved
 - Resolved all 21 findings of `docs/.design-review.md` (0 HIGH, 6 MEDIUM, 15 NIT); per-finding responses are at the end of ARCHITECTURE.md. None ignored. `docs/.design-review.md` and `.design-review.json` are committed with this change.

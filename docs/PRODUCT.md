@@ -47,7 +47,7 @@ TeleFlow is an installable Windows desktop app for downloading, uploading, and o
 - Pick a destination the user can post to: owned/admin channels, groups where sending files is allowed, Saved Messages.
 - Add files with the file picker or drag and drop, optional caption.
 - Options: send photos/videos as albums (up to 10 per album), keep original file names.
-- Persistent upload queue with progress, pause (restarts that file's upload on resume), cancel, retry. When part of an album fails, the files already posted are recorded as done and leave the job, so Retry never posts a file twice.
+- Persistent upload queue with progress, pause (restarts that file's upload on resume), cancel, retry. When part of an album fails, the files already posted are recorded as done and leave the job, so Retry never posts a file twice. After a crash, an upload never stays stuck as "Uploading": files TeleFlow cannot confirm as posted fail with "Interrupted. Check the chat before retrying" (Telegram may have posted them), and no automatic retry runs for them.
 
 ### 5. Queue
 - One queue for downloads and uploads. Tabs: Downloads, Uploads, Completed, Failed.
