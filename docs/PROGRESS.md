@@ -20,26 +20,30 @@ After every step:
 
 ### 1. Setup
 - [x] Worktree and branch created; docs copied in
-- [ ] Design step finalizes API, schema, file layout; docs updated
-- [ ] Old FileGram code removed; new `package.json`, `tsconfig.json`, Vite + Tailwind config
+- [x] Design step finalizes API, schema, file layout; docs updated
+- [ ] Old FileGram code removed; new `package.json` (exact pins, `allowScripts` for `electron@44.5.1`, electron-builder `build` config), `tsconfig.json`, `electron.vite.config.ts`, `playwright.config.ts`; `.gitignore` adds `out/`
+- [ ] Packaging spike: `npm run dist` produces `release\TeleFlow-Setup-<version>.exe`; `release\win-unpacked\TeleFlow.exe` boots, loads TDLib from `app.asar.unpacked` (logs the TDLib version), and shows the Login screen
 - [ ] `npm run typecheck`, `npm test`, `npm run build` all run (even if near-empty)
 
-### 2. Server core
-- [ ] `db.ts`: schema, settings (seeded from FileGram `settings.json`)
-- [ ] `telegram.ts`: auth flow, me, chats, folders, messages with filters, thumbnails
-- [ ] `main.ts`: REST, WebSocket, Host/Origin guards, static serving
+### 2. Core and shell
+- [ ] `core/db.ts`: schema, queries, settings defaults and validation, `fail()`
+- [ ] `core/storage.ts`: `resolvePaths`, `checkDownloadRoot`, logger, library scan, storage report
+- [ ] `core/telegram.ts`: client lifecycle, auth flow, chat cache, messages, media extraction, link resolution, thumbnails
+- [ ] `electron/main.ts`, `electron/ipc.ts`, `electron/preload.ts`: single instance, window + state, `teleflow://` protocol, IPC bridge with sender check and validation, CSP
 
 ### 3. Transfer engine
-- [ ] Downloads: queue, concurrency, pause/resume/cancel/retry/move, naming, dedupe, folder template
-- [ ] Flood-wait handling, stall detection, auto-resume with backoff
-- [ ] Uploads: single and album, captions, progress
+- [ ] Downloads: queue, concurrency, pause/resume/cancel/retry/move, naming, dedupe, folder template, finalize
+- [ ] Gates: flood wait, start spacing with backoff, stall detection, auto-retry with backoff
+- [ ] Uploads: single and album, captions, progress, pause/cancel, quit and crash recovery
+- [ ] Media index scan (top-up, backfill, live upkeep)
 - [ ] History + stats queries
-- [ ] `engine.test.ts` covers naming, dedupe, scheduling, flood wait
+- [ ] Clear cache, Clear app data, Clear All Data, logout cleanup
+- [ ] `engine.test.ts` covers naming, folder template, paths, dedupe, scheduling, gates, retry, albums, media filters
 
 ### 4. Web shell
 - [ ] Design tokens, `ui.tsx` primitives
-- [ ] Sidebar, top bar with global search and link paste, user menu
-- [ ] Login flow
+- [ ] Sidebar, top bar (title bar overlay, global search with link paste, user menu)
+- [ ] Login flow, including FileGram import
 
 ### 5. Pages
 - [ ] Overview
@@ -47,12 +51,17 @@ After every step:
 - [ ] Queue
 - [ ] Uploads
 - [ ] Media Library
-- [ ] Settings
+- [ ] Settings (incl. Storage, clearing, Danger Zone, leftovers)
 
-### 6. Ship
-- [ ] Launcher scripts (Edge `--app`), Start-with-system shortcut
-- [ ] README rewritten, CI updated
+### 6. Desktop and ship
+- [ ] Tray, minimize to tray on close, start with Windows, notifications, window state
+- [ ] FileGram import and leftover removal verified on a copy of a FileGram folder
+- [ ] Icon (`assets/icon.svg` → `icon.png`, `icon.ico`), NSIS installer options
+- [ ] README rewritten, CI updated (Windows runner: `npm ci`, typecheck, test, build, test:ui)
 - [ ] Playwright UI suite with screenshots of every page at 1440×900 and 1280×720
+- [ ] Every Control inventory row in UI.md exercised by `ui.spec.ts`
+- [ ] Grep gate: no mockup sample strings in `electron/`, `core/`, `web/src/`
+- [ ] Final gate: `npm run dist` builds the installer and `npm run test:app` passes on `release\win-unpacked\TeleFlow.exe`
 - [ ] Final review against PRODUCT.md and UI.md
 - [ ] Ready for user review (branch not merged)
 
@@ -63,12 +72,54 @@ After every step:
 | 2026-10-01 | Keep Node + TDLib; rewrite everything else | TDLib already does resumable downloads; existing session survives |
 | 2026-10-01 | React 19 + Vite + Tailwind v4 + lucide; hand-rolled SVG charts | Dense dashboard UI, minimal dependencies |
 | 2026-10-01 | `node:sqlite` for jobs/history/settings | Built in, no new dependency |
-| 2026-10-01 | Edge `--app` window instead of Electron | Native window feel, no extra toolchain |
+| 2026-10-01 | ~~Edge `--app` window instead of Electron~~ superseded below | – |
 | 2026-10-01 | Brand TeleFlow; unified sidebar nav | Mockups disagree; see UI.md |
 | 2026-10-01 | Only honored settings are shown | No fake toggles |
 | 2026-10-01 | Forwarding, bulk delete, ZIP export out of v1 | Not in mockups; can return on request (PRODUCT.md D1) |
+| 2026-10-01 | User scope change: Analytics page removed; nav is 6 items | User request; Overview keeps Transfer Activity and Channel Activity |
+| 2026-10-01 | User scope change: every visible control works with real data; UI.md has a Control inventory and Data bindings per page | User hard requirement; controls that cannot be real are removed |
+| 2026-10-01 | User scope change: nothing written inside the repo or install folder; app data `%LOCALAPPDATA%\TeleFlow`, downloads `%USERPROFILE%\Downloads\TeleFlow`; `TELEFLOW_HOME` override; dev runs use `TeleFlow-dev` | User request; keeps source and data apart |
+| 2026-10-01 | User scope change: Clear cache / Clear app data / Clear All Data / Disconnect Telegram with sizes, confirms, freed-size toasts | User request; semantics in PRODUCT.md > Storage |
+| 2026-10-01 | User scope change: no hardcoded data; UI.md uses `<source.field>` placeholders; reviewers grep production code for mockup samples | User request |
+| 2026-10-01 | User scope change: Electron 44.5.1 + electron-builder NSIS installer replaces Edge `--app`, Express, `ws`, launcher scripts | User wants a real installable exe; also removes the open port and its Host/Origin guards |
+| 2026-10-01 | FileGram import is user-initiated (folder picker on Login and in Settings), not automatic | The installed exe cannot know the repo path (user scope change #4 supersedes #2's automatic migration) |
+| 2026-10-01 | Tray, minimize to tray on close, start with Windows are in v1 | Real with Electron (user scope change #4) |
+| 2026-10-01 | Engine runs in the Electron main process, not a `utilityProcess` | TDLib does its I/O on its own thread; one IPC hop is simpler |
+| 2026-10-01 | `node:sqlite` kept in Electron (verified in a spike), not `better-sqlite3` | No Electron-ABI rebuild; tests run in plain Node 24 |
+| 2026-10-01 | electron-vite 5.0.0 + Vite 7.3.6 + `@vitejs/plugin-react` 5.2.0 (not Vite 8) | electron-vite 5 supports Vite ≤ 7 |
+| 2026-10-01 | TypeScript 7.0.2 for `tsc --noEmit`; fall back to the latest 5.9.x only if TS 7 rejects an option we need | Current release; type checks only |
+| 2026-10-01 | `core/` is Electron-free; Electron-only calls (`shell.trashItem`, dialogs, login item) are passed in from `electron/` | Engine logic stays testable under `node:test` |
+| 2026-10-01 | Renderer IPC types inferred from `electron/ipc.ts` with a type-only import | No hand-written contract file to drift |
+| 2026-10-01 | One `stats` event (500 ms while busy) carries speeds, counts, and active job progress; plus `auth` and `invalidate` | Replaces per-job `job` events; at most 8 active jobs |
+| 2026-10-01 | Job states: queued, active, paused, completed, failed; cancel deletes the row | No view ever shows canceled jobs |
+| 2026-10-01 | Separate `jobs` and `history` tables | Clear Completed must not erase Overview stats or Library metadata |
+| 2026-10-01 | Per-chat media index (`media`, `scans`) built in the background | Files View filters on extension, duration, size, and status need it; TDLib cannot filter those |
+| 2026-10-01 | Uploads send from the original file path (`webUtils.getPathForFile`); temp copies only when "Keep original file names" is off | No staging copy of multi-GB files |
+| 2026-10-01 | Library delete moves files to the Recycle Bin; "Remove from library" dropped | The Library is the disk, so hiding a file would need a second source of truth |
+| 2026-10-01 | Pausing an active upload restarts that upload on resume (UI says so) | TDLib cannot pause an in-flight `sendMessage` |
+| 2026-10-01 | Log out from the user menu, Settings > Telegram, and Disconnect Telegram all call `auth.logout` | Same behavior everywhere; Disconnect adds a typed confirm |
+| 2026-10-01 | Settings dropped: Language, Appearance, Hide chats without media, Verify files on startup, Library root, Clear thumbnail cache, Clear history; Auto-retry moved to Queue | Not honored, not cheap, or covered by another row |
+| 2026-10-01 | Links parsed by TDLib `getInternalLinkType` | No hand-written link parser |
+| 2026-10-01 | Chat list served from a cache filled by TDLib updates | Standard TDLib pattern; no `getChat` per chat |
+| 2026-10-01 | TDLib 1.8.66 nested `inputPhoto/inputVideo/inputAudio/inputDocument` built directly | FileGram's compat shim is not ported |
+| 2026-10-01 | `titleBarStyle: 'hidden'` + `titleBarOverlay` | Native window buttons on the dark top bar |
+| 2026-10-01 | No bundled font; Inter only when installed, else Segoe UI Variable | No font dependency |
+| 2026-10-01 | Icons in `assets/` (`build/` is gitignored); `scripts/icon.ts` renders them once | electron-builder `buildResources: assets` |
+| 2026-10-01 | D4 (default port) is obsolete; D1–D3 keep their defaults | Electron uses IPC, no port |
 
 ## Changelog
+
+### 2026-10-01 · Phase 1 · Design finalized
+- Rewrote PRODUCT.md, ARCHITECTURE.md, UI.md for the final design and four user scope changes: Analytics removed; every control real with a Control inventory; app data out of the repo with clear-cache/data actions; no hardcoded data (placeholders + grep gate); Electron + NSIS installer replacing Edge `--app`, Express, and launcher scripts.
+- ARCHITECTURE.md now has: pinned stack, file layout, runtime paths, IPC bridge + 37 methods with shapes and errors, 3 events, `teleflow://` protocol, SQLite schema (settings, jobs, history, media, scans), settings keys, TDLib call map, engine flows, storage/clearing/FileGram import, desktop integration, security, build/packaging/tests.
+- UI.md now has: No hardcoded data rule, `ui.tsx` inventory, per-page data needs, Control inventory, Data bindings (empty/loading/error), dialogs, tray.
+- Verified:
+  - `npm view` for every pinned package (electron 44.5.1, electron-builder 26.15.3, electron-vite 5.0.0 with peer `vite ^5 || ^6 || ^7`, vite 7.3.6, `@vitejs/plugin-react` 5.2.0, React 19.3.0, Tailwind 4.3.3, lucide-react 1.49.0, TypeScript 7.0.2, `@types/node` 24.19.0, Playwright 1.63.0).
+  - `releases.electronjs.org`: Electron 44.5.1 = Node 24.21.0, Chromium 152.
+  - Spike in `%TEMP%\teleflow-spike` (`npm install --save-exact electron@44.5.1`, `electron.exe main.js`): `node:sqlite` works in main (SQLite 3.53.4, STRICT); `tdl` + `prebuilt-tdlib` from the repo's `node_modules` load and report TDLib `1.8.66`. npm 12.0.2 skipped Electron's install script until `node node_modules/electron/install.js` was run (needs `allowScripts`). Spike folder deleted afterwards.
+  - `@prebuilt-tdlib/types`: confirmed every TDLib function and update named in the call map, and the nested upload input shapes.
+- Not verified yet: packaged (asar) TDLib loading, sandboxed CJS preload, icon conversion. All three are in the Phase 1 packaging spike.
+- Next: Phase 1 scaffolding and packaging spike.
 
 ### 2026-10-01 · Phase 1 · Setup
 - `git worktree add .worktrees/teleflow -b revamp/teleflow main` → new branch at `ca7ee901`.
