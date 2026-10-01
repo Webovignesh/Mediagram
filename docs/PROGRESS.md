@@ -23,8 +23,9 @@ After every step:
 - [x] Design step finalizes API, schema, file layout; docs updated
 - [x] Design review 1 (39 findings) resolved in the docs
 - [x] Design review 2 (25 findings) resolved in the docs
+- [x] Design review 3 (21 findings) resolved in the docs
 - [ ] Old FileGram code removed; new `package.json` (exact pins, `dependencies` = `tdl` + `prebuilt-tdlib` only, `allowScripts` for `electron@44.5.1`, electron-builder `build` config), `tsconfig.json`, `electron.vite.config.ts` (incl. `__LICENSES__` define), `playwright.config.ts` (`--allow-file-access-from-files`); `.gitignore` adds `out/`, drops `.teleflow/`, un-ignores `.kiro/steering/`; `.kiro/steering/ponytail.md` committed
-- [ ] Packaging spike: `npm run dist` produces `release\TeleFlow-Setup-<version>.exe`; `release\win-unpacked\TeleFlow.exe` boots, loads TDLib from `app.asar.unpacked` (logs the TDLib version), and shows the Login screen; spike also confirms the sandboxed CJS preload, `webUtils.getPathForFile`, `env(titlebar-area-width)`, `session.getCacheSize()` / `clearCodeCaches()`, and whether the single-instance lock is keyed by `userData` (dev and installed runs side by side)
+- [ ] Packaging spike: `npm run dist` produces `release\TeleFlow-Setup-<version>.exe`; `release\win-unpacked\TeleFlow.exe` boots, loads TDLib from `app.asar.unpacked` (logs the TDLib version), and shows the Login screen (which also proves the IPC sender check passes for the packaged `file:` page); spike also confirms that `npmRebuild: false` keeps `tdl`'s prebuild (no node-gyp run), the sandboxed CJS preload, `webUtils.getPathForFile`, `env(titlebar-area-width)`, `session.getCacheSize()` / `clearCodeCaches()`, and whether the single-instance lock is keyed by `userData` (dev and installed runs side by side)
 - [ ] `npm run typecheck`, `npm test`, `npm run build` all run (even if near-empty)
 
 ### 2. Core and shell
@@ -57,6 +58,8 @@ After every step:
 
 ### 6. Desktop and ship
 - [ ] Tray, minimize to tray on close, start with Windows (toggle reads back on after restart, packaged and dev), notifications (`setAppUserModelId` toast identity), window state
+- [ ] Start with Windows cleanup: `reg query HKCU\Software\Microsoft\Windows\CurrentVersion\Run` shows value `com.teleflow.app` with the toggle on (confirms the name in `assets/installer.nsh`); uninstall removes it; an upgrade install keeps it; Clear All Data turns it off
+- [ ] Cross-volume download (download root on a second drive): no `.teleflow-*.part` left, file has Mark-of-the-Web; canceling a paused download frees its `tdlib\files` data
 - [ ] Mark-of-the-Web verified manually: `Get-Item <file> -Stream Zone.Identifier` shows `ZoneId=3`; opening a downloaded `.exe` from the Library triggers SmartScreen
 - [ ] FileGram import and leftover removal verified on a copy of a FileGram folder
 - [ ] Icon (`assets/icon.svg` → `icon.png`, `icon.ico`), NSIS installer options
@@ -132,8 +135,38 @@ After every step:
 | 2026-10-01 | Thumbnails only for Jpeg/Png/Webp/Gif; dropped `jobs.started_at`, `scans.updated_at`, `stats.chats[].username` | `<img>` cannot render Mpeg4/Webm/Tgs; unused fields (review 2 #12, #14) |
 | 2026-10-01 | Top bar 40px with the title bar overlay in the top bar color `#060b18` | Overlay matched the sidebar instead of the bar it sits on (review 2 #17) |
 | 2026-10-01 | The design brief again lists Express + `ws`, Edge `--app`, and an Analytics page; the Electron/IPC design and the removal of Analytics stand | Both are user scope changes recorded above; the brief predates them |
+| 2026-10-01 | IPC sender check compares full page URLs (hash and query stripped) against the URL the window loads; 403 otherwise | `file:` origins are `"null"`, so the origin + pathname check never matched the packaged page, and an origin check would accept any local page (review 3 #1) |
+| 2026-10-01 | Canceling a non-live download that transferred data (`attempts > 0 OR done > 0`) deletes its TDLib partial data in the background while `ready` | Cancel of paused/queued/failed downloads left gigabytes in `tdlib\files`, contradicting Clear All's confirm (review 3 #2) |
+| 2026-10-01 | `jobs.pending` dropped; the temporary id lives on each file entry (`files[i].pendingId`) | Ids alone could not restore the file index after a partial send and a crash, so files were re-posted or wrongly marked sent (review 3 #3) |
+| 2026-10-01 | Cross-volume finalize copies to `.teleflow-<jobId>.part`, then renames; Mark-of-the-Web written before the final rename; nothing after the final rename fails the job | A quit or crash mid-copy left a truncated file under the final name (review 3 #4) |
+| 2026-10-01 | Skip-existing completes through the same `complete(job, path)` as finalize (writes history) | Without history, Clear Completed turned those items back to "Not downloaded" and broke dedupe (review 3 #5) |
+| 2026-10-01 | `scans.newest_id`/`oldest_id` count messages walked; live upkeep bumps `newest_id` only for chats topped up since the connection was last `ready` | The media-id reading restarted a scan on every refetch in chats ending with text; the `current` rule keeps gaps after outages from being skipped (review 3 #6) |
+| 2026-10-01 | Queue order = first-enqueue order: `MAX(position) + 1` per transaction, retries keep their place | One INSERT cannot read its own id; a per-row MAX scans the table (review 3 #20) |
+| 2026-10-01 | Dropped unused shape fields `Chat.archived`, `Message.outgoing`, `Job.fileCount`, `Job.attempts`, `Job.createdAt` | Nothing in UI.md binds them (review 3 #21) |
+| 2026-10-01 | `library.*` also accepts recorded download paths outside the current root | Show in folder and Open broke for downloads made before a root change (review 3 #12) |
+| 2026-10-01 | `npmRebuild: false`; NSIS `customUnInstall` removes the Start with Windows Run value unless `isUpdated`; Clear All Data turns the login item off | No node-gyp toolchain needed for `tdl`; no dead startup entry after uninstall or Clear All Data (review 3 #11, #17) |
 
 ## Changelog
+
+### 2026-10-01 · Phase 1 · Design review 3 resolved
+- Resolved all 21 findings of `docs/.design-review.md` (0 HIGH, 6 MEDIUM, 15 NIT); per-finding responses are at the end of ARCHITECTURE.md. None ignored. `docs/.design-review.md` and `.design-review.json` are committed with this change.
+- ARCHITECTURE.md:
+  - IPC: `pageUrl()` full-URL sender check against `rendererUrl` (env URL only unpackaged), 403 logged at warn; Security bullet.
+  - Downloads: background partial-data cleanup on cancel of non-live downloads (`getMessages` + `deleteFile`, `inFlight` guard); skip-existing via `complete(job, path)` with `deleteFile` when TDLib holds data; cross-volume finalize through a dot-prefixed part file, Mark-of-the-Web before the final rename, `deleteFile` instead of `rm(src)`, nothing after the final rename fails the job; new "final name is always complete" invariant.
+  - Uploads: `jobs.pending` column removed; `files[i].pendingId`; Upload steps 3–6 rewritten; `supports_streaming` on `inputVideo`; failed messages deleted by `update.message.id`; startup rebuilds the routing map from `files[]`; `sendingStateFailed` after restart settles as failed.
+  - Media index: `newest_id`/`oldest_id` by messages walked; start condition vs `chat.last_message.id`; `media:` on scan state change; live upkeep bump limited to the `current` set.
+  - Schema and queries: `jobs_path`/`history_path` `lower(path)` indexes; history granularity comment; `position` assignment and retry order; id lists via `json_each`; `jobs.action ids` 1–1000.
+  - API details: TDLib-to-shape mappings (`Folder.name`, photos, connection states); `fileGram.import.session: boolean`; `chats.media.exts` scope; `downloads.add` partial resolution; `library.*` accepts recorded download paths; dropped five unused shape fields; topic table (`storage` on root change, `window` writes silent); logout keeps the queue.
+  - Build: `npmRebuild: false`; `assets/installer.nsh` (`customUnInstall`, `isUpdated` guard) in Layout and config; Clear All Data turns the login item off; tests and manual checks extended.
+- UI.md: File Type options span the whole index; scanning with no rows shows the index bar + skeletons; Download folder description "Existing downloads stay where they are"; Clear All Data turns Start with Windows off.
+- PRODUCT.md: logout keeps the queue (v1 limit); retries keep their place; final names are always complete; cancel deletes partial data; root change does not move downloads; Clear All Data and uninstall remove the startup entry.
+- Verified: nothing new run this pass. The design relies on the reviewer's checks of `@prebuilt-tdlib/types` 0.1008066.0 (`inputVideo.supports_streaming`, `updateMessageSendFailed.message`, `chatFolderInfo.name`, five `connectionState*` variants), `tdl` 8.1.0 (`binding.gyp`, `install` script), and Node 24 (`file:` origin `"null"`, 32 767-parameter failure, `json_each`, expression indexes used by the planner).
+- Deferred (each a `ponytail:` note in ARCHITECTURE with its upgrade path):
+  - Partial data of downloads canceled while Telegram is not `ready` stays until Clear cache. Upgrade: retry on the next `ready`. Reason: rare, and Clear cache already covers it.
+  - `.teleflow-*.part` files of jobs canceled after a crash are not swept. Upgrade: sweep on Clear cache. Reason: needs a crash plus a cancel; the file is hidden from the Library.
+  - Jobs are not tied to an account. Upgrade: store `me.id` on jobs. Reason: multiple accounts are out of scope for v1.
+- Not verified (carried to spikes): `npmRebuild: false` with the packaged `tdl` (Phase 1); NSIS Run value name `com.teleflow.app` and the `isUpdated` guard (Phase 6); whether TDLib keeps temporary message ids across a restart (the design is safe either way: unknown ids settle as "Interrupted").
+- Next: Phase 1 scaffolding and packaging spike.
 
 ### 2026-10-01 · Phase 1 · Design review 2 resolved
 - Resolved all 25 findings of `docs/.design-review.md` (0 HIGH, 7 MEDIUM, 18 NIT); per-finding responses are at the end of ARCHITECTURE.md. None backlogged or ignored.

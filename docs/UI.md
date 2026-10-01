@@ -213,7 +213,7 @@ Layout (mockup):
 - **Files panel**:
   - Header: segmented toggle "Chat View" | "Files View" and, in Files View, search "Search files in this channel…".
   - Index bar while `scan.state` is `scanning`: "Indexing media… `<scan.indexed>` of about `<scan.total>`" with a thin progress bar; when `<scan.total>` is null, "Indexing media… `<scan.indexed>` found" with an indeterminate bar.
-  - Filter row(s): Media Type, File Type (options = `<media.exts>`), Duration, Size, Status, Sort By, "Reset" (rotate icon).
+  - Filter row(s): Media Type, File Type (options = `<media.exts>`, every extension in the chat's index whatever the filters, so picking one keeps the others listed), Duration, Size, Status, Sort By, "Reset" (rotate icon).
   - Table: checkbox, #, Thumbnail, File Name, Type chip, Size, Duration, Status pill. A selection bar appears when rows are checked: "`<n>` selected • Download selected • Download all `<media.total>` matching" (the count makes the scope visible while indexing is still running).
   - Pagination at the bottom.
   - Chat View: message list with `<message.sender>`, time, `<message.text>`, media card (`typeLabel(<media.type>)`, `<media.size>`, Download button, or progress/status, or Show in folder when downloaded). "Load older messages" at the end while `chats.messages` returns `more: true`; when `limit === 1000 && more` it is replaced by "Older media are in Files View" (switches the view).
@@ -261,7 +261,7 @@ Data needs: `chats.list` (`chats`), `chats.media({ chatId, ...filters, page })` 
 | Folder list | `<folder.name>`, chat count | "You have no Telegram folders" | – | – |
 | Files panel, no chat | – | "Select a chat to see its files" | – | – |
 | Index bar | `<scan.state>`, `<scan.indexed>`, `<scan.total>` | hidden when done | – | – |
-| File rows | `<media.thumb>`, `<media.name>`, `<media.ext>`, `<media.size>`, `<media.duration>`, `<media.status>` + live progress | indexed and none: "No media in this chat"; filters: "No files match these filters" + Reset | 8 skeleton rows | ErrorState |
+| File rows | `<media.thumb>`, `<media.name>`, `<media.ext>`, `<media.size>`, `<media.duration>`, `<media.status>` + live progress | `<scan.state>` is `scanning` and no rows yet: index bar + 8 skeleton rows; not scanning and none: "No media in this chat"; filters: "No files match these filters" + Reset | 8 skeleton rows | ErrorState |
 | Pagination text | `<media.total>`, page, pageSize | hidden | – | – |
 | Messages | `<message.*>` | "No messages" | skeleton bubbles | ErrorState |
 | Speed tile | `<live.speed.download>` | 0 B/s | skeleton | – |
@@ -393,7 +393,7 @@ Data needs: `library.list({ q, type, chat, sort, page })` (`library`), `library.
 | Category | Subtitle | Rows (only real, honored settings) |
 |----------|----------|------|
 | General | Startup and window | Start with Windows (toggle), Minimize to tray on close (toggle) |
-| Downloads | Location, limits, naming | Download folder (`<settings.downloadRoot>` + Change + Open), Max concurrent downloads (stepper 1–5), Skip existing files, Prefix file names with date, Folder template (text, placeholders `{chat}` and `{chat_id}`) |
+| Downloads | Location, limits, naming | Download folder (`<settings.downloadRoot>` + Change + Open; description "Existing downloads stay where they are"), Max concurrent downloads (stepper 1–5), Skip existing files, Prefix file names with date, Folder template (text, placeholders `{chat}` and `{chat_id}`) |
 | Uploads | Defaults and limits | Default destination (select of `canPost` chats + None), Upload as album, Keep original file names, Max concurrent uploads (stepper 1–3) |
 | Telegram | Account, session, import | Account (avatar, `<me.name>`, `@<me.username>`, `<me.phone>`), API ID (`<settings.apiId>`; "API hash saved", never shown), Import from FileGram, Log out |
 | Channels | Chat list | Show archived chats |
@@ -442,7 +442,7 @@ Data needs: `settings.get` (`settings`), `app.info`, `app.storage` (`storage`, r
 | Clear app data | Disabled while transfers are active (same live condition); confirm "Delete history, queue, media index, and settings (download folder resets to default)? Your login and downloaded files stay."; toast "Freed `<freed>`" | `app.clearData()` |
 | Source code | Opens in the browser | `<a href target="_blank">` → `shell.openExternal` |
 | Open-source licenses | `LicensesDialog` with `<app.licenses>` (name, version, license) | `app.info()` |
-| Clear All Data | Typed DELETE; checkbox "Also delete downloaded files (`<storage.library.files>` files, `<storage.library.total>`)", unchecked; toast "Freed `<freed>`"; app returns to Login | `app.clearAll({ deleteDownloads })` |
+| Clear All Data | Typed DELETE; checkbox "Also delete downloaded files (`<storage.library.files>` files, `<storage.library.total>`)", unchecked; toast "Freed `<freed>`"; Start with Windows turns off; app returns to Login | `app.clearAll({ deleteDownloads })` |
 | Disconnect Telegram | Typed DISCONNECT; toast; app returns to Login | `auth.logout()` |
 
 ### Data bindings

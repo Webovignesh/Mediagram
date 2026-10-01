@@ -1,6 +1,6 @@
 # TeleFlow: Architecture
 
-Status: final design for v1 (2026-10-01, revised after design reviews 1 and 2; responses at the end). Keep this file in sync with the code; if they disagree, fix whichever is wrong in the same change.
+Status: final design for v1 (2026-10-01, revised after design reviews 1, 2, and 3; responses at the end). Keep this file in sync with the code; if they disagree, fix whichever is wrong in the same change.
 
 The IPC methods below are the app's API (the "routes"), and the IPC events are its push channel. There is no REST server and no WebSocket (user scope change, see PROGRESS decision log).
 
@@ -79,6 +79,7 @@ assets/
   icon.svg         logo mark source
   icon.png         256 px render (window, tray, notifications)
   icon.ico         Windows icon (installer, exe, shortcuts)
+  installer.nsh    NSIS uninstall hook: removes the Start with Windows entry (Build)
 scripts/
   icon.ts          renders icon.svg to icon.png/icon.ico with Playwright (run manually)
 tests/
@@ -140,12 +141,20 @@ window.teleflow = {
 ```
 
 Main registers one handler, `ipcMain.handle('call', ...)`:
-1. Rejects the call unless `event.senderFrame` is non-null and `origin + pathname` of `new URL(event.senderFrame.url)` equals the app's renderer URL (dev server URL in dev, the packaged `index.html` file URL otherwise). Hash and query are ignored because routing uses the hash.
+1. Rejects the call with `{ ok: false, status: 403, error: 'Not allowed' }` unless `event.senderFrame` is non-null and its page URL equals the renderer URL. Both sides go through one `pageUrl()` that drops the hash and query (routing uses the hash) and compares full `href`s. Origins are not compared: every `file:` URL has the opaque origin `"null"`, so an origin check would accept any local page. `pageUrl` also normalizes the dev server URL's trailing slash. `rendererUrl` is the URL the window loads, so the two cannot drift:
+   ```ts
+   const pageUrl = (s: string) => { const u = new URL(s); u.hash = ''; u.search = ''; return u.href }
+   // the env URL is honored only unpackaged, so a packaged app never loads a page named by the environment
+   const rendererUrl = pageUrl((!app.isPackaged && process.env.ELECTRON_RENDERER_URL) || pathToFileURL(indexHtml).href) // win.loadURL(rendererUrl)
+   // in ipcMain.handle('call', (e, req) => …)
+   if (!e.senderFrame || pageUrl(e.senderFrame.url) !== rendererUrl) return { ok: false, status: 403, error: 'Not allowed' }
+   ```
+   `indexHtml` = `out/renderer/index.html`, resolved from the main bundle's folder. Rejections are logged at warn with the sender URL (the one logged 4xx). The packaged smoke test (`test:app`, Login visible) proves the check passes for the real page.
 2. Looks up `method` as an own property of `methods` (unknown → 404).
 3. Runs the method's validator on `args`, then the handler.
 4. Returns `{ ok: true, data }` or `{ ok: false, status, error, retryAfter? }`. `web/src/api.ts` unwraps and throws an `Error` with `status` on failure, so pages show the message as is.
 
-Errors are created with `fail(status, message)` (one helper in `core/db.ts`, used everywhere): 400 invalid input, 403 not allowed (cannot post, Telegram permission), 404 not found, 409 conflict (busy, locked, wrong state), 413 too large, 429 Telegram flood wait (`retryAfter` seconds), 503 Telegram not ready, 500 unexpected. Messages are user-facing sentences. 500s are logged with the stack; 4xx are not logged.
+Errors are created with `fail(status, message)` (one helper in `core/db.ts`, used everywhere): 400 invalid input, 403 not allowed (cannot post, Telegram permission), 404 not found, 409 conflict (busy, locked, wrong state), 413 too large, 429 Telegram flood wait (`retryAfter` seconds), 503 Telegram not ready, 500 unexpected. Messages are user-facing sentences. 500s are logged with the stack; 4xx are not logged, except the sender-check 403 (step 1).
 
 ### Shared shapes
 
@@ -171,20 +180,19 @@ type AuthState = { connection: 'ready' | 'connecting' | 'updating' | 'offline' }
 
 type Chat = { id: number, title: string, kind: 'private' | 'saved' | 'group' | 'channel',
               username: string | null, photo: string | null, unread: number,
-              lastDate: number /* unix s, 0 if none */, canPost: boolean, archived: boolean, folders: number[] }
+              lastDate: number /* unix s, 0 if none */, canPost: boolean, folders: number[] }
 type Folder = { id: number, name: string }
 type MediaItem = { chatId: number, messageId: number, date: number, type: MediaType, name: string, ext: string,
                    size: number, duration: number, caption: string, thumb: string | null,
                    status: 'none' | 'queued' | 'active' | 'paused' | 'failed' | 'downloaded',
                    jobId: number | null, path: string | null }
-type Message = { id: number, date: number, sender: string, text: string, outgoing: boolean, media: MediaItem | null }
+type Message = { id: number, date: number, sender: string, text: string, media: MediaItem | null }
 type Job = { id: number, kind: Kind, status: Status, chatId: number, chatTitle: string,
              chatUsername: string | null, chatPhoto: string | null, messageId: number | null,
-             name: string, type: MediaType | 'album', fileCount: number, size: number, done: number,
+             name: string, type: MediaType | 'album', size: number, done: number,
              thumb: string | null, path: string | null, error: string | null, retryAt: number | null,
-             attempts: number, createdAt: number, finishedAt: number | null }
-// Job.chatUsername / chatPhoto come from the chat cache at read time (null when the chat is unknown);
-// fileCount = json_array_length(files) for uploads, 1 for downloads.
+             finishedAt: number | null }
+// Job.chatUsername / chatPhoto come from the chat cache at read time (null when the chat is unknown).
 type JobLive = { id: number, kind: Kind, done: number, size: number, speed: number, eta: number | null, finalizing: boolean }
 type LiveStats = { speed: KindCount /* bytes/s */,
                    history: number[] /* last 60 total-speed samples, 1/s; zeros keep being sampled until 60 in a row, so an idle chart is flat */,
@@ -203,6 +211,11 @@ type MediaFilters = { type?: 'video' | 'photo' | 'document' | 'audio' | 'animati
                       sort?: 'newest' | 'oldest' | 'largest' | 'smallest' | 'name' | 'longest' }
 ```
 
+TDLib-to-shape mappings (TDLib 1.8.66):
+- `Folder.name` = `chatFolderInfo.name.text.text` (`name` is a `chatFolderName` object, not a string).
+- `Chat.photo` = `chat.photo.small.remote.id`; `Me.photo` = `user.profile_photo.small.remote.id`; `null` when absent.
+- `AuthState.connection` from `updateConnectionState`: `connectionStateReady` → `ready`, `connectionStateUpdating` → `updating`, `connectionStateConnecting` and `connectionStateConnectingToProxy` → `connecting`, `connectionStateWaitingForNetwork` → `offline`. `offline` also while no client exists.
+
 Filter buckets: duration short < 1 min, medium 1–10 min, long 10–30 min, xlong > 30 min; any `duration` filter also requires `duration > 0`, so photos and documents never match. Size small < 10 MB, medium 10–100 MB, large 100 MB–1 GB, xlarge > 1 GB. Media type `video` covers `video` + `video_note`; `audio` covers `audio` + `voice`. Library types by extension: video (mp4 mkv mov avi webm m4v wmv flv ts 3gp), image (jpg jpeg png gif webp bmp heic tiff), audio (mp3 m4a aac ogg oga opus flac wav wma), archive (zip rar 7z tar gz bz2 xz), everything else document.
 
 ### Methods
@@ -219,7 +232,7 @@ Common validators (in `ipc.ts`): `id` = safe integer ≠ 0; `page` = integer 1�
 | `app.clearData` | – | `{ freed }` | 409 transfers active |
 | `app.clearAll` | `{ deleteDownloads: boolean }` | `{ freed }` | – |
 | `fileGram.inspect` | `{ dir: absolute path ≤ 260 }` | `FileGramReport` | 400 not a FileGram folder |
-| `fileGram.import` | `{ dir }` | `{ session, credentials: boolean, downloadRoot: string, movedFiles: number, warning: string \| null, leftovers: Leftovers }` | 400, 409 "Close FileGram first", 409 transfers active |
+| `fileGram.import` | `{ dir }` | `{ session: boolean /* session moved */, credentials: boolean, downloadRoot: string, movedFiles: number, warning: string \| null, leftovers: Leftovers }` | 400, 409 "Close FileGram first", 409 transfers active |
 | `fileGram.leftovers` | – | `Leftovers` | – |
 | `fileGram.removeLeftovers` | – | `{ freed }` | 404 nothing to remove |
 | `auth.get` | – | `AuthState` | – |
@@ -231,12 +244,12 @@ Common validators (in `ipc.ts`): `id` = safe integer ≠ 0; `page` = integer 1�
 | `chats.list` | – | `{ chats: Chat[], folders: Folder[] }` | 503 |
 | `chats.open` | `{ link: string 2–300, join?: boolean }` | `{ chat: Chat } \| { invite: { title, members, photo } }` | 400 unsupported link, 404, 429, 503 |
 | `chats.messages` | `{ chatId, limit?: 1–1000 (30) }` | `{ messages: Message[] /* newest first */, more: boolean }` | 404, 503 |
-| `chats.media` | `{ chatId, ...MediaFilters, page?, pageSize? }` | `{ items: MediaItem[], total, exts: string[], scan: { state: 'idle' \| 'scanning' \| 'done', indexed: number, total: number \| null } }` | 404 |
+| `chats.media` | `{ chatId, ...MediaFilters, page?, pageSize? }` | `{ items: MediaItem[], total, exts: string[] /* distinct ext of the whole chat index, ignoring filters */, scan: { state: 'idle' \| 'scanning' \| 'done', indexed: number, total: number \| null } }` | 404 |
 | `search.global` | `{ q: 1–300 chars }` | `{ chats: Chat[] (≤ 5), files: LibraryItem[] (≤ 5, from the cached Library scan, which startup fills in the background; never waits for or triggers a rebuild), link: { kind: 'message' \| 'chat' \| 'invite' } \| null /* null when not a link or TDLib rejects it */ }` | – |
-| `downloads.add` | `{ items: { chatId, messageId }[] (1–10000), force?: boolean }` or `{ chatId, filters: MediaFilters }` or `{ link }` | `{ added, skipped }` | 400 no media, 404, 503 |
+| `downloads.add` | `{ items: { chatId, messageId }[] (1–10000), force?: boolean }` or `{ chatId, filters: MediaFilters }` or `{ link }` | `{ added, skipped }` | 400 no media (`{ link }` only), 404 unknown chat, 503 |
 | `uploads.add` | `{ chatId, paths: string[] (1–500), caption: string ≤ me.captionMax, album: boolean, keepNames: boolean }` | `{ added /* files, not jobs */ }` | 400 missing file, 403 cannot post, 413 over `me.uploadMax` |
 | `jobs.list` | `{ kind?: Kind, status?: 'open' \| Status, q?, page?, pageSize? }` | `{ items: Job[], total }` | – |
-| `jobs.action` | `{ action: 'pause' \| 'resume' \| 'retry' \| 'cancel' \| 'up' \| 'down' \| 'clear-completed', ids?: id[] (1–50000) }` | `{ changed }` | 400 (`up`/`down` need exactly one id) |
+| `jobs.action` | `{ action: 'pause' \| 'resume' \| 'retry' \| 'cancel' \| 'up' \| 'down' \| 'clear-completed', ids?: id[] (1–1000) }` | `{ changed }` | 400 (`up`/`down` need exactly one id) |
 | `stats.live` | – | `LiveStats` | – |
 | `stats.overview` | – | `{ completedToday: KindCount, totalFiles: KindCount, recent: HistoryItem[] (6) }` (active and failed counts come from `LiveStats.counts`) | – |
 | `stats.activity` | `{ range: '24h' \| '7d' \| '30d' }` | `{ buckets: number[] /* bucket start, ms */, download: number[], upload: number[] }` | – |
@@ -250,11 +263,18 @@ Common validators (in `ipc.ts`): `id` = safe integer ≠ 0; `page` = integer 1�
 | `settings.set` | partial `Settings` (editable keys only) | `Settings` | 400 per key |
 
 Notes:
-- `library.*` paths are relative to the download root or absolute; both are resolved and must be inside the root (`realpath` check) and be existing files. Queue and Chat View reuse `library.reveal` with a job's or media item's `path`.
-- `library.trash`: after `trashItem` succeeds for a file, one transaction runs `UPDATE history SET path = NULL WHERE kind = 'download' AND lower(path) = lower(?)` and deletes completed download jobs with that path. The message then shows as not downloaded, is not "missing", and can be downloaded again.
-- `downloads.add` with `items` reads display data from the media index when present and calls `getMessages` (100 ids per call) otherwise. With `{ chatId, filters }` it selects from the media index with the same query as `chats.media`. Without `force`, items whose `MediaItem.status` is `downloaded` (same SQL predicate) are counted in `skipped` and not enqueued, so dedupe holds after Clear Completed. Inserts are batched 500 per transaction.
+- `library.*` paths are relative to the download root or absolute, and must be existing files. A path is accepted when it is inside the root after `realpath`, or when it equals (case-insensitively, through the `lower(path)` indexes) the `path` of a completed download job or a download history row. The second rule keeps "Show in folder" and "Open" working for downloads made before a download root change (the files are not moved), while still confining these calls to files TeleFlow wrote. Queue and Chat View reuse `library.reveal` with a job's or media item's `path`.
+- `library.trash`: after `trashItem` succeeds for a file, one transaction runs `UPDATE history SET path = NULL WHERE kind = 'download' AND lower(path) = lower(?)` and deletes completed download jobs with that path (both use the `lower(path)` indexes). The message then shows as not downloaded, is not "missing", and can be downloaded again.
+- `downloads.add` with `items` reads display data from the media index when present and calls `getMessages` (100 ids per call) otherwise. With `{ chatId, filters }` it selects from the media index with the same query as `chats.media`. Without `force`, items whose `MediaItem.status` is `downloaded` (same SQL predicate) are counted in `skipped` and not enqueued, so dedupe holds after Clear Completed. Unresolvable items (message deleted, no media, `null` from `getMessages`) also count as `skipped`; 404 only for an unknown chat; 400 "no media" only for `{ link }`. Inserts are batched 500 per transaction.
+- Id lists (`jobs.action` ids, `downloads.add` dedupe lookups) are bound as one JSON parameter, `WHERE id IN (SELECT value FROM json_each(?))`, so no statement grows with the list (SQLite caps bound parameters at 32 766).
 - `jobs.list`: `status: 'open'` = `queued`, `active`, `paused`. Order: open → `ORDER BY position`; `completed` or `failed` → `ORDER BY finished_at DESC, id DESC`; no status → open rows first by `position`, then the rest by `finished_at DESC`. `q` matches `name` with `LIKE` (escaped). The "#" column is `(page − 1) × pageSize + index + 1`.
-- `jobs.action` without `ids`: `pause` = all queued and active jobs; `resume` = all paused; `retry` = all failed; `cancel` = every job row; `clear-completed` = all completed (ignores `ids`). `up`/`down` need exactly one id of an open job and swap `position` with the neighbor of the same kind among open jobs. `retry` sets `status = 'queued', attempts = 0, error = NULL, retry_at = NULL`. `pause` and `cancel` on a job with no live engine state (for example an upload left `active` after logout) skip TDLib calls and only update or delete the row. `changed` = rows affected.
+- `jobs.action` without `ids`: `pause` = all queued and active jobs; `resume` = all paused; `retry` = all failed; `cancel` = every job row; `clear-completed` = all completed (ignores `ids`). `up`/`down` need exactly one id of an open job and swap `position` with the neighbor of the same kind among open jobs. `retry` sets `status = 'queued', attempts = 0, error = NULL, retry_at = NULL`. `pause` and `cancel` on a job with no live engine state (queued, paused, failed, requeued after a crash, or an upload left `active` after logout) skip the live TDLib calls and only update or delete the row. `changed` = rows affected.
+- `jobs.action cancel` still deletes the TDLib partial data of non-live downloads that ever transferred (`attempts > 0 OR done > 0`; `retry` resets `attempts` but not `done`), so Clear All's "Partial downloads are deleted" holds. The transaction that deletes the rows returns their `chat_id`/`message_id`; then a background task (not awaited by the call) runs per chat in batches of 100 ids while auth is `ready`:
+  ```ts
+  const { messages } = await invoke({ _: 'getMessages', chat_id, message_ids })
+  for (const m of messages) { const f = m && extractMedia(m)?.file; if (f && !inFlight.has(f.id)) await invoke({ _: 'deleteFile', file_id: f.id }).catch(() => {}) }
+  ```
+  `inFlight` (the engine's `Map<fileId, jobId>`) protects a same-file sibling that is downloading. A failed batch is ignored; whatever is left goes with the next Clear cache. When auth is not `ready` the task is skipped: `// ponytail: partial data stays until Clear cache; upgrade: retry on next ready`.
 - `chats.messages` pages `getChatHistory` internally (100 per call, TDLib returns short first pages) until it has `limit` messages or reaches the start (`more = false`). Chat View's "Load older" raises `limit` to `Math.min(limit + 30, 1000)` and refetches, so a refetch after an invalidation always returns one contiguous list from the newest message (no cursor pages to drop or overlap). `ponytail:` capped at the newest 1000 messages; older media are reachable in Files View; upgrade: cursor paging with an `until` bound.
 - `app.info` sources: `version` = `app.getVersion()`; `tdlib` = `tdl.execute({ _: 'getOption', name: 'version' })`; `installedAt` = `birthtimeMs` of `path.dirname(app.getPath('exe'))` when packaged (the folder survives NSIS updates), `null` in dev; `repository` = `package.json` `repository.url` with a leading `git+` and trailing `.git` removed, or `null` unless the result starts with `https://` (the window-open handler only opens `https:`); `licenses` = `__LICENSES__`, built in `electron.vite.config.ts` from `node_modules/<name>/package.json` for every `dependencies` entry plus `electron`, `react`, `react-dom`, `lucide-react`, injected into main with `define`.
 - `uploads.add` paths come from `window.teleflow.pathOf(file)`; main checks each is absolute, exists, is a regular file, and is 1 byte to `me.uploadMax`.
@@ -304,9 +324,9 @@ Who emits which topic:
 | `history` | History insert or path change (finish, failure, trash), local midnight, Clear app data |
 | `chats` | Chat cache updates, opened-set changes, `showArchived` change |
 | `library` | Download finalize, trash, download root change, FileGram import |
-| `settings` | `settings.set`, FileGram import, Clear app data |
-| `storage` | Clears, leftover removal, FileGram import |
-| `media:<chatId>`, `messages:<chatId>` | Any download job insert, status change, finalize, or delete in that chat (cancel, Remove, Clear All, Clear Completed, `clearCompletedDays`, clears), and any `history.path` change for that chat (trash). Bulk actions emit once per affected chat. Plus, `media:` only: index pages inserted (at most 1/s) and live upkeep; `messages:` only: `updateNewMessage` / `updateDeleteMessages` in that chat |
+| `settings` | `settings.set`, FileGram import, Clear app data. Not the `window` setting: main writes it on move/resize and emits nothing, so Settings does not refetch while the window is dragged |
+| `storage` | Clears, leftover removal, FileGram import, download root change |
+| `media:<chatId>`, `messages:<chatId>` | Any download job insert, status change, finalize, or delete in that chat (cancel, Remove, Clear All, Clear Completed, `clearCompletedDays`, clears), and any `history.path` change for that chat (trash). Bulk actions emit once per affected chat. Plus, `media:` only: index pages inserted (at most 1/s), scan state changes (start and finish, so the index bar hides), and live upkeep; `messages:` only: `updateNewMessage` / `updateDeleteMessages` in that chat |
 
 The renderer gets its first snapshot with `auth.get` and `stats.live`, then follows events. `useCall(method, args, topics)` refetches when one of its topics is invalidated (renderer debounce 300 ms). `useCall` keeps the previous `data` during a refetch and never clears it on reload, so skeletons appear only on first load. Files View and Chat View subscribe only to their chat's topic; live progress on their rows comes from `live.active` by `jobId`.
 
@@ -336,7 +356,7 @@ CREATE TABLE jobs (
   id          INTEGER PRIMARY KEY,
   kind        TEXT    NOT NULL CHECK (kind IN ('download', 'upload')),
   status      TEXT    NOT NULL CHECK (status IN ('queued', 'active', 'paused', 'completed', 'failed')),
-  position    INTEGER NOT NULL,             -- queue order; starts as id, swapped by up/down
+  position    INTEGER NOT NULL,             -- queue order; new rows get MAX(position) + 1 (Invariants), swapped by up/down
   chat_id     INTEGER NOT NULL,
   chat_title  TEXT    NOT NULL,             -- snapshot at enqueue, for display when the chat is gone
   message_id  INTEGER,                      -- download: source message; upload: first sent message
@@ -346,9 +366,9 @@ CREATE TABLE jobs (
   done        INTEGER NOT NULL DEFAULT 0,   -- bytes; live value is in memory, persisted on pause/finish/quit
   thumb       TEXT,                         -- download: thumbnail remote file id
   path        TEXT,                         -- download: final file path once completed
-  files       TEXT,                         -- upload: JSON [{ path, name, size, type, messageId? }]; messageId set as each file is sent
+  files       TEXT,                         -- upload: JSON [{ path, name, size, type, pendingId?, messageId? }]: pendingId = temporary
+                                            -- message id while sending, messageId once sent (Upload steps 3–6)
   caption     TEXT,                         -- upload
-  pending     TEXT,                         -- upload: JSON [temporary message id] while sending
   attempts    INTEGER NOT NULL DEFAULT 0,
   error       TEXT,
   retry_at    INTEGER,                      -- ms; failed jobs with an automatic retry scheduled
@@ -358,8 +378,10 @@ CREATE TABLE jobs (
 CREATE UNIQUE INDEX jobs_download_msg ON jobs (chat_id, message_id) WHERE kind = 'download';
 CREATE INDEX jobs_queue    ON jobs (kind, status, position);
 CREATE INDEX jobs_finished ON jobs (status, finished_at);
+CREATE INDEX jobs_path     ON jobs (lower(path));           -- trash and library.* path lookups
 
-CREATE TABLE history (                      -- append-only record of finished files, one row per file
+CREATE TABLE history (                      -- append-only record of finished transfers:
+                                            -- completed = one row per file; failed = one row per job (name = job name)
   id          INTEGER PRIMARY KEY,
   kind        TEXT    NOT NULL CHECK (kind IN ('download', 'upload')),
   status      TEXT    NOT NULL CHECK (status IN ('completed', 'failed')),
@@ -375,6 +397,7 @@ CREATE TABLE history (                      -- append-only record of finished fi
 ) STRICT;
 CREATE INDEX history_time ON history (finished_at);
 CREATE INDEX history_msg  ON history (chat_id, message_id);
+CREATE INDEX history_path ON history (lower(path));         -- trash and library.* path lookups
 
 CREATE TABLE media (                        -- per-chat media index for Files View filters
   chat_id    INTEGER NOT NULL,
@@ -393,8 +416,8 @@ CREATE INDEX media_chat_date ON media (chat_id, date);
 
 CREATE TABLE scans (                        -- media index progress per chat
   chat_id    INTEGER PRIMARY KEY,
-  newest_id  INTEGER NOT NULL,              -- newest message id indexed
-  oldest_id  INTEGER NOT NULL,              -- oldest message id reached
+  newest_id  INTEGER NOT NULL,              -- id of the newest message the walk has seen (any content, not only media)
+  oldest_id  INTEGER NOT NULL,              -- id of the oldest message the walk has seen
   complete   INTEGER NOT NULL DEFAULT 0,    -- 1 once the walk reached the start of history
   total      INTEGER                        -- approx. media messages at scan start (see Media index scan); NULL if unknown
 ) STRICT;
@@ -402,12 +425,14 @@ CREATE TABLE scans (                        -- media index progress per chat
 
 Invariants and who owns them:
 - One download job per message: the database (`jobs_download_msg`). Enqueue uses `INSERT ... ON CONFLICT (chat_id, message_id) WHERE kind = 'download' DO UPDATE SET status = 'queued', attempts = 0, error = NULL, retry_at = NULL, path = NULL, finished_at = NULL WHERE jobs.status = 'failed' OR (:force AND jobs.status = 'completed')`. Queued, active, and paused rows are never touched. `force` (Verify re-download) also requeues completed jobs. Without `force`, `downloads.add` first drops items whose status is `downloaded` (below). `skipped` = items dropped plus rows not inserted or updated.
+- Queue order: `enqueue` (shared by `downloads.add` and `uploads.add`) reads `next = (SELECT IFNULL(MAX(position), 0) FROM jobs) + 1` once per transaction and gives each inserted row `next++`. One `INSERT` cannot read its own new id, and a `MAX` subquery per row would scan the table for each of up to 10 000 rows. The upsert's `DO UPDATE` leaves `position` alone, so a retried job (manual, automatic, re-added, or forced) keeps its place: the queue runs in first-enqueue order, the same rule interrupted downloads and stall requeues follow.
 - No download row stays `active` without live engine state: the engine (`requeueActiveDownloads`, see Transfer engine).
 - Valid kinds and statuses: the database (`CHECK`).
 - Jobs and history stay separate: history survives Clear Completed and powers Overview, Library metadata, and "downloaded" status in Files View. Only Clear app data and Clear All Data delete history rows; `library.trash` only sets `history.path` to NULL.
 - Canceling deletes the job row; there is no `canceled` status.
 - No two finalizes write the same file name: the engine (`uniquePath` + the in-memory `reserved` set), because the check and the rename are not atomic.
-- An upload file is posted at most once: the engine, by persisting `files[i].messageId` as each send succeeds and sending only files without one.
+- An upload file is posted at most once: the engine, by keeping each temporary id on its own file entry (`files[i].pendingId`, so routing survives a crash after part of a send succeeded), persisting `files[i].messageId` as each send succeeds, and sending only files without one.
+- A file under its final download name is always complete: the engine (finalize copies across volumes to a dot-prefixed part file, then renames; Download step 6).
 - The download root is never a system, app data, profile, or known folder or an ancestor of one: `checkDownloadRoot` in `core/storage.ts`, called by both writers (`settings.set`, FileGram import).
 
 `MediaItem.status` is computed in SQL: the matching job's status if it is `queued`, `active`, `paused`, or `failed`; else `downloaded` when a completed download job with a path or a completed download history row with `path IS NOT NULL` exists for the message; else `none`. `MediaItem.path` = that job's or the latest such history row's path.
@@ -418,7 +443,7 @@ Values are JSON in `settings`; a missing row means the default. `core/db.ts` own
 
 | Key | Default | Rule | Effect |
 |-----|---------|------|--------|
-| `downloadRoot` | `<Downloads>\TeleFlow` | `checkDownloadRoot` | Engine target root, Library root; invalidates `library`, `storage` |
+| `downloadRoot` | `<Downloads>\TeleFlow` | `checkDownloadRoot` | Engine target root, Library root; invalidates `library`, `storage`. Existing downloads are not moved and stay reachable through `library.*` (Methods notes) |
 | `maxDownloads` | 2 | integer 1–5 | Engine pump |
 | `skipExisting` | true | boolean | Engine |
 | `datePrefix` | false | boolean | Naming |
@@ -438,7 +463,7 @@ Values are JSON in `settings`; a missing row means the default. `core/db.ts` own
 | `startWithSystem` | – | boolean | Not stored: read as `app.getLoginItemSettings(loginItem).executableWillLaunchAtLogin`, written with `app.setLoginItemSettings({ ...loginItem, openAtLogin })` (`loginItem` in Desktop integration) |
 | `apiId`, `apiHash` | – | set by `auth.credentials` / FileGram import only | `apiHash` is never returned or logged |
 | `fileGramDir` | null | set by FileGram import | Leftover detection |
-| `window` | – | `{ x, y, width, height, maximized }` | Written by main on move/resize (debounced 500 ms) |
+| `window` | – | `{ x, y, width, height, maximized }` | Written by main on move/resize (debounced 500 ms); emits no topic |
 
 ## Telegram (`core/telegram.ts`)
 
@@ -449,7 +474,8 @@ Values are JSON in `settings`; a missing row means the default. `core/db.ts` own
 - A closed TDLib client cannot be reused (FileGram lesson). After `logOut` reaches `authorizationStateClosed`, the module drops the client, deletes `tdlib\db` and `tdlib\files`, and calls `start()` again with the same credentials, which yields the phone step. No stable-wrapper class.
 - `API_ID_INVALID` / `API_ID_PUBLISHED_FLOOD` from client setup close the client, delete the stored credentials, and set `{ step: 'credentials', error }`.
 - Auth state mapping: `WaitTdlibParameters` → `starting` (tdl answers it); `WaitPhoneNumber` → `phone`; `WaitCode` → `code` (`via` from `code_info.type`); `WaitPassword` → `password` (`hint`); `Ready` → `ready`; `LoggingOut`, `Closing`, `Closed` → `logging-out`. States TeleFlow cannot complete (`WaitEmailAddress`, `WaitEmailCode`, `WaitRegistration`, `WaitOtherDeviceConfirmation`, `WaitPremiumPurchase`) → `{ step: 'phone', error: 'Telegram needs <email setup | account registration | confirmation on another device | Telegram Premium> for this number, which TeleFlow does not support yet. Finish it in the official Telegram app, then try again.' }`; TDLib accepts `setAuthenticationPhoneNumber` from these states. `ponytail:` email login and sign-up are not supported; upgrade: `auth.email` / `auth.emailCode` → `setAuthenticationEmailAddress` / `checkAuthenticationEmailCode`.
-- Leaving `ready` (any state above other than `ready`) calls `requeueActiveDownloads()`, drops in-memory upload state (rows stay `active`; the next `ready` runs the pending-id check of Upload step 6), and stops the media scan.
+- Leaving `ready` (any state above other than `ready`) calls `requeueActiveDownloads()`, drops in-memory upload state (rows stay `active`; the next `ready` rebuilds the routing map from `files[].pendingId` and runs the check of Upload step 6), and stops the media scan.
+- Logout keeps the queue: jobs are not tied to an account, so if another account signs in, its downloads fail as "This message no longer exists" and its uploads as "Interrupted". `// ponytail: jobs are not tied to an account; upgrade: store me.id on jobs and pause other accounts' jobs`.
 - `invoke()` throws `fail(503, 'Telegram is not connected yet')` unless the state is `ready` (auth calls excepted). TDLib errors become `fail()` with a status from the code (400, 403, 404, 429 with `retryAfter` parsed from `FLOOD_WAIT_n` / `retry after n`) and a readable message.
 - On quit: `client.close()` (awaited up to 5 s) so TDLib flushes its database.
 
@@ -462,7 +488,7 @@ The module keeps `Map`s for chats, users, basic groups, and supergroups, filled 
 - `username`: first of `usernames.active_usernames` from the user or supergroup.
 - `canPost`: saved → true; private → false; channel → creator, or administrator with `rights.can_post_messages`; group → creator or administrator, or the member's effective permissions allow `can_send_documents` (member: `chat.permissions`, kept fresh by `updateChatPermissions`; restricted: `status.permissions`).
 - Media permissions for uploads (not exposed to the renderer): admins, creators, channels, and Saved Messages allow everything; in groups `can_send_photos` / `can_send_videos` from the same effective permissions. `uploads.add` passes them to `groupUploads`, which sends photos/videos as documents where they are not allowed.
-- `folders`: folder ids from `chat.positions` with `chatListFolder`; `archived` from `chatListArchive` positions. Order: main-list `order` descending, archived after.
+- `folders`: folder ids from `chat.positions` with `chatListFolder`; folder names from `updateChatFolders` (`Folder.name` mapping under Shared shapes). Order: main-list `order` descending, then chats that only have a `chatListArchive` position (when `showArchived` is on).
 
 ### Media extraction
 
@@ -482,12 +508,13 @@ One function maps a message to media (FileGram's `extractMedia`, minus stickers)
 
 ### Media index scan
 
-- `chats.media` starts a scan for the chat when it has no `scans` row, is incomplete, or its newest indexed id is older than the chat's last message. One scan runs at a time; asking for another chat stops the current one after its page (progress is persisted, so it resumes later).
-- Top-up: `getChatHistory` from the newest message down to `newest_id`. Backfill: from `oldest_id` toward the start until an empty page sets `complete = 1`. Pages of 100, each inserted in one transaction, `scans` updated, `invalidate: ['media:<chatId>']` at most once per second.
+- `scans.newest_id` / `oldest_id` count messages walked, not media indexed: they are the newest and oldest message ids the walk has seen, whatever the content. The row is created with the first page of the first walk, which starts at the newest message, so it counts as a finished top-up.
+- `chats.media` starts a scan for the chat when it has no `scans` row, `complete = 0`, or `newest_id < chat.last_message.id` (chat cache; no last message → no top-up). In a chat whose last message is text, a finished top-up sets `newest_id` to that message's id, so the next call does not start another. One scan runs at a time; asking for another chat stops the current one after its page (progress is persisted, so it resumes later).
+- Top-up: `getChatHistory` from the newest message down to `newest_id`. Only when the walk reaches the old `newest_id` is it set to the newest id seen (and the chat added to `current`, below), so a top-up interrupted by another chat restarts from the top next time instead of leaving a gap. Backfill: from `oldest_id` toward the start until an empty page sets `complete = 1`. Pages of 100, each inserted in one transaction (`INSERT OR REPLACE`, so pages that overlap live upkeep are harmless), `scans` updated, `invalidate: ['media:<chatId>']` at most once per second, and once more on each `scan.state` change (start, finish), so the index bar hides. With `newest_id` defined by messages walked, that invalidation cannot restart the scan.
 - `scans.total` = sum of `getChatMessageCount({ chat_id, filter, return_local: false })` at scan start over `searchMessagesFilterPhoto`, `Video`, `Document`, `Audio`, `Animation`, `VoiceNote`, `VideoNote` (7 calls; TDLib rejects `searchMessagesFilterEmpty` here). Any failed call → `NULL`. The counts are approximate (TDLib says so) and include stickers sent as documents, so the bar says "about".
 - `scan.indexed` = `SELECT COUNT(*) FROM media WHERE chat_id = ?`, clamped to `total`. `scan.state` = `scanning` while this chat's scan runs, `done` when `complete = 1` and the top-up is current, else `idle`.
 - Flood waits sleep and continue. A scan stops when the client leaves `ready`.
-- Live upkeep: `updateNewMessage` with media in a chat that has a `scans` row inserts the row; `updateDeleteMessages` with `is_permanent && !from_cache` deletes rows (TDLib cache evictions are ignored, a FileGram lesson). Edits are not tracked (`ponytail:` comment; upgrade path: handle `updateMessageContent`).
+- Live upkeep: `updateNewMessage` in a chat that has a `scans` row inserts the media row (when the message has media) and, for any content, sets `newest_id = max(newest_id, message.id)`, but only for chats in the in-memory `current` set: chats whose top-up finished since the connection was last `ready`. `current` is cleared whenever `updateConnectionState` leaves `ready`, so after a restart or an outage (when TDLib may skip `updateNewMessage` for a gap) the next `chats.media` call runs one top-up over the gap instead of jumping past it. `updateDeleteMessages` with `is_permanent && !from_cache` deletes rows (TDLib cache evictions are ignored, a FileGram lesson). Edits are not tracked (`ponytail:` comment; upgrade path: handle `updateMessageContent`).
 
 ### Link resolution
 
@@ -519,11 +546,13 @@ TDLib parses links: `getInternalLinkType(link)` after normalizing bare `@name` o
 | Download progress | `updateFile` |
 | Download stall | `getFile`, `downloadFile` again; third stall in a row `cancelDownloadFile` and requeue (see Stalls) |
 | Download finalize | `deleteFile` (after moving the file out of `tdlib\files`, so TDLib's database stays consistent), thumbnail `getRemoteFile` + `downloadFile` (synchronous) |
-| Download pause / cancel | `cancelDownloadFile(only_if_pending: false)`; cancel also `deleteFile` |
+| Download pause / cancel | `cancelDownloadFile(only_if_pending: false)`; cancel also `deleteFile` (non-live downloads that transferred data: `getMessages` first, see `jobs.action cancel`) |
+| Download skip-existing | `deleteFile` only when TDLib holds local data for the file (Download step 4) |
 | Upload start | `sendMessage` (1 file) or `sendMessageAlbum` (2–10) |
 | Upload progress / result | `updateFile` (`remote.uploaded_size`), `updateMessageSendSucceeded`, `updateMessageSendFailed`, `updateDeleteMessages` naming a pending id (TDLib reports some failed sends as deletions) |
-| Upload pause / cancel / failed cleanup | `deleteMessages(revoke: true)` on the pending messages (skipped when the job has no live state) |
-| Upload crash recovery | pending ids loaded into the routing map before `start(creds)`; on `ready`, `getMessage` on each still-unsettled pending id |
+| Upload pause / cancel / quit | `deleteMessages(revoke: true)` on the still-pending messages by their `pendingId`s (skipped when the job has no live state) |
+| Upload failed cleanup | `deleteMessages(chat_id, [update.message.id], revoke: true)`: the failed message's new id, not the temporary one |
+| Upload crash recovery | routing map rebuilt from `files[].pendingId` before `start(creds)`; on `ready`, `getMessage` on each still-unsettled pending id |
 | `teleflow://thumb` | `getRemoteFile`, size check, `downloadFile` (priority 32, synchronous) |
 | `app.clearCache` and Clear app data | `optimizeStorage` (size 0, ttl 0, count 0, immunity_delay 0, every `fileType*` used for media, thumbnails, and profile photos) |
 | `app.clearAll` | `logOut` as above |
@@ -532,45 +561,61 @@ TDLib parses links: `getInternalLinkType(link)` after normalizing bare `@name` o
 ## Transfer engine (`core/transfers.ts`)
 
 - States: `queued → active → completed | failed`, `queued/active → paused → queued`, `failed → queued` (retry). Cancel deletes the row. The UI shows "Downloading"/"Uploading" for `active` by kind, and "Finalizing" while an active download is moving its file (`JobLive.finalizing`).
-- In memory, per active job: `{ fileIds, done, speed, lastBytes, lastAt, lastProgressAt, stalls }`, plus `Map<fileId, jobId>` for `updateFile` routing. Speed is an EMA (`speed = 0.7 * speed + 0.3 * instant`). `done` is written to SQLite on pause, finish, and quit.
+- In memory, per active job: `{ fileIds, done, speed, lastBytes, lastAt, lastProgressAt, stalls }`, plus `inFlight: Map<fileId, jobId>` for `updateFile` routing, the same-file wait, and cancel cleanup. Speed is an EMA (`speed = 0.7 * speed + 0.3 * instant`). `done` is written to SQLite on pause, finish, and quit.
 - Pump (`pump()`): runs on enqueue, finish, resume, settings change, `ready`, and when a wait ends. Per kind it starts `SELECT ... WHERE kind = ? AND status = 'queued' ORDER BY position LIMIT free` while the kind's gate allows. Nothing starts unless Telegram is `ready`. A download whose TDLib file is already in flight for another job waits (`ponytail:` same-file siblings re-download after the first finishes; `skipExisting` usually completes them instantly).
 - Gate per kind (pure, tested): concurrency limit from settings; start spacing starting at 600 ms (downloads) / 1000 ms (uploads), doubled on every flood up to 5 s and eased by 100 ms per accepted start (AIMD from FileGram); `waitUntil` set from `FLOOD_WAIT_n`, `FLOOD_PREMIUM_WAIT_n`, or `retry after n`. A flood-waited job goes back to `queued` and its `attempts` is decremented, so the wait does not spend an attempt.
 - `attempts` counts starts: each start increments it.
 - `requeueActiveDownloads()`: `UPDATE jobs SET status = 'queued' WHERE kind = 'download' AND status = 'active'` and clear the in-memory download state. Called once after the database opens (before the first pump) and whenever auth leaves `ready` (logout, credentials change, FileGram session import, client closed). Rows keep their `position`, so interrupted downloads restart first, and TDLib's partial data makes them resume. Uploads use their pending-id path instead (Upload step 6).
 - Tick every 500 ms: emit `stats` when busy; sample `history` once per second (see `LiveStats`); check stalls (below); requeue failed jobs whose `retry_at` passed; emit `invalidate: ['history']` when the local date changes; once a minute delete completed jobs older than `clearCompletedDays`.
 - Stalls (one rule, pure decision tested). Checks run only while `connection === 'ready'`, so an outage does not burn restarts. No new bytes for `stallSeconds` → `getFile`: completed → finalize; `can_be_downloaded: false` → fail, not retryable; otherwise `downloadFile` again and `stalls += 1`. Any progress resets `stalls`. At `stalls === 3`: if `attempts >= retryAttempts` → fail "Download keeps stalling" (auto-retry does not apply because attempts are spent; manual Retry resets them); else `cancelDownloadFile` and `status = 'queued'` with `position` unchanged, and the next start counts as an attempt.
-- Auto-retry: on a retryable failure with `autoRetry` on and `attempts < retryAttempts`, set `retry_at = now + min(30 s × 2^(attempts − 1), 10 min)`. Retryable (pure, tested): network and timeout errors, 5xx, `FILE_REFERENCE_EXPIRED`, unknown errors. Not retryable: message deleted, no media, `can_be_downloaded: false`, source file missing, `CHAT_WRITE_FORBIDDEN`, `ENOSPC`, file too large, interrupted upload, "Download keeps stalling". A final failure inserts one `history` row.
+- Auto-retry: on a retryable failure with `autoRetry` on and `attempts < retryAttempts`, set `retry_at = now + min(30 s × 2^(attempts − 1), 10 min)`. Retryable (pure, tested): network and timeout errors, 5xx, `FILE_REFERENCE_EXPIRED`, unknown errors. Not retryable: message deleted, no media, `can_be_downloaded: false`, source file missing, `CHAT_WRITE_FORBIDDEN`, `ENOSPC`, file too large, interrupted upload, "Download keeps stalling". A final failure inserts one `history` row per job (`name` = job name); completions insert one per file.
 
 ### Download
 
 1. Mark active, `attempts + 1`. `getMessage(chat_id, message_id)`; missing → fail "This message no longer exists". No media → fail.
 2. If the file has `remote.id`, `getRemoteFile` to get the current file id (FileGram lesson: stored ids go stale).
 3. Target folder = download root + `folderFor(template, chat)`; name = `fileName(media, datePrefix)` (sanitized: Windows-invalid characters → `_`, reserved names get `_`, trailing dots/spaces trimmed, 180-char cap keeping the extension).
-4. `skipExisting` and a file with that name and the expected size exists → completed with that path, no transfer.
+4. `skipExisting` and a file with that name and the expected size exists → `complete(job, path)` (step 6) with that path and no transfer, so history, dedupe, stats, and Library metadata see it like any download, including after Clear Completed. It skips the move and Mark-of-the-Web (the file may not be TeleFlow's). When TDLib holds local data for the file (`local.downloaded_size > 0`, for example after a crash between the move and `complete`) and no other job has it in `inFlight`, it also calls `deleteFile`, so the TDLib copy does not linger.
 5. Already complete in TDLib's cache → finalize. Else `downloadFile` (async); progress via `updateFile`.
 6. Finalize:
    - Free the concurrency slot first (big cross-volume copies must not block the next download, a FileGram lesson) and mark `finalizing`.
-   - Pick the name with `uniquePath(dir, name, reserved)` (` (2)`, ` (3)`; pure, tested). It skips names that exist on disk and lowercased paths in `reserved: Set<string>`, owned by `transfers.ts`. The chosen path is added before the move and removed after the history transaction or on error, so two finalizes running at once never pick the same name (`fs.rename` replaces an existing file on Windows).
-   - `fs.rename`; on `EXDEV` copy then delete the source. A failed copy removes the partial destination (`fs.promises.rm(dest, { force: true })`) before failing, so no truncated file is left under the final name.
-   - Mark-of-the-Web: write `dest + ':Zone.Identifier'` = `[ZoneTransfer]\r\nZoneId=3\r\n`, so Windows applies SmartScreen and Office Protected View to files from Telegram. `ponytail:` FAT/exFAT volumes have no streams; the write failure is logged at warn and finalize continues.
-   - `deleteFile` in TDLib. Update the job (`completed`, `path`, `finished_at`) and insert history in one transaction. Then save the thumbnail to `home\thumbs\<history.id>.jpg` using the new row id (failure is logged at warn and ignored). Invalidate `jobs`, `history`, `library`, `media:<chatId>`, `messages:<chatId>`.
-   - Errors before the transaction (disk full, permission) fail the job with the message; the TDLib copy is not deleted, so a retry finalizes without re-downloading.
-   - A crash between the move and the transaction leaves the job `active`. On restart it is requeued, and step 4 finds the moved file and completes the job. With `skipExisting` off it is downloaded again and saved as ` (2)`.
+   - Pick the name with `uniquePath(dir, name, reserved)` (` (2)`, ` (3)`; pure, tested). It skips names that exist on disk and lowercased paths in `reserved: Set<string>`, owned by `transfers.ts`. The chosen path is added before the move and removed after `complete` or on error, so two finalizes running at once never pick the same name (`fs.rename` replaces an existing file on Windows).
+   - Move. A file under its final name is always complete: a same-volume `fs.rename` is atomic, and a cross-volume move copies to a dot-prefixed part file in the target folder (the Library scan skips dot-prefixed entries) and renames it on that volume. Mark-of-the-Web (`<file>:Zone.Identifier` = `[ZoneTransfer]\r\nZoneId=3\r\n`, so Windows applies SmartScreen and Office Protected View) is written before the file takes its final name; the stream moves with the rename.
+     ```ts
+     await markOfTheWeb(src)                                           // logs at warn and continues on failure
+     try { await fs.promises.rename(src, dest) }
+     catch (e) {
+       if (e.code !== 'EXDEV') throw e
+       const part = path.join(dir, `.teleflow-${job.id}.part`)
+       await fs.promises.rm(part, { force: true })                     // stale part from an interrupted run
+       try { await fs.promises.copyFile(src, part); await markOfTheWeb(part); await fs.promises.rename(part, dest) }
+       catch (e) { await fs.promises.rm(part, { force: true }); throw e }
+     }
+     // ponytail: a part file of a job canceled after a crash is not swept; upgrade: sweep .teleflow-*.part on Clear cache
+     ```
+     `ponytail:` FAT/exFAT volumes have no streams, so their files carry no Mark-of-the-Web.
+   - Once the file has its final name nothing fails the job. `deleteFile` in TDLib, best effort (warn on error); it also removes the source a copy left behind, so there is no separate `rm(src)`. Then `complete(job, dest)`: one transaction updates the job (`completed`, `path`, `finished_at`) and inserts the history row; then the thumbnail is saved to `home\thumbs\<history.id>.jpg` using the new row id (failure is logged at warn and ignored); the reservation is released; `jobs`, `history`, `library`, `media:<chatId>`, `messages:<chatId>` are invalidated. Step 4 uses the same `complete`.
+   - Errors before the file has its final name (disk full, permission) fail the job with the message; the TDLib copy is not deleted, so a retry finalizes without re-downloading.
+   - Quit does not wait for a finalize, and a crash cannot. Either way the final name holds a complete file or nothing (a copy in progress only leaves the part file, which the job's next finalize removes). If the file already has its final name but `complete` did not run, the job stays `active`; on restart it is requeued, and step 4 finds the file and completes the job. With `skipExisting` off it is downloaded again and saved as ` (2)`.
 
 ### Upload
 
 1. `uploads.add` checks `canPost` and file limits, then groups files (`groupUploads(files, { album, photos, videos })`, pure, tested): kind per file is photo for jpg/jpeg/png/webp up to 10 MB, video for mp4/mov/m4v/webm/mkv, audio for mp3/m4a/aac/ogg/flac/wav, else document; photos or videos become documents when the chat does not allow them (see Chat cache). With `album` on, consecutive runs of the same class (photo/video, audio, document) are chunked into albums of up to 10; a run of one is a single job. The caption goes on the first file of the first job. `added` = number of files.
 2. Start: every source file must still exist (else fail "Source file is missing: <name>"). With `keepNames` off, each file is hard-linked (copied across volumes) to `home\tmp\<jobId>\TeleFlow_<yyyyMMdd-HHmmss>_<n>.<ext>`.
-3. Build `inputMessagePhoto { photo: inputPhoto }`, `inputMessageVideo { video: inputVideo, supports_streaming }`, `inputMessageAudio { audio: inputAudio }`, or `inputMessageDocument { document: inputDocument }` with `inputFileLocal`; call `sendMessage` or `sendMessageAlbum` for the files that have no `messageId` yet; store the temporary ids in `pending` and route them with `Map<tempMessageId, { jobId, index /* into files */ }>`.
-4. Each pending message settles once:
-   - Sent: `updateMessageSendSucceeded` sets `files[index].messageId` to the new id and persists `files` right away.
-   - Failed: `updateMessageSendFailed`, or `updateDeleteMessages` naming the temporary id (TDLib reports some failed sends that way).
+3. Build the content with `inputFileLocal`: `{ _: 'inputMessagePhoto', photo: { _: 'inputPhoto', photo } }`, `{ _: 'inputMessageVideo', video: { _: 'inputVideo', video, supports_streaming: true } }` (`supports_streaming` belongs to `inputVideo`; on the outer object it is ignored), `{ _: 'inputMessageAudio', audio: { _: 'inputAudio', audio } }`, or `{ _: 'inputMessageDocument', document: { _: 'inputDocument', document } }`, each with the caption when it has one. Call `sendMessage` or `sendMessageAlbum` for the files that have no `messageId` yet. Each returned temporary message id is stored on its own file entry (`files[i].pendingId`) and `files` is persisted at once; `route: Map<pendingId, { jobId, index /* into files */ }>` matches the updates. Because the id sits on the file, the index survives a crash even after some files of the send have succeeded.
+4. Each pending file settles once, and settling persists `files` right away:
+   - Sent: `updateMessageSendSucceeded` (matched by `old_message_id`) sets `files[index].messageId` to the new id and deletes `pendingId`.
+   - Failed: `updateMessageSendFailed` (matched by `old_message_id`) deletes `pendingId` and deletes the failed local message by its new id: `deleteMessages(chat_id, [update.message.id], revoke: true)`. `updateDeleteMessages` naming a pending id also counts as failed (TDLib reports some failed sends that way; the message is already gone).
 
-   When every pending message of the send has settled:
-   - All sent → `completed`, `message_id` = first new id, `pending = NULL`, one history row per file, `tmp\<jobId>` removed.
-   - Any failed → delete the failed local messages, then `settleUpload(job)` (pure, tested) in one transaction: a completed history row per sent file; the sent files removed from `files`; `name`, `type`, `size` recomputed from the rest, `done = 0`; `caption = NULL` when the first file was sent (the caption went out with it); `pending = NULL`. Then a flood → `queued` after the wait (no attempt spent); else fail with the error (auto-retry per `isRetryable`). A retry sends only the remaining files, so nothing is posted twice.
-5. Pause and cancel first settle files already sent (as in step 4), then delete the still-pending messages, which cancels TDLib's upload. Resume sends the remaining files from zero (UI says so). A job with no live state (after logout) skips the TDLib calls.
-6. Quit: active uploads settle and delete pending messages as in step 5 and go back to `queued`. Crash recovery: before `start(creds)` the engine loads every active upload's `pending` ids into the routing map, so the updates TDLib sends while it resumes pending messages at startup are matched. On `ready`, each still-unsettled pending id gets `getMessage`: still being sent → keep waiting; gone → settled as failed with "Interrupted. Check the chat before retrying" (not retryable, to avoid duplicate posts).
+   When no file of the job has a `pendingId` left:
+   - All sent → `completed`, `message_id` = first new id, one history row per file, `tmp\<jobId>` removed.
+   - Any failed → `settleUpload(job)` (pure, tested) in one transaction: a completed history row per sent file; the sent files removed from `files`; `name`, `type`, `size` recomputed from the rest, `done = 0`; `caption = NULL` when the first file was sent (the caption went out with it). Then a flood → `queued` after the wait (no attempt spent); else fail with the error (auto-retry per `isRetryable`). A retry sends only the remaining files, so nothing is posted twice.
+5. Pause and cancel first settle files already sent (as in step 4), then delete the still-pending messages by their `pendingId`s (temporary ids, which cancels TDLib's upload) and clear those ids. Resume sends the remaining files from zero (UI says so). A job with no live state (after logout) skips the TDLib calls.
+6. Quit: active uploads settle and delete pending messages as in step 5 and go back to `queued`. Crash recovery: before `start(creds)` the engine rebuilds the routing map from every active upload, so the updates TDLib sends while it resumes pending messages at startup reach the right file:
+   ```ts
+   for (const job of activeUploads) job.files.forEach((f, index) => { if (f.pendingId && !f.messageId) route.set(f.pendingId, { jobId: job.id, index }) })
+   ```
+   On `ready`, each still-unsettled pending id gets `getMessage`: `sendingStatePending` → keep waiting; `sendingStateFailed` → delete it and settle the file as failed; gone → settled as failed. Both failures carry "Interrupted. Check the chat before retrying" (not retryable, to avoid duplicate posts: a message that vanished may have been sent before the crash).
 
 ### Notifications
 
@@ -585,7 +630,7 @@ Main listens to engine finish events and, per settings, shows one Electron `Noti
 - Sizes: one async recursive `dirSize(path)` used by the storage report, clearing, and leftovers. Drive totals from `fs.statfs`. The Chromium cache is measured with `session.getCacheSize()` (passed in from main), because `home\chromium` also holds Local Storage, which no clear here removes.
 - Clear cache: 409 if any job is active or finalizing. Measure → `optimizeStorage` (when a client exists) → empty `thumbs\` → remove `tmp\` entries not used by unfinished uploads → `session.clearCache()` + `session.clearCodeCaches({})` → `UPDATE jobs SET done = 0 WHERE kind = 'download' AND status IN ('queued', 'paused', 'failed')` (their TDLib partial data is gone) → measure; `freed` = difference.
 - Clear app data: 409 if active. Delete all rows from `jobs`, `history`, `media`, `scans`; delete settings except `apiId`, `apiHash`, `window`; `VACUUM`; then Clear cache.
-- Clear All Data: cancel every job; if `deleteDownloads`, delete every file the Library lists, then empty folders under the root (the root itself stays); log out (local delete if offline); remove `tdlib\`, `thumbs\`, `tmp\`; delete all rows including credentials; `VACUUM`; `session.clearStorageData()`. Auth returns to `credentials`.
+- Clear All Data: cancel every job; if `deleteDownloads`, delete every file the Library lists, then empty folders under the root (the root itself stays); log out (local delete if offline); remove `tdlib\`, `thumbs\`, `tmp\`; delete all rows including credentials; `VACUUM`; `session.clearStorageData()`; main turns Start with Windows off (`app.setLoginItemSettings({ ...loginItem, openAtLogin: false })`), so no startup entry outlives the data. Auth returns to `credentials`.
 - FileGram import:
   - `inspect` requires a directory with at least one FileGram marker: a `.td_database\` directory, a `.filegram_state\` directory, or a `package.json` whose `name` is `filegram`. Otherwise 400 "This doesn't look like a FileGram folder". `config.json` and `settings.json` are read only after a marker matched, so a wrong pick never moves or offers to delete anything. `import` re-runs the same check.
   - `import` needs no active transfers. Credentials: `.env` `API_ID`/`API_HASH` first (FileGram's precedence), then `config.json`. Session (only when TeleFlow is not logged in): close the client, remove TeleFlow's unauthenticated `tdlib\db`, move `.td_database` there (rename; `EXDEV` → copy then delete; `EBUSY`/`EPERM` → 409 "Close FileGram first"), start the client. Downloads: `settings.json` `downloadsDir` (else `<dir>\downloads` if present); inside the FileGram folder → `moveInto(src, downloadRoot)` (rename per entry, merge folders, collisions get ` (2)`, dot-prefixed entries such as `.thumbs` skipped; `ponytail:` moved files are not given Mark-of-the-Web, upgrade: mark each file during the move); outside → becomes `downloadRoot` if it passes `checkDownloadRoot`, else the current root stays and `warning` carries the reason (the dialog shows it; `inspect` already reports it as `downloadsWarning`). Saves `fileGramDir`. Every step is idempotent, so Retry after "Close FileGram first" continues where it stopped.
@@ -599,7 +644,7 @@ Startup, in this order:
 3. `app.setAppUserModelId('com.teleflow.app')` (Windows toast identity, same as `appId`).
 4. `app.requestSingleInstanceLock()`; false → quit. A second launch focuses the existing window and exits.
 5. `protocol.registerSchemesAsPrivileged` for `teleflow` (`standard`, `secure`).
-6. Open SQLite, `requeueActiveDownloads()`, load active uploads' `pending` ids into the routing map (Upload step 6).
+6. Open SQLite, `requeueActiveDownloads()`, rebuild the upload routing map from `files[].pendingId` (Upload step 6).
 7. `app.whenReady()`: `protocol.handle('teleflow')`, `ipcMain.handle('call')`, window (not shown when launched with `--hidden` and `closeToTray` on), tray.
 8. `start(creds)` when `apiId`/`apiHash` are stored, else auth is `{ step: 'credentials' }`.
 9. One background Library scan (`search.global` files).
@@ -614,14 +659,14 @@ Startup, in this order:
   app.setLoginItemSettings({ ...loginItem, openAtLogin })                                 // enabled defaults to true
   ```
   `--hidden` starts in the tray only when `closeToTray` is on.
-- Quit: persist live progress, settle active uploads and put them back to `queued` (Upload step 6), `client.close()`, close SQLite. Active downloads are left as they are; `requeueActiveDownloads()` puts them back in the queue on the next start (the same path covers a crash).
+- Quit: persist live progress, settle active uploads and put them back to `queued` (Upload step 6), `client.close()`, close SQLite. Active downloads, including one in the middle of a finalize, are left as they are; `requeueActiveDownloads()` puts them back in the queue on the next start (the same path covers a crash), and finalize never leaves a partial file under the final name (Download step 6).
 
 ## Security
 
 - `webPreferences`: `contextIsolation: true`, `nodeIntegration: false`, `sandbox: true`, `webSecurity: true`, preload only.
 - CSP (injected into `index.html` at build time by a 6-line Vite plugin, because dev HMR needs inline scripts): `default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' teleflow: blob: data:; font-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`.
 - Navigation: `will-navigate` is prevented; `setWindowOpenHandler` denies every window and opens `https:` URLs with `shell.openExternal`. Permission requests are denied (`setPermissionRequestHandler`), since notifications come from main.
-- IPC: sender-frame check, own-property method lookup, per-method validation, no generic file or shell access. File operations are confined to the download root, `home`, the recorded `fileGramDir` leftover names, and `fileGram.import`, which moves only `.td_database` and the FileGram downloads folder out of a folder that passed `inspect`. Upload sources are read-only.
+- IPC: sender-frame check (full page URL without hash and query, 403 otherwise; Bridge step 1), own-property method lookup, per-method validation, no generic file or shell access. File operations are confined to the download root, `home`, the recorded `fileGramDir` leftover names, and `fileGram.import`, which moves only `.td_database` and the FileGram downloads folder out of a folder that passed `inspect`. Upload sources are read-only.
 - Secrets: the API hash stays in main; the renderer only sees `apiId`. Phone numbers are masked in `Me`. Nothing secret is logged.
 - Downloaded files get Mark-of-the-Web (`Zone.Identifier`, `ZoneId=3`) at finalize, so Windows applies SmartScreen and Office Protected View when they are opened from the Library (`shell.openPath`) or Explorer. Verified manually in Phase 6 (`Get-Item <file> -Stream Zone.Identifier`).
 - The download root can never be, sit inside, or contain system or app data folders (`checkDownloadRoot`), because Clear All Data may delete everything under it.
@@ -642,7 +687,20 @@ Startup, in this order:
 | `test:app` | `playwright test tests/app.spec.ts` (needs `dist`; launches `release\win-unpacked\TeleFlow.exe` with `TELEFLOW_HOME` set to a temp folder) |
 | `icon` | `node scripts/icon.ts` |
 
-electron-builder config (`"build"` in `package.json`): `appId: com.teleflow.app`, `productName: TeleFlow`, `directories: { output: release, buildResources: assets }`, `files: ["out/**", "package.json"]`, `asarUnpack` as above, `win: { target: nsis, icon: assets/icon.ico }`, `nsis: { oneClick: false, perMachine: false, allowToChangeInstallationDirectory: true, createDesktopShortcut: true, createStartMenuShortcut: true, deleteAppDataOnUninstall: false, artifactName: "TeleFlow-Setup-${version}.${ext}" }`. The installer is unsigned, so SmartScreen warns on first run.
+electron-builder config (`"build"` in `package.json`): `appId: com.teleflow.app`, `productName: TeleFlow`, `directories: { output: release, buildResources: assets }`, `files: ["out/**", "package.json"]`, `asarUnpack` as above, `npmRebuild: false`, `win: { target: nsis, icon: assets/icon.ico }`, `nsis: { oneClick: false, perMachine: false, allowToChangeInstallationDirectory: true, createDesktopShortcut: true, createStartMenuShortcut: true, deleteAppDataOnUninstall: false, include: "assets/installer.nsh", artifactName: "TeleFlow-Setup-${version}.${ext}" }`. The installer is unsigned, so SmartScreen warns on first run.
+
+`npmRebuild: false`: `tdl` 8.1.0 ships `binding.gyp` and an `install: node-gyp-build` script next to its N-API prebuild, and electron-builder's default rebuild could try to compile it (Python and MSVC on every build machine). The prebuild already loads in Electron 44 (Early-risk findings); the Phase 1 packaging spike confirms the packaged app still loads it.
+
+`assets/installer.nsh` removes the Run value that `app.setLoginItemSettings` wrote (value name = Electron's default, the AppUserModelId), so uninstalling leaves no dead startup entry. `isUpdated` is set when a newer installer runs the old uninstaller, so an upgrade keeps Start with Windows:
+```nsis
+!macro customUnInstall
+  ${ifNot} ${isUpdated}
+    DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "com.teleflow.app"
+    DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run" "com.teleflow.app"
+  ${endIf}
+!macroend
+```
+The value name is confirmed in Phase 6 (`reg query HKCU\Software\Microsoft\Windows\CurrentVersion\Run` with the toggle on).
 
 Icon: `assets/icon.svg` is the source. `scripts/icon.ts` renders it with Playwright's Chromium at 16, 32, 48, and 256 px and writes `icon.png` (256) and `icon.ico` (PNG-compressed entries). Both outputs are committed.
 
@@ -651,10 +709,10 @@ Version: only in `package.json`; main reads `app.getVersion()`, and the renderer
 Licenses: `electron.vite.config.ts` reads `{ name, version, license }` from `node_modules/<name>/package.json` for every `dependencies` entry plus `electron`, `react`, `react-dom`, `lucide-react`, and injects the list into the main build with `define: { __LICENSES__: JSON.stringify(list) }` (a few lines; Vite bundles the renderer libraries, so their `package.json` files are not in the packaged app).
 
 Testability:
-- Unit (`node:test`, plain Node 24, `:memory:` SQLite): `fileName`, `sanitize`, `folderFor` (incl. invalid template characters), `uniquePath` (incl. a reserved name), `resolvePaths`, `checkDownloadRoot` (rejects relative paths, drive roots, `home`, `appDir`, `%LOCALAPPDATA%`, `%LOCALAPPDATA%\Programs`, `C:\Windows`, `C:\Program Files\X`, the profile folder, known folders and their ancestors; accepts `D:\Media` and `Downloads\TeleFlow`), `parseFloodWait`, gate spacing and backoff, stall decision (offline skip, third stall requeue, cap → "Download keeps stalling"), `isRetryable`, `retryDelay`, `groupUploads` (albums, photo/video permissions → documents), `settleUpload` (an album of 3 where 1 fails leaves 1 file in the job and 2 history rows; caption dropped when the first file was sent), upload kind detection, enqueue upsert (dedupe, `force` only for completed, open rows untouched, re-add after Clear Completed → `skipped`), `requeueActiveDownloads`, `nextQueued` order and limits, `jobs.list` ordering, up/down swaps, media filter query, `MediaItem.status` derivation (trash nulls the path → `none`), `missing` (latest row only), stats buckets, `isTelegramLink`, FileGram marker check and credential precedence, `repository` URL normalization.
+- Unit (`node:test`, plain Node 24, `:memory:` SQLite): `fileName`, `sanitize`, `folderFor` (incl. invalid template characters), `uniquePath` (incl. a reserved name), `resolvePaths`, `checkDownloadRoot` (rejects relative paths, drive roots, `home`, `appDir`, `%LOCALAPPDATA%`, `%LOCALAPPDATA%\Programs`, `C:\Windows`, `C:\Program Files\X`, the profile folder, known folders and their ancestors; accepts `D:\Media` and `Downloads\TeleFlow`), `parseFloodWait`, gate spacing and backoff, stall decision (offline skip, third stall requeue, cap → "Download keeps stalling"), `isRetryable`, `retryDelay`, `groupUploads` (albums, photo/video permissions → documents), `settleUpload` (an album of 3 where 1 fails leaves 1 file in the job and 2 history rows; caption dropped when the first file was sent; after a restart with `files[1].messageId` and `files[2].pendingId` set, the rebuilt routing map sends a success for `files[2].pendingId` to index 2), upload kind detection, enqueue upsert (dedupe, `force` only for completed, open rows untouched, re-add after Clear Completed → `skipped`, new rows get increasing `position`, a retried row keeps its `position`), skip-existing completion (after `complete` and Clear Completed, `MediaItem.status` is still `downloaded` and `downloads.add` counts the item in `skipped`), `jobs.action` with 1000 ids (one `json_each` parameter), scan start decision (no new top-up once `newest_id` equals a text last message; live upkeep bumps `newest_id` only for `current` chats), `library.*` path rule (inside the root, or equal to a recorded download path after a root change; anything else 404), `requeueActiveDownloads`, `nextQueued` order and limits, `jobs.list` ordering, up/down swaps, media filter query, `MediaItem.status` derivation (trash nulls the path → `none`), `missing` (latest row only), stats buckets, `isTelegramLink`, FileGram marker check and credential precedence, `repository` URL normalization.
 - Renderer (Playwright, Chromium): every page renders with fixture data at 1440×900 and 1280×720 (screenshots), empty/loading/error states, the Control inventory flows in UI.md against the stub (asserts the method and args each control calls).
 - Packaged smoke (`_electron`): the exe starts, `app.info().tdlib` is `1.8.66`, the Login credentials step is visible, `main.log` contains the TDLib version line.
-- Manual (documented in PROGRESS per release): real login, download, upload (incl. a partly failed album), tray, start with Windows (toggle reads back on after a restart), Mark-of-the-Web on a downloaded file, installer install/uninstall.
+- Manual (documented in PROGRESS per release): real login, download, upload (incl. a partly failed album), a download to a second drive (cross-volume finalize: no `.teleflow-*.part` left, Mark-of-the-Web present), cancel of a paused download frees its `tdlib\files` data, tray, start with Windows (toggle reads back on after a restart; uninstall removes the Run value, an upgrade install keeps it), Mark-of-the-Web on a downloaded file, installer install/uninstall.
 
 ## Design review 1: responses
 
@@ -684,7 +742,7 @@ Review 1 (CHANGES_REQUESTED, 2 HIGH, 15 MEDIUM, 22 NIT; the file `docs/.design-r
 | 20 | Addressed: skeletons only on first load; refetch keeps data |
 | 21 | Addressed: thumbnail saved after the transaction, under the new `history.id` |
 | 22 | Addressed: `moveInto` and the Library scan skip dot-prefixed entries; `<downloadRoot>\.thumbs` listed as a leftover |
-| 23 | Addressed: origin + pathname comparison, null frame rejected |
+| 23 | Addressed: null frame rejected; the origin + pathname comparison was replaced by a full-URL comparison in review 3 #1 |
 | 24 | Addressed: `{ standard, secure }` only; size check before `downloadFile` |
 | 25 | Addressed: `session` and `activeTransfers` dropped; Clear buttons gate on `live.counts` |
 | 26 | Addressed: `getCacheSize()`; `clearCache()` + `clearCodeCaches({})` |
@@ -704,7 +762,7 @@ Review 1 (CHANGES_REQUESTED, 2 HIGH, 15 MEDIUM, 22 NIT; the file `docs/.design-r
 
 ## Design review 2: responses
 
-Review: `docs/.design-review.md` (CHANGES_REQUESTED, 0 HIGH, 7 MEDIUM, 18 NIT). All 25 findings are addressed; none backlogged or ignored. Checked against `@prebuilt-tdlib/types` 0.1008066.0 in the workspace: `getInternalLinkType` returns 404 for non-internal links, `updateChatDraftMessage.positions` exists, `ThumbnailFormat` includes `Mpeg4`/`Webm`/`Tgs`, and `updateMessageSendFailed` notes that some failed sends arrive as `updateDeleteMessages`. The FileGram `package.json` name is `filegram`.
+Review 2 (CHANGES_REQUESTED, 0 HIGH, 7 MEDIUM, 18 NIT; `docs/.design-review.md` now holds review 3). All 25 findings are addressed; none backlogged or ignored. Checked against `@prebuilt-tdlib/types` 0.1008066.0 in the workspace: `getInternalLinkType` returns 404 for non-internal links, `updateChatDraftMessage.positions` exists, `ThumbnailFormat` includes `Mpeg4`/`Webm`/`Tgs`, and `updateMessageSendFailed` notes that some failed sends arrive as `updateDeleteMessages`. The FileGram `package.json` name is `filegram`.
 
 | # | Response |
 |---|----------|
@@ -733,3 +791,31 @@ Review: `docs/.design-review.md` (CHANGES_REQUESTED, 0 HIGH, 7 MEDIUM, 18 NIT). 
 | 23 | Addressed: duration filters add `duration > 0`; one `typeLabel` map in `ui.tsx` (Recent Activity, Chat View media cards) |
 | 24 | Addressed: startup runs one background Library scan |
 | 25 | Addressed: pending ids loaded into the routing map before `start(creds)`; review-1 pointer reworded |
+
+## Design review 3: responses
+
+Review: `docs/.design-review.md` (CHANGES_REQUESTED, 0 HIGH, 6 MEDIUM, 15 NIT). All 21 findings are addressed; none ignored. Deferred upgrades are `ponytail:` notes with an upgrade path, also listed in PROGRESS.
+
+| # | Response |
+|---|----------|
+| 1 | Addressed: `pageUrl()` strips hash and query and compares full `href`s against `rendererUrl`, the same URL the window loads (`file:` origins are `"null"`, so origins are not compared; the env URL is honored only unpackaged); rejection is `403 'Not allowed'`, logged at warn; `test:app` proves the real page passes |
+| 2 | Addressed: canceling non-live downloads with `attempts > 0 OR done > 0` deletes TDLib partial data in a background task (`getMessages` 100 per call, `deleteFile`, skipping files in `inFlight`); skipped when not `ready` with a `ponytail:` note; call map row updated. `done > 0` is added to the review's `attempts > 0` because `retry` resets `attempts` |
+| 3 | Addressed: `jobs.pending` column dropped; `files[i].pendingId` set on send and cleared on settle; startup rebuilds `route` from files with `pendingId && !messageId`; Upload steps 3–6, schema, call map, Startup step 6, Client lifecycle, invariant, and the `settleUpload` test updated. Also: a pending id found in `sendingStateFailed` after restart is deleted and settled as failed |
+| 4 | Addressed: cross-volume finalize copies to `.teleflow-<jobId>.part`, then renames on that volume; stale part removed first, part removed on error; `ponytail:` note for unswept parts. Also: Mark-of-the-Web is written before the final rename, `deleteFile` replaces `rm(src)`, and nothing after the final rename fails the job (a failure there would make Retry save a ` (2)` duplicate); new invariant |
+| 5 | Addressed: step 4 completes through `complete(job, path)` (job row, history row, thumbnail, invalidations), without the move or Mark-of-the-Web; it calls `deleteFile` only when TDLib holds data for the file; test added |
+| 6 | Addressed: `newest_id`/`oldest_id` = messages walked (any content); start condition `newest_id < chat.last_message.id`; `media:` emitted on scan state change. Live upkeep bumps `newest_id` only for chats in `current` (top-up finished since the connection was last `ready`), so a gap TDLib skipped after an outage or restart is still walked |
+| 7 | Addressed: `supports_streaming: true` on `inputVideo`; all four content shapes written out |
+| 8 | Addressed: failed messages deleted by `update.message.id`; pause, cancel, and quit delete by `pendingId` |
+| 9 | Addressed: TDLib-to-shape mappings under Shared shapes (`Folder.name`, `Chat.photo`, `Me.photo`, `AuthState.connection`); `fileGram.import.session: boolean` |
+| 10 | Addressed: `ids` capped at 1000 (selections are per page) and every id list is bound as one `json_each` parameter |
+| 11 | Addressed: `npmRebuild: false`; confirmed in the Phase 1 packaging spike |
+| 12 | Addressed: `library.*` accepts paths inside the root or equal to a recorded download path; Settings says "Existing downloads stay where they are" |
+| 13 | Addressed: `storage` row lists download root change; `window` writes emit no topic |
+| 14 | Addressed: schema comment and engine text say completed = per file, failed = per job |
+| 15 | Addressed: `exts` = whole chat index, ignoring filters; UI.md shows the index bar and skeleton rows while scanning with no rows |
+| 16 | Addressed: unresolvable items count as `skipped`; 404 only for an unknown chat; 400 "no media" only for `{ link }` |
+| 17 | Addressed: Clear All Data turns the login item off; `assets/installer.nsh` `customUnInstall` deletes the Run (and StartupApproved) value unless `isUpdated`; value name confirmed in Phase 6 |
+| 18 | Addressed: `jobs_path` and `history_path` expression indexes on `lower(path)` |
+| 19 | Addressed: logout keeps the queue, stated with a `ponytail:` note; PRODUCT Log out says so |
+| 20 | Addressed: `enqueue` assigns `MAX(position) + 1` once per transaction and increments per row (a per-row `MAX` subquery would scan the table for each of 10 000 rows); a retried job keeps its place (first-enqueue order) |
+| 21 | Addressed: dropped `Chat.archived`, `Message.outgoing`, `Job.fileCount`, `Job.attempts`, `Job.createdAt` (none bound in UI.md; archive ordering stays server-side) |

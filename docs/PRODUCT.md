@@ -23,7 +23,7 @@ TeleFlow is an installable Windows desktop app for downloading, uploading, and o
 ### 1. Setup and login
 - Enter Telegram API ID and API hash (from my.telegram.org), then phone, login code, and 2FA password when enabled.
 - "Import from FileGram" on the Login screen and in Settings > Telegram (see Storage and FileGram import).
-- Log out from the user menu, Settings > Telegram, or Settings > Danger Zone > Disconnect Telegram.
+- Log out from the user menu, Settings > Telegram, or Settings > Danger Zone > Disconnect Telegram. The queue is kept; jobs are not tied to an account, so jobs from another account fail if a different account signs in (v1 limit).
 
 ### 2. Overview
 - KPIs: Active Transfers, Completed Today, Total Files, Failed Jobs (each with a download/upload split).
@@ -69,6 +69,7 @@ TeleFlow is an installable Windows desktop app for downloading, uploading, and o
 
 ### 8. Desktop integration
 - Single instance: launching again focuses the running window.
+- Uninstalling removes the Start with Windows entry (an upgrade install keeps it) and keeps app data, so a reinstall keeps the login.
 - Window size, position, and maximized state are remembered.
 - Tray icon with Show TeleFlow, Pause all, Resume all, Quit. With "Minimize to tray on close" on, closing the window keeps transfers running in the tray.
 - Desktop notifications (Electron `Notification`) when transfers complete or fail, batched so a large queue does not flood the screen.
@@ -81,7 +82,9 @@ Borrowed from the reference repo and lessons in this repo's git history:
 - Each download re-reads its message right before starting, so stale TDLib file ids never reach `downloadFile`.
 - Concurrency default 2 (range 1–5). Higher values triggered `FLOOD_PREMIUM_WAIT` in FileGram.
 - Honor `FLOOD_WAIT` / `retry after`: hold new starts of that kind until the wait ends, then continue. Start bursts are spaced and back off after each flood.
-- Interrupted downloads (quit, crash, logout) go back to the queue in their old position on the next start.
+- Interrupted downloads (quit, crash, logout) go back to the queue in their old position on the next start. Retried jobs also keep their place: the queue runs in the order jobs were first added.
+- A download only appears under its final name once it is complete, even if the app quits or crashes while moving it to another drive.
+- Canceling a download deletes its partial data (while connected to Telegram; otherwise Clear cache removes it).
 - Stall detection (only while connected): no progress for the stall timeout re-asserts the download; three stalls in a row restart it. Each restart counts as an attempt; once the retry attempts are used up, the job fails with "Download keeps stalling".
 - Skip existing: a file with the same name and size at the target path is marked completed without downloading.
 - Naming: original file name; untitled media becomes `Video_<msgId>.mp4`, `Photo_<msgId>.jpg`, and so on, where `<msgId>` is the id shown in `t.me` links; optional `YYYY-MM-DD_` prefix from the message date; collisions get ` (2)`, ` (3)`, also between downloads finishing at the same moment, so no download ever overwrites another file.
@@ -93,7 +96,7 @@ Borrowed from the reference repo and lessons in this repo's git history:
 ## Storage and FileGram import
 
 - App data: `%LOCALAPPDATA%\TeleFlow\` (TDLib session and cache, SQLite, thumbnails, logs, temp files, Chromium data). `TELEFLOW_HOME` overrides it for development and tests.
-- Download root: `%USERPROFILE%\Downloads\TeleFlow` by default, configurable. Clear All Data can delete every file under it, so it may not be a drive root; may not be, sit inside, or contain the app data folder, the install folder, `AppData`, or the Windows system folders (Windows, Program Files, ProgramData); and may not be the user folder or a known folder (Desktop, Documents, Downloads, Pictures, Videos, Music) itself or an ancestor of one. Subfolders such as `Downloads\TeleFlow` and other folders such as `D:\Media` are fine.
+- Download root: `%USERPROFILE%\Downloads\TeleFlow` by default, configurable. Clear All Data can delete every file under it, so it may not be a drive root; may not be, sit inside, or contain the app data folder, the install folder, `AppData`, or the Windows system folders (Windows, Program Files, ProgramData); and may not be the user folder or a known folder (Desktop, Documents, Downloads, Pictures, Videos, Music) itself or an ancestor of one. Subfolders such as `Downloads\TeleFlow` and other folders such as `D:\Media` are fine. Changing it does not move existing downloads; they stay where they are and still open from the Queue and Chat View.
 - Import from FileGram (never automatic, never a hardcoded path): the user picks their FileGram folder, which TeleFlow recognizes by `.td_database`, `.filegram_state`, or FileGram's `package.json` (any other folder is refused and left untouched). TeleFlow shows what it found, then, with FileGram closed:
   - moves the `.td_database` session into app data so the login carries over (skipped when TeleFlow is already logged in),
   - imports the API ID/hash (`.env`, then `config.json`) and the FileGram download folder setting into SQLite (those files are never written),
@@ -103,7 +106,7 @@ Borrowed from the reference repo and lessons in this repo's git history:
 - Clearing (Settings), each with current size, a confirm dialog, and the freed size in a toast:
   - Clear cache: TDLib file cache (`optimizeStorage`), thumbnails, temp files, Chromium cache. Keeps login, history, queue, downloads. Refused while transfers are active; paused downloads restart from zero.
   - Clear app data: history, queue, media index, settings reset to defaults (including the download folder), plus the cache. Keeps login and downloaded files.
-  - Clear All Data (Danger Zone): everything above plus log out and delete the session; unchecked "Also delete downloaded files" option.
+  - Clear All Data (Danger Zone): everything above plus log out, delete the session, and turn Start with Windows off; unchecked "Also delete downloaded files" option.
   - Disconnect Telegram (Danger Zone): log out and delete the session.
 
 ## Out of scope for v1
