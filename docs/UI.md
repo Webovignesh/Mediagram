@@ -484,7 +484,7 @@ Data needs: `auth.get` + `auth` events (step, phone, via, hint, error, connectio
 
 | Dialog | Controls | Calls |
 |--------|----------|-------|
-| `OpenChatDialog` | Input "t.me link, invite link, or @username", Open, Cancel; for invites "Join `<invite.title>` (`<invite.members>` members)?" with Join / Cancel | `chats.open({ link })`, `chats.open({ link, join: true })` |
+| `OpenChatDialog` | Input "t.me link, invite link, or @username", Open, Cancel; for invites "Join `<invite.title>` (`<invite.members>` members)?" with Join / Cancel; a rejected call (bad link, 409 join request sent, 403 join refused) shows its message inline in the dialog | `chats.open({ link })`, `chats.open({ link, join: true })` |
 | `confirm()` | Cancel, Confirm (danger tone for destructive), optional typed word (Confirm disabled until it matches), optional checkbox | – |
 | `VerifyDialog` | Checkboxes, Select all, Re-download selected, Close | `downloads.add({ items, force: true })` |
 | `LicensesDialog` | Close | – |

@@ -14,7 +14,7 @@
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "typecheck": "tsc --noEmit",
-    "test": "node --test tests/engine.test.ts",
+    "test": "node --test tests/*.test.ts",
     "test:ui": "playwright test tests/ui.spec.ts",
     "dist": "electron-vite build && electron-builder --win nsis",
     "test:app": "playwright test tests/app.spec.ts",

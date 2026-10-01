@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import type { AuthState } from '../../core/telegram.ts'
+import type { AuthState } from '../../core/shapes.ts'
 import { call } from './api.ts'
 import Login from './pages/Login.tsx'
 

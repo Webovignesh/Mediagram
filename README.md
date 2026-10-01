@@ -20,13 +20,13 @@ Requires Node 24 on Windows.
 npm ci
 npm run dev        # electron-vite dev server with HMR
 npm run typecheck  # tsc --noEmit
-npm test           # node:test engine tests
+npm test           # node:test unit tests (tests\*.test.ts)
 npm run build      # out/main, out/preload, out/renderer
 npm run dist       # build + NSIS installer in release\
 npm run test:app   # Playwright smoke of release\win-unpacked\TeleFlow.exe (after dist)
 npm run icon       # re-render assets\icon.png and icon.ico from icon.svg
 ```
 
-The Electron binary downloads on first use (`npm run dev`, `npm run test:app`). Run `npx playwright install chromium` once before `npm run icon`.
+The Electron binary downloads on first use (`npm run dev`, or `node -e "require('electron')"`; `test:app` runs the packaged exe and needs no download). Run `npx playwright install chromium` once before `npm run icon`.
 
 Design and spec: [PRODUCT](docs/PRODUCT.md), [ARCHITECTURE](docs/ARCHITECTURE.md), [UI](docs/UI.md).

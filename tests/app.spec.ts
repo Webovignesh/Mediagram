@@ -22,6 +22,8 @@ test.afterAll(() => {
 test('packaged exe boots, loads TDLib, and shows the API Keys step', async () => {
   test.setTimeout(120_000)
   const home = tempHome()
+  fs.mkdirSync(path.join(home, 'thumbs'))
+  fs.copyFileSync('assets/icon.png', path.join(home, 'thumbs', '1.jpg')) // a saved thumbnail (Blink decodes by content)
   const app = await launch(home)
   try {
     const win = await app.firstWindow()
@@ -32,11 +34,26 @@ test('packaged exe boots, loads TDLib, and shows the API Keys step', async () =>
     const info = await win.evaluate(() => window.teleflow.call('app.info'))
     expect(info).toMatchObject({ ok: true, data: { tdlib: '1.8.66', home, repository: 'https://github.com/Webovignesh/tele' } })
 
-    // Continue reaches main and shows the rejection inline (auth.credentials is registered in Phase 2).
+    // Continue reaches main and shows its 400 inline. The hash is malformed, so no TDLib client starts and nothing goes to Telegram.
     await win.getByLabel('API ID').fill('12345')
-    await win.getByLabel('API hash').fill('0123456789abcdef0123456789abcdef')
+    await win.getByLabel('API hash').fill('not-a-hash')
     await win.getByRole('button', { name: 'Continue' }).click()
-    await expect(win.getByRole('alert')).toHaveText('Unknown method')
+    await expect(win.getByRole('alert')).toHaveText('apiHash must be the 32-character hash from my.telegram.org')
+
+    // SQLite opens in the packaged main process; settings come back with their defaults and no credentials.
+    const settings = await win.evaluate(() => window.teleflow.call('settings.get'))
+    expect(settings).toMatchObject({ ok: true, data: { apiId: null, maxDownloads: 2, folderTemplate: '{chat}' } })
+    expect(fs.existsSync(path.join(home, 'teleflow.db'))).toBe(true)
+
+    // teleflow:// is privileged, allowed by the CSP for <img>, and served from home\thumbs; a missing id is a 404.
+    const load = (src: string) => win.evaluate((s) => new Promise<number>((resolve) => {
+      const img = new Image()
+      img.onload = () => resolve(img.naturalWidth)
+      img.onerror = () => resolve(0)
+      img.src = s
+    }), src)
+    expect(await load('teleflow://saved/1')).toBe(256)
+    expect(await load('teleflow://saved/2')).toBe(0)
 
     // Sandboxed CJS preload exposes webUtils.getPathForFile (a File not from disk has no path).
     expect(await win.evaluate(() => window.teleflow.pathOf(new File(['x'], 'x.txt')))).toBe('')

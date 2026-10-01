@@ -34,7 +34,7 @@ TeleFlow is an installable Windows desktop app for downloading, uploading, and o
 
 ### 3. Downloads
 - Chat list: all chats, filter chips (All, Channels, Groups, Folders), search, unread badges, last-activity time.
-- Add chat (+): open or join by `t.me` link, invite link, or `@username`.
+- Add chat (+): open or join by `t.me` link, invite link, or `@username`. A chat that needs admin approval gets a join request, and TeleFlow says so; it opens once an admin approves.
 - Two views of the selected chat:
   - Chat View: message timeline with media previews and per-message download (newest 1000 messages; Files View covers the full history).
   - Files View: media table with filters (media type, file type, duration, size, download status), sort, search, pagination. Backed by a per-chat media index built in the background.
@@ -94,7 +94,7 @@ Borrowed from the reference repo and lessons in this repo's git history:
 
 ## Storage
 
-- App data: `%LOCALAPPDATA%\TeleFlow\` (TDLib session and cache, SQLite, thumbnails, logs, temp files, Chromium data). `TELEFLOW_HOME` overrides it for development and tests. Development runs without it use `%LOCALAPPDATA%\TeleFlow-dev`, and the single-instance lock is per app data folder, so a dev run and the installed app can run side by side.
+- App data: `%LOCALAPPDATA%\TeleFlow\` (TDLib session and cache, SQLite, thumbnails, logs, temp files, Chromium data). `TELEFLOW_HOME` overrides it for development and tests. Development runs without it use `%LOCALAPPDATA%\TeleFlow-dev`, and the single-instance lock is per app data folder, so a dev run and the installed app can run side by side. The app data folder may not be the install folder or inside it: installing into `%LOCALAPPDATA%\TeleFlow` itself makes TeleFlow refuse to start with an error box, so install anywhere else (the installer's default, `%LOCALAPPDATA%\Programs\TeleFlow`, is fine).
 - Download root: `%USERPROFILE%\Downloads\TeleFlow` by default, configurable. Clear All Data can delete every file under it, so it may not be a drive root; may not be, sit inside, or contain the app data folder, the install folder, `AppData`, or the Windows system folders (Windows, Program Files, ProgramData); and may not be the user folder or a known folder (Desktop, Documents, Downloads, Pictures, Videos, Music) itself or an ancestor of one. Subfolders such as `Downloads\TeleFlow` and other folders such as `D:\Media` are fine. Changing it does not move existing downloads; they stay where they are and still open from the Queue and Chat View.
 - Clearing (Settings), each with current size, a confirm dialog, and the freed size in a toast:
   - Clear cache: TDLib file cache (`optimizeStorage`), thumbnails, temp files, Chromium cache. Keeps login, history, queue, downloads. Refused while transfers are active; paused downloads restart from zero.
