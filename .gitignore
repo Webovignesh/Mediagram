@@ -51,3 +51,6 @@ tests/screenshot-*.png
 tests/shot-*.png
 tests/probe-*.png
 probe-*.js
+# TeleFlow runtime state and scratch home
+.teleflow/
+.scratch/
