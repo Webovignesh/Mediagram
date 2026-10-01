@@ -1,6 +1,6 @@
 # TeleFlow: Architecture
 
-Status: final design for v1 (2026-10-01, revised after design reviews 1 to 4; review 5 approved; responses at the end). Keep this file in sync with the code; if they disagree, fix whichever is wrong in the same change.
+Status: final design for v1 (2026-10-01, revised after design reviews 1 to 4; review 5 approved; responses at the end). Phase 1 (scaffold, IPC bridge, packaging spike) is implemented; FileGram import was removed by user change #5. Keep this file in sync with the code; if they disagree, fix whichever is wrong in the same change.
 
 The IPC methods below are the app's API (the "routes"), and the IPC events are its push channel. There is no REST server and no WebSocket (user scope change, see PROGRESS decision log).
 
@@ -18,7 +18,7 @@ All versions are pinned exactly in `package.json` (no `^` or `~`).
 | Installer | electron-builder 26.15.3, NSIS target | Per-user `TeleFlow-Setup-<version>.exe`, shortcuts, uninstaller in "Installed apps" |
 | Build | electron-vite 5.0.0 + Vite 7.3.6 | One config builds main, preload, and renderer; dev server with HMR and main-process restart. electron-vite 5 supports Vite ≤ 7, so Vite 8 is not used |
 | Language | TypeScript 7.0.2, erasable syntax only, `tsc --noEmit` | Type checks only; Vite strips types for the app, Node 24 strips them for tests |
-| Telegram | `tdl` 8.1.0 + `prebuilt-tdlib` 0.1008066.0 (TDLib 1.8.66) | Kept: resumable chunked downloads, and the existing FileGram session database is compatible |
+| Telegram | `tdl` 8.1.0 + `prebuilt-tdlib` 0.1008066.0 (TDLib 1.8.66) | Kept from FileGram: resumable chunked downloads, proven TDLib usage |
 | Storage | `node:sqlite` (built into Electron's Node) | Jobs, history, settings, media index in one file; no native rebuild |
 | UI | React 19.3.0, `react-dom` 19.3.0, Tailwind CSS 4.3.3 (`@tailwindcss/vite` 4.3.3), `lucide-react` 1.49.0, `@vitejs/plugin-react` 5.2.0 | Component model for a dense dashboard; Tailwind maps to the UI.md tokens |
 | Charts | Hand-written SVG (area chart, sparkline) | Two small charts do not justify a chart library |
@@ -28,7 +28,7 @@ All versions are pinned exactly in `package.json` (no `^` or `~`).
 
 `dependencies` = `tdl` and `prebuilt-tdlib` only (externalized by electron-vite, shipped by electron-builder). Everything else is a devDependency, since Vite bundles the renderer and main.
 
-TypeScript conventions: ESM everywhere; every relative import has an explicit `.ts`/`.tsx` extension (Node 24 type stripping requires it). One `tsconfig.json`: `strict`, `noEmit`, `allowImportingTsExtensions`, `erasableSyntaxOnly`, `verbatimModuleSyntax`, `module: preserve`, `moduleResolution: bundler`, `jsx: react-jsx`, `lib: [ES2024, DOM, DOM.Iterable]`, `types: [node, @prebuilt-tdlib/types, electron-vite/node]` (`tdl`'s `index.d.ts` imports `tdlib-types`, which `@prebuilt-tdlib/types` 0.1008066.0, an optional dependency of `prebuilt-tdlib`, declares; `electron-vite/node` types the `?asset` import that copies `assets/icon.png` into `out/main` for the window, tray, and notifications).
+TypeScript conventions: ESM everywhere; every relative import has an explicit `.ts`/`.tsx` extension (Node 24 type stripping requires it). One `tsconfig.json`: `strict`, `noEmit`, `allowImportingTsExtensions`, `erasableSyntaxOnly`, `verbatimModuleSyntax`, `module: preserve`, `moduleResolution: bundler`, `jsx: react-jsx`, `lib: [ES2024, DOM, DOM.Iterable]`, `types: [node, @prebuilt-tdlib/types, electron-vite/node, vite/client]`, `skipLibCheck` (`tdl`'s `index.d.ts` imports `tdlib-types`, which `@prebuilt-tdlib/types` 0.1008066.0, an optional dependency of `prebuilt-tdlib`, declares; `electron-vite/node` types the `?asset` import that copies `assets/icon.png` into `out/main` for the window, tray, and notifications; `vite/client` declares the renderer's CSS import; `skipLibCheck` because electron-vite's own `index.d.ts` imports the optional `@swc/core`).
 
 Removed: Express, `ws`, `dotenv`, `archiver`, every `.cmd`/`.vbs`/`.ps1` launcher, the Edge `--app` shell.
 
@@ -40,17 +40,26 @@ Not chosen:
 
 ### Early-risk findings (verified 2026-10-01)
 
-Spike: `electron@44.5.1` installed in `%TEMP%\teleflow-spike`, a `main.js` run by `electron.exe`:
+Design spike: `electron@44.5.1` in `%TEMP%\teleflow-spike`, a `main.js` run by `electron.exe`. Phase 1 packaging spike: the real app, `npm run dist`, and `tests/app.spec.ts` against `release\win-unpacked\TeleFlow.exe` launched through its lowercased path (commands and output in PROGRESS > Changelog, Phase 1 entry).
 
 | Risk | Result |
 |------|--------|
 | `node:sqlite` in Electron main | Works. `process.versions.node` = 24.21.0, `sqlite_version()` = 3.53.4, `STRICT` tables OK |
 | `tdl` N-API addon + `prebuilt-tdlib` `tdjson.dll` in Electron main | Works unpacked. `tdl.execute({ _: 'getOption', name: 'version' })` → `1.8.66` |
-| npm 12 install scripts | npm 12.0.2 blocks dependency install scripts unless allowed: Electron's binary download did not run until `node node_modules/electron/install.js`. Phase 1 adds an `allowScripts` entry for `electron@44.5.1` via `npm approve-scripts electron`. `tdl`'s `node-gyp-build` install step is not needed (its prebuilt addon loads), so it stays unapproved |
-| Packaged app (asar) | Not verified yet: Phase 1 packaging spike. Plan: `asarUnpack` `node_modules/tdl/**`, `node_modules/prebuilt-tdlib/**`, `node_modules/@prebuilt-tdlib/**`, and pass `getTdjson().replace('app.asar', 'app.asar.unpacked')` to `tdl.configure`, because `tdjson.dll` is loaded by the OS loader, which cannot read inside an asar |
+| npm 12 install scripts | Electron 44.5.1 has no install script: its `package.json` has no `scripts`, and `index.js` downloads the binary on the first `require('electron')` (electron-vite dev, Playwright `_electron`; `node -e "require('electron')"` fetches it on purpose). electron-builder downloads its own Electron zip. So there is no `allowScripts` entry. npm 12.0.2 blocks the scripts of `tdl` (`node-gyp-build`), `esbuild` (two copies), and `electron-winstaller`; none is needed: `tdl`'s prebuild loads, `esbuild` runs from its `@esbuild/win32-x64` package (the build works), and `electron-winstaller` is for the unused Squirrel target |
+| Packaged app (asar) | Works. `asarUnpack` puts `tdl`, `prebuilt-tdlib`, and `@prebuilt-tdlib/*` in `resources\app.asar.unpacked\node_modules`; `getTdjson().replace('app.asar', 'app.asar.unpacked')` is passed to `tdl.configure` (the OS loader cannot read inside an asar); Electron loads `tdl.node` from the unpacked folder on its own. The packaged exe logs `TDLib 1.8.66` and `app.info().tdlib` is `1.8.66` |
+| `npmRebuild: false` | Works. The `dist` log says `skipped dependencies rebuild reason=npmRebuild is set to false` and has no `node-gyp` or "rebuilding native dependencies" line; the shipped `tdl` prebuild loads |
+| ESM main | `type: module` makes electron-vite emit ESM `out/main/index.js`; `import.meta.dirname`, `import tdl from 'tdl'` (default import of a CJS package), and `import { getTdjson } from 'prebuilt-tdlib'` work in Electron 44 |
+| TypeScript 7.0.2 | `tsc --noEmit` passes with the documented options plus `skipLibCheck` (electron-vite's `index.d.ts` imports the optional `@swc/core` types) and `vite/client` in `types` (declares the side-effect `import './styles.css'`, which TS 7 checks by default) |
 | TDLib 1.8.66 upload shape | `inputMessagePhoto/Video/Audio/Document` take nested `inputPhoto/inputVideo/inputAudio/inputDocument` objects (checked in `@prebuilt-tdlib/types`). TeleFlow builds that shape directly; FileGram's `tdl-upload-compat` shim is not ported |
-| Sandboxed preload format | Not verified yet: Phase 1. Sandboxed preloads must be CommonJS; electron-vite is configured to emit `out/preload/preload.cjs` |
-| Icon | Not verified yet: Phase 1. electron-builder gets `assets/icon.ico` (generated, see Build) |
+| Sandboxed preload format | Works. `out/preload/preload.cjs` (CommonJS) loads with `sandbox: true`; `window.teleflow.call` reaches main |
+| `webUtils.getPathForFile` | Available in the sandboxed preload; `pathOf(new File(['x'], 'x.txt'))` returns `''` (a File not from disk) without throwing. A real picked file is checked in 5.3 |
+| `env(titlebar-area-*)` | Set when `titleBarOverlay` is on: the Login drag strip's computed `padding-right` (`100vw − x − width`) is > 0 |
+| `session.getCacheSize()` / `clearCodeCaches({})` | Both resolve in the packaged main process |
+| Single-instance lock key | Keyed by `userData`: the lock file is `home\lockfile`; a second launch with the same `TELEFLOW_HOME` exits with code 0, and a launch with another `TELEFLOW_HOME` stays up next to it. So dev (`TeleFlow-dev`) and installed runs can run side by side |
+| IPC sender check, lowercased exe path | Passes: `rendererUrl` keeps the lowercase drive letter, Chromium's `senderFrame.url` uppercases it, `pageKey` matches them; `main.log` has no "Not allowed". Dev (`http://localhost:5173/`) also passes |
+| Icon | Works. `npm run icon` writes `assets/icon.png` (256 px) and `assets/icon.ico` (16/32/48/256 PNG entries); electron-builder embeds it: `ExtractAssociatedIcon` on `TeleFlow.exe` and `TeleFlow-Setup-1.0.0.exe` returns the paper-plane mark |
+| `?asset` import (electron-vite 5) | Not verified yet: first used in 2.4 (window, tray icon) |
 
 ## Layout
 
@@ -69,15 +78,14 @@ core/
   transfers.ts   download/upload queue engine, naming, gates, stats: createEngine(deps) + pure helpers
                  (deps = db, invoke, onUpdate, auth/chat lookups, emit, paths), so tests run a fresh
                  engine on :memory: SQLite with a fake invoke
-  storage.ts     paths (incl. the IPC pageKey), logger, library scan, storage report, clearing, FileGram import, fs helpers
+  storage.ts     paths (incl. the IPC pageKey), logger, library scan, storage report, clearing, fs helpers
 web/
   index.html
   src/main.tsx
   src/App.tsx      shell: sidebar, top bar (global search, user menu), auth gate, page switch
   src/api.ts       typed call(), on(), useCall(), useLive() store, useRoute(), navigate()
   src/ui.tsx       shared primitives and formatters (inventory in UI.md)
-  src/pages/       Overview, Downloads, Uploads, Queue, Library, Settings, Login (.tsx);
-                   Settings.tsx also exports FileGramImportDialog, which Login.tsx imports
+  src/pages/       Overview, Downloads, Uploads, Queue, Library, Settings, Login (.tsx)
   src/styles.css   Tailwind import, theme tokens, table and focus classes
 assets/
   icon.svg         logo mark source
@@ -93,13 +101,13 @@ tests/
 electron.vite.config.ts
 playwright.config.ts  launchOptions.args ['--allow-file-access-from-files'] so out/renderer loads over file://
 tsconfig.json
-package.json      scripts, pinned deps, allowScripts, electron-builder "build" config
+package.json      scripts, pinned deps, electron-builder "build" config
 docs/
 ```
 
 Split a file only when it passes roughly 400 lines or mixes unrelated concerns. Renderer types for IPC are inferred from `electron/ipc.ts` with a type-only import (`import type { Methods } from '../../electron/ipc.ts'`, where `Methods = ReturnType<typeof createMethods>`), so there is no hand-written contract file to drift.
 
-Removed in the rewrite: `server.js`, `server/`, `public/`, `scripts/*.test.cjs`, `scripts/*.ps1`, old `tests/`, `BULK_UPLOAD_TESTING.md`, `Clean Repo After Release.cmd`, `FileGram.vbs`, `Install FileGram.cmd`, `Uninstall FileGram.cmd`, `playwright.config.js`.
+Removed in the rewrite (Phase 1): `server.js`, `server/`, `public/`, `scripts/*.test.cjs`, `scripts/*.ps1`, old `tests/`, `BULK_UPLOAD_TESTING.md`, `Clean Repo After Release.cmd`, `FileGram.vbs`, `Install FileGram.cmd`, `Uninstall FileGram.cmd`, `playwright.config.js`. The old code stays readable with `git show main:<path>`.
 
 `.gitignore` gains `out/` (electron-vite output) and drops the stale `.teleflow/` entry; `.kiro/` becomes `.kiro/*` + `!.kiro/steering/` so `.kiro/steering/ponytail.md` is on the branch. `release/` (installer output) and `test-results/` are already ignored. `build/` stays ignored, which is why icons live in `assets/`.
 
@@ -121,7 +129,7 @@ Removed in the rewrite: `server.js`, `server/`, `public/`, `scripts/*.test.cjs`,
 
 Main sets `app.setPath('userData', home)` and `app.setPath('sessionData', home\chromium)` before `ready`, so Chromium's own files also land under `home`. The NSIS uninstaller keeps `home` (`deleteAppDataOnUninstall: false`), so a reinstall keeps the login.
 
-Download root rules (`checkDownloadRoot(path, { sealed, guarded })`, pure, owned by `core/storage.ts`, called by `settings.set` and FileGram import). Clear All Data can delete every file under the root, and the Library lists every file under it, so the root must never hold or contain anything but the user's media. Paths are resolved and compared case-insensitively:
+Download root rules (`checkDownloadRoot(path, { sealed, guarded })`, pure, owned by `core/storage.ts`, called by `settings.set`). Clear All Data can delete every file under the root, and the Library lists every file under it, so the root must never hold or contain anything but the user's media. Paths are resolved and compared case-insensitively:
 - Absolute; no `<>:"|?*` or control characters (the drive colon excepted); not a drive root.
 - `sealed`: may not equal, sit inside, or contain any of `home`, `appDir`, the `AppData` folder (`path.dirname(app.getPath('appData'))`), `%SystemRoot%`, `%ProgramFiles%`, `%ProgramFiles(x86)%`, `%ProgramData%` (unset variables are skipped). Reason: "TeleFlow can't use a system or app data folder. Pick a folder for your media, for example Downloads\TeleFlow".
 - `guarded`: may not equal or contain `os.homedir()` or `app.getPath` for `desktop`, `documents`, `downloads`, `pictures`, `videos`, `music`; subfolders are fine, so the default passes. Reason: "Pick or create a subfolder, for example Downloads\TeleFlow".
@@ -242,10 +250,6 @@ Common validators (in `ipc.ts`): `id` = safe integer ≠ 0; `page` = integer 1�
 | `app.clearCache` | – | `{ freed }` | 409 transfers active |
 | `app.clearData` | – | `{ freed }` | 409 transfers active |
 | `app.clearAll` | `{ deleteDownloads: boolean }` | `{ freed }` | – |
-| `fileGram.inspect` | `{ dir: absolute path ≤ 260 }` | `FileGramReport` | 400 not a FileGram folder |
-| `fileGram.import` | `{ dir }` | `{ session: boolean /* session moved */, credentials: boolean, downloadRoot: string, movedFiles: number, warning: string \| null, leftovers: Leftovers }` | 400, 409 "Close FileGram first", 409 transfers active |
-| `fileGram.leftovers` | – | `Leftovers` | – |
-| `fileGram.removeLeftovers` | – | `{ freed }` | 404 nothing to remove |
 | `auth.get` | – | `AuthState` | – |
 | `auth.credentials` | `{ apiId: integer 1–2147483647, apiHash: /^[0-9a-f]{32}$/i }` | `AuthState` | 400 |
 | `auth.phone` | `{ phone: /^\+?[\d\s().-]{5,24}$/ }` (digits kept) | `void` | 400 `PHONE_NUMBER_INVALID`, 429 |
@@ -305,16 +309,11 @@ type StorageReport = {
   cache: { tdlib: number, thumbs: number, tmp: number,
            chromium: number /* session.getCacheSize() */, total: number },
   appData: number }                                                    // teleflow.db + wal + shm
-type FileGramReport = { dir: string, session: boolean /* .td_database present and TeleFlow not logged in */,
-  credentials: boolean, downloadsDir: string | null, downloadsInside: boolean, downloadsSize: number,
-  downloadsWarning: string | null /* checkDownloadRoot reason when an outside folder cannot become the root */,
-  leftovers: Leftovers }
-type Leftovers = { dir: string | null, items: { path: string /* absolute */, size: number }[], total: number }
 type Settings = { downloadRoot: string, maxDownloads: number, skipExisting: boolean, datePrefix: boolean,
   folderTemplate: string, defaultUploadChat: number | null, uploadAlbum: boolean, keepNames: boolean,
   maxUploads: number, showArchived: boolean, autoRetry: boolean, retryAttempts: number, stallSeconds: number,
   clearCompletedDays: number, notifyComplete: boolean, notifyFailed: boolean, closeToTray: boolean,
-  startWithSystem: boolean, apiId: number | null, fileGramDir: string | null }
+  startWithSystem: boolean, apiId: number | null }
 ```
 
 ### Events (main → renderer)
@@ -334,9 +333,9 @@ Who emits which topic:
 | `jobs` | Any job insert, status change, reorder, delete |
 | `history` | History insert or path change (finish, failure, trash), local midnight, Clear app data |
 | `chats` | Chat cache updates, opened-set changes, `showArchived` change |
-| `library` | Download finalize, trash, download root change, FileGram import |
-| `settings` | `settings.set`, FileGram import, Clear app data. Not the `window` setting: main writes it on move/resize and emits nothing, so Settings does not refetch while the window is dragged |
-| `storage` | Clears, leftover removal, FileGram import, download root change |
+| `library` | Download finalize, trash, download root change |
+| `settings` | `settings.set`, Clear app data. Not the `window` setting: main writes it on move/resize and emits nothing, so Settings does not refetch while the window is dragged |
+| `storage` | Clears, download root change |
 | `media:<chatId>`, `messages:<chatId>` | Any download job insert, status change, finalize, or delete in that chat (cancel, Remove, Clear All, Clear Completed, `clearCompletedDays`, clears), and any `history.path` change for that chat (trash). Bulk actions emit once per affected chat. Plus, `media:` only: index pages inserted (at most 1/s), scan state changes (start and finish, so the index bar hides), and live upkeep; `messages:` only: `updateNewMessage` / `updateDeleteMessages` in that chat |
 
 The renderer gets its first snapshot with `auth.get` and `stats.live`, then follows events. `useCall(method, args, topics)` refetches when one of its topics is invalidated (renderer debounce 300 ms). `useCall` keeps the previous `data` during a refetch and never clears it on reload, so skeletons appear only on first load. Files View and Chat View subscribe only to their chat's topic; live progress on their rows comes from `live.active` by `jobId`.
@@ -445,7 +444,7 @@ Invariants and who owns them:
 - No two finalizes write the same file name: the engine (`uniquePath` + the in-memory `reserved` set), because the check and the rename are not atomic.
 - An upload file is posted at most once: the engine, by keeping each temporary id on its own file entry (`files[i].pendingId`, so routing survives a crash after part of a send succeeded), persisting `files[i].messageId` as each send succeeds, and sending only files without one.
 - A file under its final download name is always complete: the engine (finalize copies across volumes to a dot-prefixed part file, then renames; Download step 6).
-- The download root is never a system, app data, profile, or known folder or an ancestor of one: `checkDownloadRoot` in `core/storage.ts`, called by both writers (`settings.set`, FileGram import).
+- The download root is never a system, app data, profile, or known folder or an ancestor of one: `checkDownloadRoot` in `core/storage.ts`, called by its only writer (`settings.set`).
 
 `MediaItem.status` is computed in SQL: the matching job's status if it is `queued`, `active`, `paused`, or `failed`; else `downloaded` when a completed download job with a path or a completed download history row with `path IS NOT NULL` exists for the message; else `none`. `MediaItem.path` = that job's or the latest such history row's path.
 
@@ -473,8 +472,7 @@ Values are JSON in `settings`; a missing row means the default. `core/db.ts` own
 | `notifyFailed` | true | boolean | Notifications |
 | `closeToTray` | false | boolean | Window close behavior |
 | `startWithSystem` | – | boolean | Not stored: read as `app.getLoginItemSettings(loginItem).executableWillLaunchAtLogin`, written with `app.setLoginItemSettings({ ...loginItem, openAtLogin })` (`loginItem` in Desktop integration) |
-| `apiId`, `apiHash` | – | set by `auth.credentials` / FileGram import only | `apiHash` is never returned or logged |
-| `fileGramDir` | null | set by FileGram import | Leftover detection |
+| `apiId`, `apiHash` | – | set by `auth.credentials` only | `apiHash` is never returned or logged |
 | `window` | – | `{ x, y, width, height, maximized }` | Written by main on move/resize (debounced 500 ms); emits no topic |
 
 ## Telegram (`core/telegram.ts`)
@@ -577,7 +575,7 @@ TDLib parses links: `getInternalLinkType(link)` after normalizing bare `@name` o
 - Pump (`pump()`): runs on enqueue, finish, resume, settings change, `ready`, and when a wait ends. Per kind it starts `SELECT ... WHERE kind = ? AND status = 'queued' ORDER BY position LIMIT free` while the kind's gate allows; `free` = the kind's limit minus its jobs with live state (a finalizing download has already given its slot back), so a row left `active` without live state never holds a slot. Nothing starts unless Telegram is `ready`. A download whose TDLib file is already in flight for another job waits (`ponytail:` same-file siblings re-download after the first finishes; `skipExisting` usually completes them instantly).
 - Gate per kind (pure, tested): concurrency limit from settings; start spacing starting at 600 ms (downloads) / 1000 ms (uploads), doubled on every flood up to 5 s and eased by 100 ms per accepted start (AIMD from FileGram); `waitUntil` set from `FLOOD_WAIT_n`, `FLOOD_PREMIUM_WAIT_n`, or `retry after n`. A flood-waited job goes back to `queued` and its `attempts` is decremented, so the wait does not spend an attempt.
 - `attempts` counts starts: each start increments it.
-- `requeueActiveDownloads()`: `UPDATE jobs SET status = 'queued' WHERE kind = 'download' AND status = 'active'` and clear the in-memory download state. Called once after the database opens (before the first pump) and whenever auth leaves `ready` (logout, credentials change, FileGram session import, client closed). Rows keep their `position`, so interrupted downloads restart first, and TDLib's partial data makes them resume. Uploads use their pending-id path instead (Upload step 6).
+- `requeueActiveDownloads()`: `UPDATE jobs SET status = 'queued' WHERE kind = 'download' AND status = 'active'` and clear the in-memory download state. Called once after the database opens (before the first pump) and whenever auth leaves `ready` (logout, credentials change, client closed). Rows keep their `position`, so interrupted downloads restart first, and TDLib's partial data makes them resume. Uploads use their pending-id path instead (Upload step 6).
 - Tick every 500 ms: emit `stats` when busy; sample `history` once per second (see `LiveStats`); check stalls (below); requeue failed jobs whose `retry_at` passed; emit `invalidate: ['history']` when the local date changes; once a minute delete completed jobs older than `clearCompletedDays`.
 - Stalls (one rule, pure decision tested). Checks run only while `connection === 'ready'`, so an outage does not burn restarts. No new bytes for `stallSeconds` → `getFile`: completed → finalize; `can_be_downloaded: false` → fail, not retryable; otherwise `downloadFile` again and `stalls += 1`. Any progress resets `stalls`. At `stalls === 3`: if `attempts >= retryAttempts` → fail "Download keeps stalling" (auto-retry does not apply because attempts are spent; manual Retry resets them); else `cancelDownloadFile` and `status = 'queued'` with `position` unchanged, and the next start counts as an attempt.
 - Auto-retry: on a retryable failure with `autoRetry` on and `attempts < retryAttempts`, set `retry_at = now + min(30 s × 2^(attempts − 1), 10 min)`. Retryable (pure, tested): network and timeout errors, 5xx, `FILE_REFERENCE_EXPIRED`, unknown errors. Not retryable: message deleted, no media, `can_be_downloaded: false`, source file missing, `CHAT_WRITE_FORBIDDEN`, `ENOSPC`, file too large, interrupted upload, "Download keeps stalling". A final failure inserts one `history` row per job (`name` = job name); completions insert one per file.
@@ -637,24 +635,19 @@ Main listens to engine finish events and, per settings, shows one Electron `Noti
 
 ## Storage and maintenance (`core/storage.ts`)
 
-- `resolvePaths({ env, localAppData, appDir, packaged })`, `checkDownloadRoot(path, { sealed, guarded })`, and `pageKey(url)` (IPC sender check, Bridge step 1) are pure and tested; main computes `appDir`, `sealed`, and `guarded` (Runtime data).
-- `log(level, ...args)`: one function that appends to `main.log` and mirrors to the console. Levels: `error` (unexpected failures, with stack), `warn` (flood waits, retries, recoverable fs errors), `info` (startup, TDLib version, auth state changes, migration steps). Never logs the API hash, phone, codes, or passwords.
-- Library scan: `fs.promises.readdir(root, { recursive: true, withFileTypes: true })`, `stat` in batches of 64, skipping any entry whose name or any parent folder name starts with `.` (FileGram's `.thumbs` lives in its downloads folder), plus `desktop.ini` and `Thumbs.db`. Joined to completed download history by lowercased path for chat and message data; otherwise `chat` = first folder under the root. Cached in memory; a completed download or trash updates the cache, a root change drops it, and a cache older than 60 s is rebuilt on the next read (`ponytail:` no file watcher; upgrade path: `fs.watch` on the root). Startup runs one scan in the background so `search.global` has files from the first search. `missing` = for each `(chat_id, message_id)`, the latest completed download history row with `path IS NOT NULL`, when that path is neither in the scan nor on disk.
+- `resolvePaths({ env, packaged, appDir })` (returns `{ home, appDir }`; `%LOCALAPPDATA%` comes from `env`), `checkDownloadRoot(path, { sealed, guarded })`, and `pageKey(url)` (IPC sender check, Bridge step 1) are pure and tested; main computes `appDir`, `sealed`, and `guarded` (Runtime data).
+- `openLog(dir)` + `log(level, message)`: `openLog` moves a `main.log` over 5 MB to `main.old.log`; `log` appends one line to `main.log` (stderr before `openLog`, which is how `node:test` sees it). A 32-hex value (the API hash format) is masked as a backstop. Levels: `error` (unexpected failures, with stack), `warn` (flood waits, retries, recoverable fs errors), `info` (startup, TDLib version, auth state changes, migration steps). Never logs the API hash, phone, codes, or passwords.
+- Library scan: `fs.promises.readdir(root, { recursive: true, withFileTypes: true })`, `stat` in batches of 64, skipping any entry whose name or any parent folder name starts with `.` (hidden folders and the `.teleflow-<jobId>.part` files of cross-volume finalizes), plus `desktop.ini` and `Thumbs.db`. Joined to completed download history by lowercased path for chat and message data; otherwise `chat` = first folder under the root. Cached in memory; a completed download or trash updates the cache, a root change drops it, and a cache older than 60 s is rebuilt on the next read (`ponytail:` no file watcher; upgrade path: `fs.watch` on the root). Startup runs one scan in the background so `search.global` has files from the first search. `missing` = for each `(chat_id, message_id)`, the latest completed download history row with `path IS NOT NULL`, when that path is neither in the scan nor on disk.
 - `library.trash` uses `shell.trashItem` (Recycle Bin), then forgets the download (see the `library.trash` note under Methods). Main passes `trashItem` in, so `core/` stays Electron-free.
-- Sizes: one async recursive `dirSize(path)` used by the storage report, clearing, and leftovers. Drive totals from `fs.statfs`. The Chromium cache is measured with `session.getCacheSize()` (passed in from main), because `home\chromium` also holds Local Storage, which no clear here removes.
+- Sizes: one async recursive `dirSize(path)` used by the storage report and clearing. Drive totals from `fs.statfs`. The Chromium cache is measured with `session.getCacheSize()` (passed in from main), because `home\chromium` also holds Local Storage, which no clear here removes.
 - Clear cache: 409 if any job is active or finalizing. Measure → `optimizeStorage` (when a client exists) → empty `thumbs\` → remove `tmp\` entries not used by unfinished uploads → `session.clearCache()` + `session.clearCodeCaches({})` → `UPDATE jobs SET done = 0 WHERE kind = 'download' AND status IN ('queued', 'paused', 'failed')` (their TDLib partial data is gone) → measure; `freed` = difference.
 - Clear app data: 409 if active. Delete all rows from `jobs`, `history`, `media`, `scans`; delete settings except `apiId`, `apiHash`, `window`; `VACUUM`; then Clear cache.
 - Clear All Data: cancel every job; if `deleteDownloads`, delete every file the Library lists, then empty folders under the root (the root itself stays); log out (local delete if offline); remove `tdlib\`, `thumbs\`, `tmp\`; delete all rows including credentials; `VACUUM`; `session.clearStorageData()`; main turns Start with Windows off (`app.setLoginItemSettings({ ...loginItem, openAtLogin: false })`), so no startup entry outlives the data. Auth returns to `credentials`.
-- FileGram import:
-  - `inspect` requires a directory with at least one FileGram marker: a `.td_database\` directory, a `.filegram_state\` directory, or a `package.json` whose `name` is `filegram`. Otherwise 400 "This doesn't look like a FileGram folder". `config.json` and `settings.json` are read only after a marker matched, so a wrong pick never moves or offers to delete anything. `import` re-runs the same check.
-  - `import` needs no active transfers. Credentials: `.env` `API_ID`/`API_HASH` first (FileGram's precedence), then `config.json`. Session (only when TeleFlow is not logged in): close the client, remove TeleFlow's unauthenticated `tdlib\db`, move `.td_database` there (rename; `EXDEV` → copy then delete; `EBUSY`/`EPERM` → 409 "Close FileGram first"), start the client. Downloads: `settings.json` `downloadsDir` (else `<dir>\downloads` if present); inside the FileGram folder → `moveInto(src, downloadRoot)` (rename per entry, merge folders, collisions get ` (2)`, dot-prefixed entries such as `.thumbs` skipped; `ponytail:` moved files are not given Mark-of-the-Web, upgrade: mark each file during the move); outside → becomes `downloadRoot` if it passes `checkDownloadRoot`, else the current root stays and `warning` carries the reason (the dialog shows it; `inspect` already reports it as `downloadsWarning`). Saves `fileGramDir`. Every step is idempotent, so Retry after "Close FileGram first" continues where it stopped.
-  - Leftovers, only while `fileGramDir` is set: fixed names under `fileGramDir` (`.td_database`, `.td_files`, `.filegram_state`, `.management_uploads`, `.thumbs`, `downloads`, `config.json`, `settings.json`) plus `<downloadRoot>\.thumbs` (FileGram's thumbnails when its outside folder became the root), listed when present with sizes. `removeLeftovers` recomputes that list and removes exactly those: the `downloads` folder goes to the Recycle Bin (`trashItem`), since it may still hold user files; the rest are deleted. Then it clears `fileGramDir`. Renderer-supplied paths are never deleted. `.env` is left alone (it may hold unrelated secrets).
-
 ## Desktop integration (`electron/main.ts`)
 
 Startup, in this order:
 1. `resolvePaths` (fails with a clear error if `home` is inside `appDir`); open the logger.
-2. `app.setPath('userData', home)`, `app.setPath('sessionData', home\chromium)`, before the lock so dev and installed runs keep separate profiles (whether the lock is keyed by `userData` is checked in the Phase 1 spike).
+2. `app.setPath('userData', home)`, `app.setPath('sessionData', home\chromium)`, before the lock so dev and installed runs keep separate profiles (the lock is keyed by `userData`: verified in the Phase 1 spike).
 3. `app.setAppUserModelId('com.teleflow.app')` (Windows toast identity, same as `appId`).
 4. `app.requestSingleInstanceLock()`; false → quit. A second launch focuses the existing window and exits.
 5. `protocol.registerSchemesAsPrivileged` for `teleflow` (`standard`, `secure`).
@@ -662,6 +655,8 @@ Startup, in this order:
 7. `app.whenReady()`: `protocol.handle('teleflow')`, `ipcMain.handle('call')`, window (not shown when launched with `--hidden` and `closeToTray` on), tray.
 8. `start(creds)` when `apiId`/`apiHash` are stored, else auth is `{ step: 'credentials' }`.
 9. One background Library scan (`search.global` files).
+
+TDLib is configured and its version logged (`TDLib <version>`) between steps 5 and 6. A startup failure (home inside `appDir`, a TDLib that does not load, a failed `whenReady` step) is logged with its stack, shown in a native error box ("TeleFlow could not start"), and exits with code 1.
 
 - Window: restored from the `window` setting if it intersects a display (`screen.getAllDisplays()`), else 1440×900 clamped to the work area, centered; `minWidth: 1024`, `minHeight: 640`; `backgroundColor` = app background; `titleBarStyle: 'hidden'` with `titleBarOverlay` (`color: '#060b18'`, the top bar background; `symbolColor` = `text-2`; `height: 40`, the top bar height), so the native min/max/close buttons sit on the dark top bar.
 - Tray (always present): icon from `assets/icon.png`; tooltip "TeleFlow — <active> active · <speed>" updated with `stats`; menu Show TeleFlow, Pause all, Resume all, Quit TeleFlow; double-click shows the window.
@@ -680,11 +675,10 @@ Startup, in this order:
 - `webPreferences`: `contextIsolation: true`, `nodeIntegration: false`, `sandbox: true`, `webSecurity: true`, preload only.
 - CSP (injected into `index.html` at build time by a 6-line Vite plugin, because dev HMR needs inline scripts): `default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' teleflow: blob: data:; font-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`.
 - Navigation: `will-navigate` is prevented; `setWindowOpenHandler` denies every window and opens `https:` URLs with `shell.openExternal`. Permission requests are denied (`setPermissionRequestHandler`), since notifications come from main.
-- IPC: sender-frame check (full page path for `file:` or URL in dev, hash and query stripped, case-insensitive, never the origin; 403 otherwise, also on any parse error; Bridge step 1), own-property method lookup, per-method validation, no generic file or shell access. File operations are confined to the download root, `home`, the recorded `fileGramDir` leftover names, and `fileGram.import`, which moves only `.td_database` and the FileGram downloads folder out of a folder that passed `inspect`. Upload sources are read-only.
+- IPC: sender-frame check (full page path for `file:` or URL in dev, hash and query stripped, case-insensitive, never the origin; 403 otherwise, also on any parse error; Bridge step 1), own-property method lookup, per-method validation, no generic file or shell access. File operations are confined to the download root and `home`. Upload sources are read-only.
 - Secrets: the API hash stays in main; the renderer only sees `apiId`. Phone numbers are masked in `Me`. Nothing secret is logged.
 - Downloaded files get Mark-of-the-Web (`Zone.Identifier`, `ZoneId=3`) at finalize, so Windows applies SmartScreen and Office Protected View when they are opened from the Library (`shell.openPath`) or Explorer. Verified manually in Phase 6 (`Get-Item <file> -Stream Zone.Identifier`).
 - The download root can never be, sit inside, or contain system or app data folders (`checkDownloadRoot`), because Clear All Data may delete everything under it.
-- FileGram import acts only on folders with a FileGram marker (`fileGram.inspect`).
 
 ## Build, packaging, tests
 
@@ -703,7 +697,7 @@ Startup, in this order:
 
 electron-builder config (`"build"` in `package.json`): `appId: com.teleflow.app`, `productName: TeleFlow`, `directories: { output: release, buildResources: assets }`, `files: ["out/**", "package.json"]`, `asarUnpack` as above, `npmRebuild: false`, `win: { target: nsis, icon: assets/icon.ico }`, `nsis: { oneClick: false, perMachine: false, allowToChangeInstallationDirectory: true, createDesktopShortcut: true, createStartMenuShortcut: true, deleteAppDataOnUninstall: false, include: "assets/installer.nsh", artifactName: "TeleFlow-Setup-${version}.${ext}" }`. The installer is unsigned, so SmartScreen warns on first run.
 
-`npmRebuild: false`: `tdl` 8.1.0 ships `binding.gyp` and an `install: node-gyp-build` script next to its N-API prebuild, and electron-builder's default rebuild could try to compile it (Python and MSVC on every build machine). The prebuild already loads in Electron 44 (Early-risk findings); the Phase 1 packaging spike confirms the packaged app still loads it.
+`npmRebuild: false`: `tdl` 8.1.0 ships `binding.gyp` and an `install: node-gyp-build` script next to its N-API prebuild, and electron-builder's default rebuild could try to compile it (Python and MSVC on every build machine). The prebuild loads in Electron 44, packaged and unpackaged (Early-risk findings).
 
 `assets/installer.nsh` removes the Run value that `app.setLoginItemSettings` wrote (value name = Electron's default, the AppUserModelId), so uninstalling leaves no dead startup entry. `isUpdated` is set when a newer installer runs the old uninstaller, so an upgrade keeps Start with Windows:
 ```nsis
@@ -723,9 +717,9 @@ Version: only in `package.json`; main reads `app.getVersion()`, and the renderer
 Licenses: `electron.vite.config.ts` reads `{ name, version, license }` from `node_modules/<name>/package.json` for every `dependencies` entry plus `electron`, `react`, `react-dom`, `lucide-react`, and injects the list into the main build with `define: { __LICENSES__: JSON.stringify(list) }` (a few lines; Vite bundles the renderer libraries, so their `package.json` files are not in the packaged app).
 
 Testability:
-- Unit (`node:test`, plain Node 24, `:memory:` SQLite): `fileName`, `sanitize`, `folderFor` (incl. invalid template characters), `uniquePath` (incl. a reserved name), `resolvePaths`, `pageKey` (`pageKey('file:///C:/X/out/renderer/index.html#/queue') === pageKey(pathToFileURL('c:\\x\\out\\renderer\\index.html').href)`; a sibling `…/renderer/other.html` differs; `http://localhost:5173/#/a` equals `http://localhost:5173`; a path with `%2F` throws), `checkDownloadRoot` (rejects relative paths, drive roots, `home`, `appDir`, `%LOCALAPPDATA%`, `%LOCALAPPDATA%\Programs`, `C:\Windows`, `C:\Program Files\X`, the profile folder, known folders and their ancestors; accepts `D:\Media` and `Downloads\TeleFlow`), `parseFloodWait`, gate spacing and backoff, stall decision (offline skip, third stall requeue, cap → "Download keeps stalling"), `isRetryable`, `retryDelay`, `groupUploads` (albums, photo/video permissions → documents), `settleUpload` (an album of 3 where 1 fails leaves 1 file in the job and 2 history rows; caption dropped when the first file was sent; after a restart with `files[1].messageId` and `files[2].pendingId` set, the rebuilt routing map sends a success for `files[2].pendingId` to index 2; after a simulated restart and `ready`, an `active` upload with no `pendingId` and one file without `messageId` ends `failed` with "Interrupted. Check the chat before retrying", and one whose files all have `messageId` ends `completed`), upload kind detection, enqueue upsert (dedupe, `force` only for completed, open rows untouched, re-add after Clear Completed → `skipped`, new rows get increasing `position`, a retried row keeps its `position`), skip-existing completion (after `complete` and Clear Completed, `MediaItem.status` is still `downloaded` and `downloads.add` counts the item in `skipped`), `jobs.action` with 1000 ids (one `json_each` parameter), scan start decision (no new top-up once `newest_id` equals a text last message; no start for a chat in `failed`; live upkeep bumps `newest_id` only for `current` chats), `library.*` path rule (inside the root, or equal to a recorded download path after a root change; anything else 404), `requeueActiveDownloads`, `nextQueued` order and limits, `jobs.list` ordering, up/down swaps, media filter query, `MediaItem.status` derivation (trash nulls the path → `none`), `missing` (latest row only), stats buckets, `isTelegramLink`, FileGram marker check and credential precedence, `repository` URL normalization.
+- Unit (`node:test`, plain Node 24, `:memory:` SQLite): `fileName`, `sanitize`, `folderFor` (incl. invalid template characters), `uniquePath` (incl. a reserved name), `resolvePaths`, `pageKey` (`pageKey('file:///C:/X/out/renderer/index.html#/queue') === pageKey(pathToFileURL('c:\\x\\out\\renderer\\index.html').href)`; a sibling `…/renderer/other.html` differs; `http://localhost:5173/#/a` equals `http://localhost:5173`; a path with `%2F` throws), `checkDownloadRoot` (rejects relative paths, drive roots, `home`, `appDir`, `%LOCALAPPDATA%`, `%LOCALAPPDATA%\Programs`, `C:\Windows`, `C:\Program Files\X`, the profile folder, known folders and their ancestors; accepts `D:\Media` and `Downloads\TeleFlow`), `parseFloodWait`, gate spacing and backoff, stall decision (offline skip, third stall requeue, cap → "Download keeps stalling"), `isRetryable`, `retryDelay`, `groupUploads` (albums, photo/video permissions → documents), `settleUpload` (an album of 3 where 1 fails leaves 1 file in the job and 2 history rows; caption dropped when the first file was sent; after a restart with `files[1].messageId` and `files[2].pendingId` set, the rebuilt routing map sends a success for `files[2].pendingId` to index 2; after a simulated restart and `ready`, an `active` upload with no `pendingId` and one file without `messageId` ends `failed` with "Interrupted. Check the chat before retrying", and one whose files all have `messageId` ends `completed`), upload kind detection, enqueue upsert (dedupe, `force` only for completed, open rows untouched, re-add after Clear Completed → `skipped`, new rows get increasing `position`, a retried row keeps its `position`), skip-existing completion (after `complete` and Clear Completed, `MediaItem.status` is still `downloaded` and `downloads.add` counts the item in `skipped`), `jobs.action` with 1000 ids (one `json_each` parameter), scan start decision (no new top-up once `newest_id` equals a text last message; no start for a chat in `failed`; live upkeep bumps `newest_id` only for `current` chats), `library.*` path rule (inside the root, or equal to a recorded download path after a root change; anything else 404), `requeueActiveDownloads`, `nextQueued` order and limits, `jobs.list` ordering, up/down swaps, media filter query, `MediaItem.status` derivation (trash nulls the path → `none`), `missing` (latest row only), stats buckets, `isTelegramLink`, `repository` URL normalization, `handleCall` (403 for a null sender, a sibling page, an unparsable URL; 404 for unknown and inherited method names; 400 naming the field; `fail()` passthrough with `retryAfter`; other errors → 500 without internals), the common validators.
 - Renderer (Playwright, Chromium): every page renders with fixture data at 1440×900 and 1280×720 (screenshots), empty/loading/error states, the Control inventory flows in UI.md against the stub (asserts the method and args each control calls).
-- Packaged smoke (`_electron`, exe launched through its lowercased path): the exe starts, `app.info().tdlib` is `1.8.66`, the Login credentials step is visible (so the sender check passed), `main.log` contains the TDLib version line and no "Not allowed" warning.
+- Packaged smoke (`tests/app.spec.ts`, `_electron`, exe launched through its lowercased path, `TELEFLOW_HOME` in a `mkdtemp` folder that is deleted afterwards): the API Keys step is visible; `app.info()` returns `tdlib` `1.8.66`, the temp `home`, and the normalized repository (so the sender check passed); Continue shows the main process's rejection inline; `pathOf` works in the sandboxed preload; the drag strip reserves the window buttons; `getCacheSize`/`clearCodeCaches` resolve; a second launch with the same home exits 0 and one with another home stays up; `main.log` contains `TDLib 1.8.66` and no "Not allowed"; `tdlib.log` exists.
 - Manual (documented in PROGRESS per release): real login, download, upload (incl. a partly failed album), a download to a second drive (cross-volume finalize: no `.teleflow-*.part` left, Mark-of-the-Web present), cancel of a paused download frees its `tdlib\files` data, tray, start with Windows (toggle reads back on after a restart; uninstall removes the Run value, an upgrade install keeps it), Mark-of-the-Web on a downloaded file, installer install/uninstall (once into a custom folder typed in lowercase, which must reach the Login screen).
 
 ## Design review 1: responses

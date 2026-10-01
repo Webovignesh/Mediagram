@@ -1,36 +1,76 @@
 {
-  "name": "filegram",
+  "name": "teleflow",
   "version": "1.0.0",
   "private": true,
-  "description": "Local Telegram media browser and download manager powered by TDLib.",
-  "main": "server.js",
-  "scripts": {
-    "start": "node -r ./server/tdlib-temp-preload.js -r ./server/tdl-upload-compat.js -r ./server/bulk-upload-reliability-preload.js -r ./server/bulk-upload-preload.js -r ./server/download-client-reliability-preload.js -r ./server/download-dedupe-preload.js -r ./server/download-reliability-preload.js -r ./server/thumb-cache-preload.js -r ./server/session-preload.js server.js",
-    "check": "node --check scripts/download-queue.test.cjs && node --check scripts/dedupe.test.cjs && node --check scripts/files-invariants.test.cjs && node --check scripts/files-reconcile.test.cjs && node --check scripts/upload-queue.test.cjs && node --check scripts/upload-queue.restore-scale.test.cjs && node --check scripts/upload-retry-after.test.cjs && node --check scripts/bulk-upload-server.test.cjs && node --check scripts/bulk-upload-ledger.test.cjs && node --check scripts/bulk-upload-reliability.test.cjs && node --check scripts/media-upload-wiring.test.cjs && node --check scripts/download-reference-resolver.test.cjs && node --check scripts/download-client-reliability.test.cjs && node --check scripts/download-reliability-wiring.test.cjs && node --check scripts/owned-bulk-delete-server.test.cjs && node --check scripts/local-release.test.cjs && node --check server/tdlib-temp-preload.js && node --check server/tdl-upload-compat.js && node --check server/bulk-upload-reliability-preload.js && node --check server/bulk-upload-server.js && node --check server/bulk-upload-ledger.js && node --check server/owned-bulk-delete-server.js && node --check server/bulk-upload-preload.js && node --check server/download-client-reliability-preload.js && node --check server/download-dedupe-preload.js && node --check server/download-reference-resolver.js && node --check server/download-reliability-preload.js && node --check server/thumb-cache-preload.js && node --check server/session-preload.js && node --check server/pack-media.js && node --check server/pack-selected.js && node --check server.js && node --check public/app.js && node --check public/auth-state-fix.js && node --check public/files-stability.js && node --check public/files-view.js && node --check public/rescue-runtime.js && node --check public/management.js && node --check public/telegram-daily-driver.js && node --check public/daily-driver-hotfix.js && node --check public/daily-driver-p0-v2.js && node --check public/daily-driver-p1.js && node --check public/daily-driver-p2.js && node --check public/daily-driver-final.js && node --check public/daily-driver-final-guard.js && node --check public/daily-driver-final-ui-fix.js && node --check public/filegram-shell.js && node --check public/filegram-media-preview.js && node --check public/filegram-ui-stability.js && node --check public/download-reliability.js && node --check public/upload-queue-core.js && node --check public/uploads.js && node --check public/bulk-uploads.js && node --check public/uploads-hardening.js && node --check public/upload-reliability.js && node --check public/owned-bulk-delete.js && node --check scripts/download-folder.test.cjs && node --check tests/bulk-uploads.spec.js && node --check tests/media-upload-reliability.spec.js && node --check tests/ui-stability.spec.js && node --check tests/download-reliability.spec.js && node --check tests/owned-bulk-delete.spec.js && node --check tests/toast-contrast.spec.js && node --check tests/files-status-scope.spec.js && node --check tests/file-consistency.spec.js && node --check tests/fixture-support.js && node --check tests/preservation.spec.js",
-    "test": "node scripts/rescue-smoke.test.cjs && node scripts/p0-smoke.test.cjs && node scripts/p1-smoke.test.cjs && node scripts/p2-smoke.test.cjs && node scripts/final-smoke.test.cjs && node scripts/download-queue.test.cjs && node scripts/dedupe.test.cjs && node scripts/files-invariants.test.cjs && node scripts/files-reconcile.test.cjs && node scripts/download-folder.test.cjs && node scripts/upload-queue.test.cjs && node scripts/upload-queue.restore-scale.test.cjs && node scripts/upload-retry-after.test.cjs && node scripts/bulk-upload-server.test.cjs && node scripts/bulk-upload-ledger.test.cjs && node scripts/bulk-upload-reliability.test.cjs && node scripts/media-upload-wiring.test.cjs && node scripts/download-reference-resolver.test.cjs && node scripts/download-client-reliability.test.cjs && node scripts/download-reliability-wiring.test.cjs && node scripts/owned-bulk-delete-server.test.cjs && node scripts/local-release.test.cjs",
-    "test:ui": "playwright test",
-    "test:uploads-ui": "playwright test tests/bulk-uploads.spec.js tests/media-upload-reliability.spec.js tests/ui-stability.spec.js tests/download-reliability.spec.js tests/owned-bulk-delete.spec.js tests/toast-contrast.spec.js tests/files-status-scope.spec.js tests/file-consistency.spec.js",
-    "test:preservation": "playwright test tests/preservation.spec.js",
-    "verify": "npm run check && npm test"
+  "description": "Desktop download and upload manager for Telegram media, powered by TDLib.",
+  "type": "module",
+  "main": "out/main/index.js",
+  "author": "Webovignesh",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Webovignesh/tele.git"
   },
-  "keywords": [
-    "telegram",
-    "tdlib",
-    "media",
-    "downloader"
-  ],
-  "author": "",
-  "license": "ISC",
-  "type": "commonjs",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test tests/engine.test.ts",
+    "test:ui": "playwright test tests/ui.spec.ts",
+    "dist": "electron-vite build && electron-builder --win nsis",
+    "test:app": "playwright test tests/app.spec.ts",
+    "icon": "node scripts/icon.ts"
+  },
   "dependencies": {
-    "archiver": "^8.0.0",
-    "dotenv": "^17.4.2",
-    "express": "^5.2.1",
-    "prebuilt-tdlib": "^0.1008066.0",
-    "tdl": "^8.1.0",
-    "ws": "^8.21.1"
+    "prebuilt-tdlib": "0.1008066.0",
+    "tdl": "8.1.0"
   },
   "devDependencies": {
-    "@playwright/test": "^1.62.1"
+    "@playwright/test": "1.63.0",
+    "@tailwindcss/vite": "4.3.3",
+    "@types/node": "24.19.0",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "5.2.0",
+    "electron": "44.5.1",
+    "electron-builder": "26.15.3",
+    "electron-vite": "5.0.0",
+    "lucide-react": "1.49.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "tailwindcss": "4.3.3",
+    "typescript": "7.0.2",
+    "vite": "7.3.6"
+  },
+  "build": {
+    "appId": "com.teleflow.app",
+    "productName": "TeleFlow",
+    "directories": {
+      "output": "release",
+      "buildResources": "assets"
+    },
+    "files": [
+      "out/**",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "node_modules/tdl/**",
+      "node_modules/prebuilt-tdlib/**",
+      "node_modules/@prebuilt-tdlib/**"
+    ],
+    "npmRebuild": false,
+    "win": {
+      "target": "nsis",
+      "icon": "assets/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "deleteAppDataOnUninstall": false,
+      "include": "assets/installer.nsh",
+      "artifactName": "TeleFlow-Setup-${version}.${ext}"
+    }
   }
 }

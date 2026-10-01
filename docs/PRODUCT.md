@@ -2,13 +2,13 @@
 
 > Download. Upload. Organize.
 
-TeleFlow is an installable Windows desktop app for downloading, uploading, and organizing Telegram media. It replaces FileGram (the current code in this repo) with a full rewrite: new stack, new UI, and an optional import of the FileGram login and downloads.
+TeleFlow is an installable Windows desktop app for downloading, uploading, and organizing Telegram media. It replaces FileGram (the previous code in this repo) with a full rewrite: new stack and new UI. It starts fresh: nothing is imported from FileGram (its data was deleted by the user).
 
 - Ships as a real Windows installer: `TeleFlow-Setup-<version>.exe` (per-user NSIS install, Start Menu and Desktop shortcuts, uninstaller in Windows "Installed apps").
 - Built on Electron. No local web server, no open port, no script launchers.
 - Feature reference: [vinodkr494/telegram-media-downloader](https://github.com/vinodkr494/telegram-media-downloader).
 - Visual reference: four UI mockups, transcribed in [UI.md](./UI.md). The mockups are visual reference only; their sample data is never shipped.
-- Code style: Ponytail rules (`.kiro/steering/ponytail.md`): minimal, readable, no speculative code. The file lives in the main workspace and is added to the branch by the Phase 1 scaffolding commit (`.kiro/steering/` un-ignored).
+- Code style: Ponytail rules (`.kiro/steering/ponytail.md`, on the branch): minimal, readable, no speculative code.
 
 ## Principles
 
@@ -21,8 +21,7 @@ TeleFlow is an installable Windows desktop app for downloading, uploading, and o
 ## Features (v1)
 
 ### 1. Setup and login
-- Enter Telegram API ID and API hash (from my.telegram.org), then phone, login code, and 2FA password when enabled.
-- "Import from FileGram" on the Login screen and in Settings > Telegram (see Storage and FileGram import).
+- First run: enter the Telegram API ID and API hash (from my.telegram.org), then phone, login code, and 2FA password when enabled.
 - Log out from the user menu, Settings > Telegram, or Settings > Danger Zone > Disconnect Telegram. The queue is kept; jobs are not tied to an account, so jobs from another account fail if a different account signs in (v1 limit).
 
 ### 2. Overview
@@ -57,7 +56,7 @@ TeleFlow is an installable Windows desktop app for downloading, uploading, and o
 - Live total speed with a 60-second sparkline.
 
 ### 6. Media Library
-- Lists files on disk under the download root, enriched with chat/message metadata from history when known. Files downloaded by FileGram show up once they are in the download root.
+- Lists files on disk under the download root, enriched with chat/message metadata from history when known.
 - Search, type chips, chat filter, sort, grid/list toggle.
 - Open, Show in folder, Move to Recycle Bin (with confirm). A trashed file is forgotten: it shows as not downloaded and can be downloaded again.
 - Verify: lists history entries whose file is missing and offers re-download.
@@ -93,16 +92,10 @@ Borrowed from the reference repo and lessons in this repo's git history:
 - Auto-retry failed jobs (setting): backoff, capped attempts, only for retryable errors.
 - Speed shown with EMA smoothing.
 
-## Storage and FileGram import
+## Storage
 
-- App data: `%LOCALAPPDATA%\TeleFlow\` (TDLib session and cache, SQLite, thumbnails, logs, temp files, Chromium data). `TELEFLOW_HOME` overrides it for development and tests.
+- App data: `%LOCALAPPDATA%\TeleFlow\` (TDLib session and cache, SQLite, thumbnails, logs, temp files, Chromium data). `TELEFLOW_HOME` overrides it for development and tests. Development runs without it use `%LOCALAPPDATA%\TeleFlow-dev`, and the single-instance lock is per app data folder, so a dev run and the installed app can run side by side.
 - Download root: `%USERPROFILE%\Downloads\TeleFlow` by default, configurable. Clear All Data can delete every file under it, so it may not be a drive root; may not be, sit inside, or contain the app data folder, the install folder, `AppData`, or the Windows system folders (Windows, Program Files, ProgramData); and may not be the user folder or a known folder (Desktop, Documents, Downloads, Pictures, Videos, Music) itself or an ancestor of one. Subfolders such as `Downloads\TeleFlow` and other folders such as `D:\Media` are fine. Changing it does not move existing downloads; they stay where they are and still open from the Queue and Chat View.
-- Import from FileGram (never automatic, never a hardcoded path): the user picks their FileGram folder, which TeleFlow recognizes by `.td_database`, `.filegram_state`, or FileGram's `package.json` (any other folder is refused and left untouched). TeleFlow shows what it found, then, with FileGram closed:
-  - moves the `.td_database` session into app data so the login carries over (skipped when TeleFlow is already logged in),
-  - imports the API ID/hash (`.env`, then `config.json`) and the FileGram download folder setting into SQLite (those files are never written),
-  - moves a download folder that sits inside the FileGram folder into the download root; a folder outside it becomes the download root as is, unless it breaks the download root rules (then the current root stays and the dialog says why).
-  - If a file is locked, it says "Close FileGram first" with a Retry button.
-- After import, Settings shows the leftover FileGram data (`.td_files`, `.filegram_state`, `.management_uploads`, `.thumbs` (FileGram keeps it inside its downloads folder), `config.json`, `settings.json`, any session or downloads not moved) with its size and a "Remove leftover FileGram data" button (confirm). A leftover downloads folder goes to the Recycle Bin; the rest is deleted.
 - Clearing (Settings), each with current size, a confirm dialog, and the freed size in a toast:
   - Clear cache: TDLib file cache (`optimizeStorage`), thumbnails, temp files, Chromium cache. Keeps login, history, queue, downloads. Refused while transfers are active; paused downloads restart from zero.
   - Clear app data: history, queue, media index, settings reset to defaults (including the download folder), plus the cache. Keeps login and downloaded files.
@@ -121,13 +114,13 @@ FileGram had some of these. They are dropped to keep v1 small and can come back 
 - Multiple accounts
 - Setting file timestamps to the message date
 - Analytics page (removed by the user; Overview keeps its charts)
-- Importing FileGram's pending queue (D2)
+- Importing anything from FileGram: session, credentials, downloads, queue (removed by the user after deleting FileGram's data)
 
 ## Open decisions
 
 | # | Question | Default |
 |---|----------|---------|
 | D1 | Keep any "out of scope" FileGram feature? | Drop all for v1 |
-| D2 | Import FileGram's pending queue (`.filegram_state/download-queue.json`)? | No import; the Library scans the disk, so finished files still appear |
+| D2 | Import FileGram's pending queue? | Obsolete: FileGram import was removed (user change #5) |
 | D3 | Brand name | TeleFlow (mockups also show "TG Manager") |
 | D4 | Default port | Obsolete: the Electron app has no port (IPC only) |

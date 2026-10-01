@@ -10,6 +10,7 @@ downloads/
 .thumbs/
 
 # Build/runtime output
+out/
 .turbo/
 runtime/
 release/
@@ -40,7 +41,8 @@ Thumbs.db
 *.swo
 .vscode/
 .idea/
-.kiro/
+.kiro/*
+!.kiro/steering/
 
 # Playwright / diagnostic output
 # These entries were previously written in UTF-16, so git could not match them
@@ -51,6 +53,5 @@ tests/screenshot-*.png
 tests/shot-*.png
 tests/probe-*.png
 probe-*.js
-# TeleFlow runtime state and scratch home
-.teleflow/
+# Scratch home
 .scratch/

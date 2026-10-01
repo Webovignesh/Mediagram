@@ -26,7 +26,6 @@ The mockups are visual reference only. Every name, handle, avatar, thumbnail, fi
 | `<settings.*>` | `settings.get` |
 | `<storage.*>` | `app.storage` |
 | `<app.*>` | `app.info` (`app.getVersion()`, TDLib version, install time, licenses) |
-| `<leftovers.*>`, `<fg.*>` | `fileGram.leftovers`, `fileGram.inspect` |
 | `<missing.*>` | `library.missing` |
 | `<invite.*>` | `chats.open` (invite preview) |
 | `<added>`, `<skipped>`, `<trashed>`, `<freed>` | The result of the call that triggered the toast |
@@ -157,7 +156,7 @@ Shared primitives live in `web/src/ui.tsx`. Components used by one page stay in 
 | `ChatPicker` | Chat panel: search, chips, rows, selection | Downloads, Uploads |
 | `OpenChatDialog` | Link/username → `chats.open`, join confirm | Overview, Downloads, global search |
 
-Page-local: `AreaChart` (Overview), `Sparkline` (Queue), `FilesView` and `ChatView` (Downloads), `VerifyDialog` (Library), `Stepper` and `LicensesDialog` (Settings). `FileGramImportDialog` (pick folder → inspect → import → leftovers) lives in `pages/Settings.tsx` and is exported for `Login.tsx`, which keeps `ui.tsx` under the 400-line split rule.
+Page-local: `AreaChart` (Overview), `Sparkline` (Queue), `FilesView` and `ChatView` (Downloads), `VerifyDialog` (Library), `Stepper` and `LicensesDialog` (Settings).
 
 `web/src/api.ts` exports `call`, `on`, `useCall(method, args, topics)` (`{ data, error, loading, reload }`; `data` survives refetches), `useLive()` (`{ auth, live }`), `useRoute()`, `navigate()`.
 
@@ -395,10 +394,10 @@ Data needs: `library.list({ q, type, chat, sort, page })` (`library`), `library.
 | General | Startup and window | Start with Windows (toggle), Minimize to tray on close (toggle) |
 | Downloads | Location, limits, naming | Download folder (`<settings.downloadRoot>` + Change + Open; description "Existing downloads stay where they are"), Max concurrent downloads (stepper 1–5), Skip existing files, Prefix file names with date, Folder template (text, placeholders `{chat}` and `{chat_id}`) |
 | Uploads | Defaults and limits | Default destination (select of `canPost` chats + None), Upload as album, Keep original file names, Max concurrent uploads (stepper 1–3) |
-| Telegram | Account, session, import | Account (avatar, `<me.name>`, `@<me.username>`, `<me.phone>`), API ID (`<settings.apiId>`; "API hash saved", never shown), Import from FileGram, Log out |
+| Telegram | Account and session | Account (avatar, `<me.name>`, `@<me.username>`, `<me.phone>`), API ID (`<settings.apiId>`; "API hash saved", never shown), Log out |
 | Channels | Chat list | Show archived chats |
 | Queue | Retries and cleanup | Auto-retry failed transfers, Retry attempts (stepper 1–10, always enabled; description "Starts per transfer, including stall restarts"), Stall timeout (5 / 10 / 30 / 60 s), Clear completed after (Never / 1 / 7 / 30 days) |
-| Files & Folders | App data and leftovers | App data folder (`<app.home>` + Open), Logs (Open), Leftover FileGram data (`<leftovers.dir>`, `<leftovers.total>` + Remove; row shown only when leftovers exist) |
+| Files & Folders | App data and logs | App data folder (`<app.home>` + Open), Logs (Open) |
 | Notifications | Desktop alerts | Notify when transfers complete, Notify on failures |
 | Privacy & Security | Cache and data | Clear cache (`<storage.cache.total>`), Clear app data (`<storage.appData>`) |
 | About | Version and licenses | Version `<app.version>`, TDLib `<app.tdlib>`, Installed `fmtDate(<app.installedAt>)` (hidden when null, i.e. dev runs), Source code (`<app.repository>`, hidden when null), Open-source licenses |
@@ -411,7 +410,7 @@ Language is not shown (English only in v1). Appearance is removed (dark is the o
   - **Storage**: indigo progress bar with %, "`<storage.drive.total − storage.drive.free>` of `<storage.drive.total>` used" on `<storage.drive.root>`; breakdown rows with colored squares: Videos (indigo), Images (green), Audio (cyan), Documents (blue), Archives (amber) from `<storage.library.*>`; App cache `<storage.cache.total>` with a "Clear cache" button.
   - **Danger Zone** (red trash icon, "These actions are permanent and cannot be undone."): red-tinted buttons "Clear All Data — Remove settings, history, cache, and your session" (deleting downloaded files is an unchecked option in its confirm) and "Disconnect Telegram — Log out and remove the saved session". Both use a typed confirmation (DELETE / DISCONNECT).
 
-Data needs: `settings.get` (`settings`), `app.info`, `app.storage` (`storage`, refreshed when the page opens and after each clear), `fileGram.leftovers` (`storage`), `chats.list` (`chats`, for Default destination), `auth`, `stats.live`.
+Data needs: `settings.get` (`settings`), `app.info`, `app.storage` (`storage`, refreshed when the page opens and after each clear), `chats.list` (`chats`, for Default destination), `auth`, `stats.live`.
 
 ### Control inventory
 
@@ -428,7 +427,6 @@ Data needs: `settings.get` (`settings`), `app.info`, `app.storage` (`storage`, r
 | Default destination | Select | `settings.set({ defaultUploadChat })` |
 | Upload as album / Keep original file names | Toggles | `settings.set({ uploadAlbum })`, `settings.set({ keepNames })` |
 | Max concurrent uploads − / + | 1–3 | `settings.set({ maxUploads })` |
-| Import from FileGram | `FileGramImportDialog` | see Login |
 | Log out (Telegram) | Confirm, then log out; toast "Logged out" (+ Devices hint when `local`) | `auth.logout()` |
 | Show archived chats | Toggle | `settings.set({ showArchived })` |
 | Auto-retry failed transfers | Toggle | `settings.set({ autoRetry })` |
@@ -436,7 +434,6 @@ Data needs: `settings.get` (`settings`), `app.info`, `app.storage` (`storage`, r
 | Stall timeout | Select | `settings.set({ stallSeconds })` |
 | Clear completed after | Select | `settings.set({ clearCompletedDays })` |
 | App data folder > Open / Logs > Open | Explorer | `app.openPath({ target: 'appData' \| 'logs' })` |
-| Leftover FileGram data > Remove | Confirm listing `<leftovers.items>` paths and sizes ("The FileGram downloads folder goes to the Recycle Bin; the rest is deleted."); toast "Freed `<freed>`" | `fileGram.removeLeftovers()` |
 | Notify when transfers complete / Notify on failures | Toggles | `settings.set({ notifyComplete })`, `settings.set({ notifyFailed })` |
 | Clear cache (Privacy, Storage card) | Disabled with hint "Pause active transfers first" while `<live.counts.download.active + live.counts.upload.active>` > 0 (live, so it re-enables as soon as transfers stop); confirm "Clear `<storage.cache.total>` of cache? Paused downloads restart from the beginning."; toast "Freed `<freed>`" | `app.clearCache()` |
 | Clear app data | Disabled while transfers are active (same live condition); confirm "Delete history, queue, media index, and settings (download folder resets to default)? Your login and downloaded files stay."; toast "Freed `<freed>`" | `app.clearData()` |
@@ -455,7 +452,6 @@ Data needs: `settings.get` (`settings`), `app.info`, `app.storage` (`storage`, r
 | App Status | `<auth.connection>`, `<app.version>`, `<app.installedAt>`, `<live.counts>` | – | skeleton lines | ErrorState |
 | Storage card | `<storage.*>` | 0 B rows | skeleton (scan can take seconds) | ErrorState + Retry |
 | Clear cache / app data sizes | `<storage.cache.total>`, `<storage.appData>` | 0 B | skeleton | – |
-| Leftover row | `<leftovers.*>` | row hidden | – | – |
 | About | `<app.*>` | Source code hidden if no repository | skeleton | ErrorState |
 
 ## Login (not in mockups)
@@ -463,14 +459,14 @@ Data needs: `settings.get` (`settings`), `app.info`, `app.storage` (`storage`, r
 - Full-screen app background (window still draggable at the top), centered 420px panel, logo on top.
 - Step indicator: API Keys → Phone → Code → Password (Password only when 2FA is on), driven by `<auth.step>`.
 - Starting: spinner "Connecting to Telegram…". Logging out (`<auth.step>` = `logging-out`): spinner "Signing out…".
-- API Keys step: API ID, API hash, helper link "Get them at my.telegram.org", and "Used FileGram before? Import from FileGram".
-- Phone step: phone input (`type="tel"`), "Send code", "Back", and the same import link. `<auth.error>` shows above the input; it is how TeleFlow explains TDLib steps it cannot complete (email setup, sign-up, Premium), and the user can enter a different number.
+- API Keys step: API ID, API hash, helper link "Get them at my.telegram.org". The 40px top strip is the drag region and reserves the native window buttons with `env(titlebar-area-x/width)`.
+- Phone step: phone input (`type="tel"`), "Send code", "Back". `<auth.error>` shows above the input; it is how TeleFlow explains TDLib steps it cannot complete (email setup, sign-up, Premium), and the user can enter a different number.
 - Code step: "We sent a code to `<auth.phone>`" + "via Telegram/SMS/call" from `<auth.via>`; code input (`autocomplete="one-time-code"`), "Sign in", "Use a different number".
 - Password step: hint `<auth.hint>` (hidden if empty), password input, "Sign in", "Use a different number".
 - Each step: labelled input, primary button (busy state while the call runs), inline error (`role="alert"`) from the rejected call or `<auth.error>`.
 - When the state becomes `ready`, the shell shows Overview.
 
-Data needs: `auth.get` + `auth` events (step, phone, via, hint, error, connection); `app.pickFolder`, `fileGram.inspect`, `fileGram.import`, `fileGram.removeLeftovers` inside `FileGramImportDialog`. Login renders no other data.
+Data needs: `auth.get` + `auth` events (step, phone, via, hint, error, connection). Login renders no other data.
 
 ### Control inventory
 
@@ -478,7 +474,6 @@ Data needs: `auth.get` + `auth` events (step, phone, via, hint, error, connectio
 |---------|----------|------|
 | Continue (API Keys) | Saves credentials, starts TDLib | `auth.credentials({ apiId, apiHash })` |
 | Get them at my.telegram.org | External browser | `<a href="https://my.telegram.org" target="_blank">` |
-| Import from FileGram | Folder dialog → inline error "This doesn't look like a FileGram folder" on 400 (nothing is changed; Cancel and pick again) → summary of `<fg.*>` (session, credentials, `<fg.downloadsDir>` + `<fg.downloadsSize>`, and `<fg.downloadsWarning>` in amber when that folder cannot become the download folder) → Import; "Close FileGram first" + Retry on 409; the result's `warning` (if any) stays visible; then "Remove leftover FileGram data (`<leftovers.total>`)" or "Not now" | `app.pickFolder()` → `fileGram.inspect({ dir })` → `fileGram.import({ dir })` → `fileGram.removeLeftovers()` |
 | Send code | Submits phone | `auth.phone({ phone })` |
 | Back (Phone) | Shows API Keys step; resubmitting restarts TDLib | – |
 | Sign in (Code) | Submits code | `auth.code({ code })` |
@@ -493,7 +488,6 @@ Data needs: `auth.get` + `auth` events (step, phone, via, hint, error, connectio
 | `confirm()` | Cancel, Confirm (danger tone for destructive), optional typed word (Confirm disabled until it matches), optional checkbox | – |
 | `VerifyDialog` | Checkboxes, Select all, Re-download selected, Close | `downloads.add({ items, force: true })` |
 | `LicensesDialog` | Close | – |
-| `FileGramImportDialog` | Import, Retry, Remove leftover FileGram data, Not now, Cancel | as in Login |
 
 Every dialog closes with Escape and returns focus to the control that opened it.
 
