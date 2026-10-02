@@ -241,7 +241,7 @@ export default function Queue() {
                           <div
                             className="flex items-center gap-2.5 cursor-pointer group min-w-0"
                             title="Click for preview"
-                            onClick={() => setPreviewItem({ name: j.name, path: j.path, thumb: j.thumb, type: j.type, size: j.size })}
+                            onClick={() => setPreviewItem({ name: j.name, path: j.path, thumb: j.thumb, type: j.type, size: j.size, chatId: j.chatId, messageId: j.messageId })}
                           >
                             <Thumb src={j.thumb} name={j.name} />
                             <div className="min-w-0 flex-1 truncate">

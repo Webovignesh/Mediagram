@@ -233,6 +233,7 @@ export default function Downloads() {
 
   // Only scroll to bottom when switching chats or entering chat view
   useEffect(() => {
+    setChannelMenuOpen(false)
     if (view === 'chat' && activeChatId) {
       setTimeout(() => scrollToBottom('auto'), 80)
     }
@@ -639,6 +640,7 @@ export default function Downloads() {
                     setChatId(c.id)
                     setPage(1)
                     setSelectedIds([])
+                    setChannelMenuOpen(false)
                     c.unread = 0
                   }}
                   className={`group relative flex w-full items-center gap-2.5 rounded-lg p-2 text-left transition-colors cursor-pointer ${
@@ -777,34 +779,37 @@ export default function Downloads() {
                     <MoreVertical size={16} />
                   </button>
                   {channelMenuOpen && (
-                    <div
-                      className="absolute right-0 top-full mt-1.5 z-50 w-48 rounded-xl border border-border bg-[#182533] p-1.5 shadow-2xl backdrop-blur-xl space-y-0.5"
-                      onClick={() => setChannelMenuOpen(false)}
-                    >
-                      {activeChat.username && (
+                    <>
+                      <div className="fixed inset-0 z-40" onClick={() => setChannelMenuOpen(false)} />
+                      <div
+                        className="absolute right-0 top-full mt-1.5 z-50 w-48 rounded-xl border border-border bg-[#182533] p-1.5 shadow-2xl backdrop-blur-xl space-y-0.5"
+                        onClick={() => setChannelMenuOpen(false)}
+                      >
+                        {activeChat.username && (
+                          <button
+                            onClick={() => copyChatLink(activeChat.username)}
+                            className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12px] text-text hover:bg-white/10 transition-colors"
+                          >
+                            <Copy size={13} className="text-muted" />
+                            <span>Copy Link</span>
+                          </button>
+                        )}
                         <button
-                          onClick={() => copyChatLink(activeChat.username)}
+                          onClick={() => clearChatHistory(activeChat.id, activeChat.title)}
                           className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12px] text-text hover:bg-white/10 transition-colors"
                         >
-                          <Copy size={13} className="text-muted" />
-                          <span>Copy Link</span>
+                          <RotateCcw size={13} className="text-muted" />
+                          <span>Clear Chat History</span>
                         </button>
-                      )}
-                      <button
-                        onClick={() => clearChatHistory(activeChat.id, activeChat.title)}
-                        className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12px] text-text hover:bg-white/10 transition-colors"
-                      >
-                        <RotateCcw size={13} className="text-muted" />
-                        <span>Clear Chat History</span>
-                      </button>
-                      <button
-                        onClick={() => confirmLeaveChat(activeChat.id, activeChat.title)}
-                        className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12px] text-danger hover:bg-danger/15 transition-colors"
-                      >
-                        <Trash2 size={13} />
-                        <span>Leave / Delete Channel</span>
-                      </button>
-                    </div>
+                        <button
+                          onClick={() => confirmLeaveChat(activeChat.id, activeChat.title)}
+                          className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12px] text-danger hover:bg-danger/15 transition-colors"
+                        >
+                          <Trash2 size={13} />
+                          <span>Leave / Delete Channel</span>
+                        </button>
+                      </div>
+                    </>
                   )}
                 </div>
               </div>
@@ -977,7 +982,7 @@ export default function Downloads() {
                             <td
                               className="py-2.5 px-2 text-center cursor-pointer hover:opacity-80 transition-opacity"
                               title="Click for preview"
-                              onClick={() => setPreviewItem({ name: m.name, path: m.path, thumb: m.thumb, type: m.type, size: m.size, duration: m.duration, messageId: m.messageId })}
+                              onClick={() => setPreviewItem({ name: m.name, path: m.path, thumb: m.thumb, type: m.type, size: m.size, duration: m.duration, chatId: activeChatId || m.chatId, messageId: m.messageId })}
                             >
                               <div className="flex justify-center">
                                 <Thumb src={m.thumb ? `teleflow://thumb/${m.thumb}` : null} name={m.name} />
@@ -987,7 +992,7 @@ export default function Downloads() {
                               <div
                                 className="font-medium truncate text-text cursor-pointer hover:text-primary transition-colors text-[13px]"
                                 title={m.name}
-                                onClick={() => setPreviewItem({ name: m.name, path: m.path, thumb: m.thumb, type: m.type, size: m.size, duration: m.duration, messageId: m.messageId })}
+                                onClick={() => setPreviewItem({ name: m.name, path: m.path, thumb: m.thumb, type: m.type, size: m.size, duration: m.duration, chatId: activeChatId || m.chatId, messageId: m.messageId })}
                               >
                                 {m.name}
                               </div>
@@ -1077,34 +1082,37 @@ export default function Downloads() {
                           <MoreVertical size={14} />
                         </button>
                         {channelMenuOpen && (
-                          <div
-                            className="absolute left-0 top-full mt-1.5 z-50 w-48 rounded-xl border border-border bg-[#182533] p-1.5 shadow-2xl backdrop-blur-xl space-y-0.5"
-                            onClick={() => setChannelMenuOpen(false)}
-                          >
-                            {activeChat.username && (
+                          <>
+                            <div className="fixed inset-0 z-40" onClick={() => setChannelMenuOpen(false)} />
+                            <div
+                              className="absolute left-0 top-full mt-1.5 z-50 w-48 rounded-xl border border-border bg-[#182533] p-1.5 shadow-2xl backdrop-blur-xl space-y-0.5"
+                              onClick={() => setChannelMenuOpen(false)}
+                            >
+                              {activeChat.username && (
+                                <button
+                                  onClick={() => copyChatLink(activeChat.username)}
+                                  className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12px] text-text hover:bg-white/10 transition-colors"
+                                >
+                                  <Copy size={13} className="text-muted" />
+                                  <span>Copy Link</span>
+                                </button>
+                              )}
                               <button
-                                onClick={() => copyChatLink(activeChat.username)}
+                                onClick={() => clearChatHistory(activeChat.id, activeChat.title)}
                                 className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12px] text-text hover:bg-white/10 transition-colors"
                               >
-                                <Copy size={13} className="text-muted" />
-                                <span>Copy Link</span>
+                                <RotateCcw size={13} className="text-muted" />
+                                <span>Clear Chat History</span>
                               </button>
-                            )}
-                            <button
-                              onClick={() => clearChatHistory(activeChat.id, activeChat.title)}
-                              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12px] text-text hover:bg-white/10 transition-colors"
-                            >
-                              <RotateCcw size={13} className="text-muted" />
-                              <span>Clear Chat History</span>
-                            </button>
-                            <button
-                              onClick={() => confirmLeaveChat(activeChat.id, activeChat.title)}
-                              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12px] text-danger hover:bg-danger/15 transition-colors"
-                            >
-                              <Trash2 size={13} />
-                              <span>Leave / Delete Channel</span>
-                            </button>
-                          </div>
+                              <button
+                                onClick={() => confirmLeaveChat(activeChat.id, activeChat.title)}
+                                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12px] text-danger hover:bg-danger/15 transition-colors"
+                              >
+                                <Trash2 size={13} />
+                                <span>Leave / Delete Channel</span>
+                              </button>
+                            </div>
+                          </>
                         )}
                       </div>
                     )}
@@ -1210,39 +1218,72 @@ export default function Downloads() {
                               <div className="rounded-xl overflow-hidden border border-white/[0.08] bg-[#0c1322] my-1.5 shadow-inner">
                                 {m.media.type === 'video' || m.media.type === 'photo' || m.media.type === 'animation' ? (
                                   <div
-                                    className="relative w-full max-h-[380px] overflow-hidden bg-black/60 cursor-pointer group/media flex items-center justify-center"
-                                    onClick={() => setPreviewItem({ name: m.media.name, path: m.media.path, thumb: m.media.thumb, type: m.media.type, size: m.media.size, duration: m.media.duration, messageId: m.id })}
+                                    className="relative w-full max-w-[340px] max-h-[460px] overflow-hidden bg-black/60 cursor-pointer group/media flex items-center justify-center rounded-2xl select-none shadow-lg"
+                                    onClick={() => setPreviewItem({ name: m.media.name, path: m.media.path, thumb: m.media.thumb, type: m.media.type, size: m.media.size, duration: m.media.duration, chatId: activeChatId, messageId: m.id })}
                                   >
                                     {m.media.thumb ? (
                                       <img
                                         src={`teleflow://thumb/${m.media.thumb}`}
                                         alt={m.media.name}
-                                        className="w-full max-h-[380px] object-cover transition-transform duration-200 group-hover/media:scale-[1.01]"
+                                        className="w-full h-auto min-h-[240px] max-h-[460px] object-cover rounded-2xl transition-transform duration-200 group-hover/media:scale-[1.01]"
                                         loading="eager"
                                       />
                                     ) : (
-                                      <div className="flex h-52 w-full items-center justify-center bg-slate-900/80 text-muted">
+                                      <div className="flex h-56 w-full items-center justify-center bg-slate-900/80 text-muted rounded-2xl">
                                         <Film size={36} />
                                       </div>
                                     )}
 
+                                    {/* Top-left duration / audio badge (Telegram style: 1:30 🔈x) */}
+                                    <div className="absolute top-2.5 left-2.5 flex items-center gap-1 rounded-full bg-black/65 backdrop-blur-md px-2.5 py-0.5 text-[11px] font-semibold text-white pointer-events-none shadow">
+                                      <span>{m.media.duration ? fmtDuration(m.media.duration) : fmtBytes(m.media.size)}</span>
+                                      {(m.media.type === 'video' || m.media.type === 'animation') && (
+                                        <span className="opacity-80 text-[10px]">🔈</span>
+                                      )}
+                                    </div>
+
+                                    {/* Center Telegram circular play/spinner ring */}
                                     {(m.media.type === 'video' || m.media.type === 'animation') && (
                                       <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                                        <div className="size-13 rounded-full bg-black/60 backdrop-blur-md text-white flex items-center justify-center group-hover/media:scale-110 group-hover/media:bg-primary transition-all shadow-2xl border border-white/20">
-                                          <Play size={22} className="ml-1 fill-white text-white" />
+                                        <div className="size-14 rounded-full bg-black/40 backdrop-blur-sm border-2 border-white/80 flex items-center justify-center shadow-2xl group-hover/media:scale-110 group-hover/media:bg-primary/80 transition-all">
+                                          <Play size={24} className="ml-1 fill-white text-white" />
                                         </div>
                                       </div>
                                     )}
 
-                                    <div className="absolute bottom-2 left-2 flex items-center gap-1.5 pointer-events-none">
-                                      <span className="rounded-md bg-black/75 backdrop-blur-md px-2 py-0.5 text-[11px] font-semibold text-white tabular-nums border border-white/10 shadow">
-                                        {fmtBytes(m.media.size)}
-                                      </span>
-                                      {m.media.duration ? (
-                                        <span className="rounded-md bg-black/75 backdrop-blur-md px-2 py-0.5 text-[11px] font-semibold text-white tabular-nums border border-white/10 shadow">
-                                          {fmtDuration(m.media.duration)}
-                                        </span>
-                                      ) : null}
+                                    {/* Bottom-right timestamp badge */}
+                                    <div className="absolute bottom-2.5 right-2.5 flex items-center gap-1.5 rounded-full bg-black/65 backdrop-blur-md px-2.5 py-0.5 text-[11px] font-medium text-white/90 pointer-events-none shadow">
+                                      <span>{getMessageTime(m.date)}</span>
+                                      <span className="text-cyan font-bold text-[10px] leading-none">✓✓</span>
+                                    </div>
+
+                                    {/* Top-right quick download action on hover */}
+                                    <div className="absolute top-2.5 right-2.5 opacity-0 group-hover/media:opacity-100 transition-opacity flex items-center gap-1">
+                                      {m.media.status === 'downloaded' ? (
+                                        m.media.path && (
+                                          <button
+                                            onClick={(e) => {
+                                              e.stopPropagation()
+                                              revealFile(m.media.path)
+                                            }}
+                                            className="size-7 rounded-full bg-black/70 backdrop-blur-md text-cyan hover:text-white flex items-center justify-center shadow"
+                                            title="Show in folder"
+                                          >
+                                            <FolderOpen size={13} />
+                                          </button>
+                                        )
+                                      ) : (
+                                        <button
+                                          onClick={(e) => {
+                                            e.stopPropagation()
+                                            downloadItems([{ chatId: activeChatId!, messageId: m.id }], true)
+                                          }}
+                                          className="size-7 rounded-full bg-black/70 backdrop-blur-md text-white hover:bg-primary flex items-center justify-center shadow"
+                                          title="Download"
+                                        >
+                                          <Download size={13} />
+                                        </button>
+                                      )}
                                     </div>
                                   </div>
                                 ) : (

@@ -9,7 +9,7 @@ type KindCount = { download: number, upload: number }
 type OverviewStats = { completedToday: KindCount, totalFiles: KindCount, recent: RecentItem[] }
 type TopChat = { chatId: number, title: string, photo: string | null, count: number }
 type RecentItem = { id: number, kind: 'download' | 'upload', preview: string | null, type: string, chatTitle: string, name: string, finishedAt: number, size: number, status: 'completed' | 'failed' }
-type Job = { id: number, kind: 'download' | 'upload', chatId: number, chatTitle: string, chatUsername: string | null, chatPhoto: string | null, name: string, size: number, done: number, status: string, finalizing: boolean, eta: number | null, path?: string | null, thumb?: string | null, type?: string, speed?: number }
+type Job = { id: number, kind: 'download' | 'upload', chatId: number, chatTitle: string, chatUsername: string | null, chatPhoto: string | null, name: string, size: number, done: number, status: string, finalizing: boolean, eta: number | null, path?: string | null, thumb?: string | null, type?: string, speed?: number, messageId?: number }
 
 function AreaChart({
   activity,
@@ -366,7 +366,7 @@ export default function Overview() {
                       <div
                         className="truncate font-medium text-text cursor-pointer hover:text-primary transition-colors text-[13px]"
                         title={j.name}
-                        onClick={() => setPreviewItem({ name: j.name, path: j.path, thumb: j.thumb, type: j.type, size: j.size })}
+                        onClick={() => setPreviewItem({ name: j.name, path: j.path, thumb: j.thumb, type: j.type, size: j.size, chatId: j.chatId, messageId: j.messageId })}
                       >
                         {j.name}
                       </div>

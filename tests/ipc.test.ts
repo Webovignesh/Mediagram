@@ -101,7 +101,7 @@ test('repoUrl: strips git+ and .git; only https links survive', () => {
 const phase2 = ['app.info', 'app.storage', 'app.pickFolder', 'app.openPath', 'auth.get', 'auth.credentials', 'auth.phone', 'auth.code',
   'auth.password', 'auth.logout', 'chats.list', 'chats.open', 'chats.messages', 'search.global', 'library.list', 'library.missing',
   'library.open', 'library.reveal', 'library.trash', 'settings.get', 'settings.set']
-const phase3 = ['app.clearCache', 'app.clearData', 'app.clearAll', 'chats.leave', 'chats.delete', 'chats.clear', 'chats.send', 'chats.media', 'downloads.add', 'uploads.add', 'jobs.list', 'jobs.action',
+const phase3 = ['app.clearCache', 'app.clearData', 'app.clearAll', 'chats.leave', 'chats.delete', 'chats.clear', 'chats.send', 'chats.media', 'media.play', 'downloads.add', 'uploads.add', 'jobs.list', 'jobs.action',
   'stats.live', 'stats.overview', 'stats.activity', 'stats.chats']
 const validate = (name: string, args: unknown) => (methods as Record<string, { validate(a: unknown): unknown }>)[name].validate(args)
 const rejects400 = (cases: [string, unknown, string][]) => {
@@ -118,6 +118,7 @@ test('validators: all 33 methods are registered; the 12 Phase 3 methods accept v
     ['chats.leave', { chatId: 5 }, { chatId: 5 }], ['chats.delete', { chatId: 5 }, { chatId: 5 }], ['chats.clear', { chatId: 5 }, { chatId: 5 }], ['chats.send', { chatId: 5, text: 'hello' }, { chatId: 5, text: 'hello' }],
     ['chats.media', { chatId: 5 }, { chatId: 5, type: undefined, ext: undefined, duration: undefined, size: undefined, status: undefined, q: '', sort: undefined, page: 1, pageSize: 25 }],
     ['chats.media', { chatId: 5, type: 'animation', ext: ' MP4 ', duration: 'xlong', size: 'small', status: 'downloaded', q: ' cat ', sort: 'longest', page: 3, pageSize: 100 }],
+    ['media.play', { chatId: 5, messageId: 10 }, { chatId: 5, messageId: 10 }],
     ['downloads.add', { items: items(10_000) }], ['downloads.add', { items: items(1), force: true }, { items: items(1), force: true }],
     ['downloads.add', { chatId: 5, filters: {} }], ['downloads.add', { chatId: 5, filters: { type: 'video', sort: 'oldest' } }],
     ['downloads.add', { link: ' t.me/fixture/42 ' }, { link: 't.me/fixture/42' }],
@@ -136,6 +137,7 @@ test('validators: all 33 methods are registered; the 12 Phase 3 methods accept v
   rejects400([
     ['app.clearAll', {}, 'deleteDownloads'], ['app.clearAll', { deleteDownloads: 'yes' }, 'deleteDownloads'], ['app.clearCache', { x: 1 }, 'Unknown field x'],
     ['chats.leave', {}, 'chatId'], ['chats.delete', {}, 'chatId'], ['chats.clear', {}, 'chatId'], ['chats.send', {}, 'chatId'], ['chats.send', { chatId: 5, text: '' }, 'text'],
+    ['media.play', {}, 'chatId'], ['media.play', { chatId: 5 }, 'messageId'],
     ['chats.media', {}, 'chatId'], ['chats.media', { chatId: 5, type: 'voice' }, 'type'], ['chats.media', { chatId: 5, ext: '.mp4' }, 'ext'],
     ['chats.media', { chatId: 5, ext: 'x'.repeat(17) }, 'ext'], ['chats.media', { chatId: 5, duration: 'huge' }, 'duration'],
     ['chats.media', { chatId: 5, size: 'tiny' }, 'size'], ['chats.media', { chatId: 5, status: 'done' }, 'status'], ['chats.media', { chatId: 5, sort: 'size' }, 'sort'],

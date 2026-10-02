@@ -405,6 +405,19 @@ export async function sendMessage(chatId: number, textMsg: string) {
   })
 }
 
+/** Fetch/download a playable file for preview and return its local path */
+export async function getPlayableFile(chatId: number, messageId: number) {
+  if (auth.step !== 'ready') throw fail(503, 'Telegram is not connected yet')
+  const m = await invoke({ _: 'getMessage', chat_id: chatId, message_id: messageId })
+  const x = extractMedia(m)
+  if (!x) throw fail(404, 'No media found in message')
+  let f = x.file
+  if (!f.local.is_downloading_completed) {
+    f = await invoke({ _: 'downloadFile', file_id: f.id, priority: 32, offset: 0, limit: 0, synchronous: true })
+  }
+  return { path: f.local.path, name: x.name, size: f.size || f.expected_size, type: x.type }
+}
+
 /** downloads.add `{ link }`: the linked message, or its whole album when the link points at one. */
 export async function linkMessages(link: string) {
   const t = await linkType(link)

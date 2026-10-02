@@ -229,6 +229,9 @@ export function createMethods(ctx: Ctx) {
       tg.ensureScan(chatId)
       return { ...mediaQuery(db, chatId, filters, { page, pageSize }), exts: mediaExts(db, chatId), scan: tg.scanInfo(chatId) }
     }),
+    'media.play': method(shape({ chatId: id, messageId: id }), async ({ chatId, messageId }) => {
+      return tg.getPlayableFile(chatId, messageId)
+    }),
 
     'downloads.add': method(downloadsArgs, async (a) => {
       if ('link' in a) {
