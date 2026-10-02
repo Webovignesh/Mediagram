@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { Home, Download, Upload, ListOrdered, FolderOpen, Settings as SettingsIcon, Search, ChevronDown, Send } from 'lucide-react'
 import { call, useCall, useLive, useRoute, navigate } from './api.ts'
 import { Badge, EmptyState, ErrorState } from './ui.tsx'
-import type { AuthState, Me } from '../../core/shapes.ts'
+import type { AuthState, Me, Chat } from '../../core/shapes.ts'
 import Login from './pages/Login.tsx'
 import Overview from './pages/Overview.tsx'
 import Downloads from './pages/Downloads.tsx'
@@ -15,6 +15,49 @@ import Settings from './pages/Settings.tsx'
 function TopBar({ me }: { me: Me }) {
   const [searchOpen, setSearchOpen] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
+  const [query, setQuery] = useState('')
+  const [results, setResults] = useState<{ chats: Chat[], files: { name: string, chat: string | null, path: string }[], link: { kind: 'message' | 'chat' | 'invite' } | null } | null>(null)
+  const [loading, setLoading] = useState(false)
+
+  async function searchGlobal(q: string) {
+    if (q.length === 0) {
+      setResults(null)
+      return
+    }
+    setLoading(true)
+    try {
+      const res = await call<{ chats: Chat[], files: { name: string, chat: string | null, path: string }[], link: { kind: 'message' | 'chat' | 'invite' } | null }>('search.global', { q })
+      setResults(res)
+    } catch (err) {
+      setResults({ chats: [], files: [], link: null })
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function handleDownloadLink() {
+    if (!results?.link) return
+    try {
+      const res = await call<{ added: number, skipped: number }>('downloads.add', { link: query })
+      alert(`Added ${res.added}, skipped ${res.skipped}`)
+      setSearchOpen(false)
+      setQuery('')
+    } catch (err) {
+      alert((err as Error).message)
+    }
+  }
+
+  async function handleOpenChat() {
+    if (!results?.link) return
+    try {
+      const res = await call<{ chatId: number, joined: boolean }>('chats.open', { link: query, join: false })
+      navigate(`/downloads?chat=${res.chatId}`)
+      setSearchOpen(false)
+      setQuery('')
+    } catch (err) {
+      alert((err as Error).message)
+    }
+  }
 
   async function logout() {
     if (confirm('Log out of Telegram?')) {
@@ -34,14 +77,78 @@ function TopBar({ me }: { me: Me }) {
         <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
         <input
           type="text"
+          value={query}
+          onChange={(e) => {
+            const q = e.target.value
+            setQuery(q)
+            setTimeout(() => {
+              if (q === query) searchGlobal(q)
+            }, 250)
+          }}
           placeholder="Search channels, chats, files, or paste a Telegram link…"
           className="w-full rounded-lg border border-border bg-tile py-1.5 pl-9 pr-3 text-sm placeholder:text-muted focus:border-primary"
           onFocus={() => setSearchOpen(true)}
           onBlur={() => setTimeout(() => setSearchOpen(false), 200)}
         />
-        {searchOpen && (
-          <div className="absolute left-0 right-0 top-full mt-1 rounded-lg border border-border bg-panel p-2 shadow-lg">
-            <EmptyState message="No matches" />
+        {searchOpen && query.length > 0 && (
+          <div className="absolute left-0 right-0 top-full mt-1 max-h-96 overflow-y-auto rounded-lg border border-border bg-panel shadow-lg">
+            {loading ? (
+              <div className="p-4 text-center text-muted">Searching…</div>
+            ) : results ? (
+              <>
+                {results.chats.length > 0 && (
+                  <div className="border-b border-border p-2">
+                    <div className="px-2 py-1 text-xs font-semibold text-text-2">Chats</div>
+                    {results.chats.map((chat) => (
+                      <button
+                        key={chat.id}
+                        onClick={() => { navigate(`/downloads?chat=${chat.id}`); setSearchOpen(false); setQuery('') }}
+                        className="flex w-full items-center gap-2 rounded p-2 text-left hover:bg-tile"
+                      >
+                        <div className="text-sm">{chat.title}</div>
+                        {chat.username && <div className="text-xs text-text-2">@{chat.username}</div>}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {results.files.length > 0 && (
+                  <div className="border-b border-border p-2">
+                    <div className="px-2 py-1 text-xs font-semibold text-text-2">Downloaded files</div>
+                    {results.files.map((file, i) => (
+                      <button
+                        key={i}
+                        onClick={() => { navigate(`/library?q=${encodeURIComponent(file.name)}`); setSearchOpen(false); setQuery('') }}
+                        className="flex w-full flex-col gap-0.5 rounded p-2 text-left hover:bg-tile"
+                      >
+                        <div className="text-sm">{file.name}</div>
+                        {file.chat && <div className="text-xs text-text-2">{file.chat}</div>}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {results.link && (
+                  <div className="p-2">
+                    {results.link.kind === 'message' && (
+                      <button
+                        onClick={handleDownloadLink}
+                        className="w-full rounded p-2 text-left hover:bg-tile"
+                      >
+                        <div className="text-sm text-primary">Download media from this link</div>
+                      </button>
+                    )}
+                    <button
+                      onClick={handleOpenChat}
+                      className="w-full rounded p-2 text-left hover:bg-tile"
+                    >
+                      <div className="text-sm text-primary">Open chat</div>
+                    </button>
+                  </div>
+                )}
+                {!results.chats.length && !results.files.length && !results.link && (
+                  <div className="p-4 text-center text-muted">No matches</div>
+                )}
+              </>
+            ) : null}
           </div>
         )}
       </div>
