@@ -1,95 +1,32 @@
-# FileGram
+# TeleFlow
 
-FileGram is a local desktop-style Telegram media/file manager for browsing chats, maintaining persistent media indexes, forwarding messages, high-volume downloads, resilient uploads to owned channels, and bulk deletion in channels/groups you own.
+Windows desktop app for downloading and uploading Telegram media, built on Electron and TDLib. It installs from `TeleFlow-Setup-<version>.exe` like any other program; there is no server, open port, or launcher script.
 
-## Local Windows release
+Status: rewrite in progress on `revamp/teleflow`. See [docs/PROGRESS.md](docs/PROGRESS.md).
 
-FileGram v1.0.0 is intended to run only on your own Windows machine. The HTTP/WebSocket server binds to `127.0.0.1:3000`; it is not exposed to the LAN or Internet.
+## Where data lives
 
-### One-time installation
+Nothing the app produces is written to the repo or the install folder.
 
-1. Keep the repository in its permanent location. Do not move it after creating the shortcuts.
-2. Double-click **`Install FileGram.cmd`** once.
-3. The installer runs `npm ci`, creates a **FileGram** desktop shortcut and Start Menu entry, then starts FileGram.
-
-After that, use the **FileGram** desktop shortcut. You do not need to open Command Prompt or type `npm start` again. The shortcut silently starts the local server when needed, waits for the FileGram health endpoint, and opens `http://127.0.0.1:3000` in the default browser. If the server is already running, it simply opens FileGram.
-
-A **Stop FileGram** entry is also installed in the FileGram Start Menu folder.
-
-### Uninstall shortcuts
-
-Double-click **`Uninstall FileGram.cmd`** to stop the local server and remove the FileGram shortcuts. This intentionally preserves Telegram login/session data, `.td_database/`, `.td_files/`, `.filegram_state/`, downloads, `config.json`, and `settings.json`.
-
-### Post-release repository cleanup
-
-After the v1.0.0 squash merge is on `main`, double-click **`Clean Repo After Release.cmd`** once. It refuses to run on a dirty working tree, fast-forwards local `main`, removes the known disposable release/development branches (including the retired `agent/saas-foundation` experiment), prunes Git refs, and clears test-report directories.
-
-The cleanup script never deletes `.td_database/`, `.td_files/`, `.filegram_state/`, downloads, `config.json`, or `settings.json`.
-
-## Stack
-
-- Node.js 22+
-- Express 5
-- WebSocket (`ws`)
-- `tdl` + `prebuilt-tdlib`
-- Vanilla browser JavaScript and CSS
+- App data (TDLib session and cache, database, logs, Chromium profile): `%LOCALAPPDATA%\TeleFlow`. Development runs use `%LOCALAPPDATA%\TeleFlow-dev`.
+- Downloads: `%USERPROFILE%\Downloads\TeleFlow` (configurable in Settings).
+- `TELEFLOW_HOME` overrides the app data folder (tests and manual dev runs point it at a temp folder).
 
 ## Development
 
-```bash
+Requires Node 24 on Windows.
+
+```powershell
 npm ci
-npm run verify
-npm start
+npm run dev        # electron-vite dev server with HMR
+npm run typecheck  # tsc --noEmit
+npm test           # node:test unit tests (tests\*.test.ts)
+npm run build      # out/main, out/preload, out/renderer
+npm run dist       # build + NSIS installer in release\
+npm run test:app   # Playwright smoke of release\win-unpacked\TeleFlow.exe (after dist)
+npm run icon       # re-render assets\icon.png and icon.ico from icon.svg
 ```
 
-The development server binds to `127.0.0.1` and serves the UI at `http://localhost:3000` by default.
+The Electron binary downloads on first use (`npm run dev`, or `node -e "require('electron')"`; `test:app` runs the packaged exe and needs no download). Run `npx playwright install chromium` once before `npm run icon`.
 
-## Telegram setup
-
-1. Get an `api_id` and `api_hash` from `https://my.telegram.org` under **API development tools**.
-2. Start FileGram using the installed desktop shortcut (or `npm start` while developing).
-3. Enter the Telegram API credentials in the UI and complete Telegram login.
-
-Local credentials and machine state are intentionally not committed. `config.json`, `settings.json`, `.env`, TDLib databases, downloads, management uploads, logs, caches, build output, and editor files are ignored by Git.
-
-## Verification
-
-`npm run verify` runs syntax checks followed by the current smoke/invariant suites. The GitHub Actions workflow additionally runs Chromium user-behavior tests and runtime-wiring checks.
-
-## Runtime data
-
-FileGram keeps runtime-only data outside source control:
-
-- `.td_database/` — TDLib session/database state; required for stable login/session behavior
-- `.td_files/` — TDLib file cache; required runtime state
-- `.filegram_state/` — FileGram ledgers and local launcher state
-- `.management_uploads/` — temporary management uploads
-- `downloads/` — downloaded media
-- `config.json` — local Telegram API configuration
-- `settings.json` — machine-local app settings
-
-Do not commit or casually delete these paths.
-
-## Project layout
-
-- `server.js` — Main TDLib, HTTP/WebSocket API, indexing, downloads, forwarding, and management backend
-- `server/` — Backend preloads, modular handlers, and server-side utilities
-  - `server/bulk-upload-*.js` — Bulk channel upload server, ledger, and preloads
-  - `server/download-*.js` — Download queue reliability, deduplication, and reference resolver preloads
-  - `server/owned-bulk-delete-server.js` — Channel/group bulk deletion handler
-  - `server/pack-media.js` / `server/pack-selected.js` — ZIP packaging helpers
-  - `server/session-preload.js` — Stable TDLib session/logout bridge
-  - `server/tdl-upload-compat.js` — TDLib upload compatibility preload
-  - `server/tdlib-temp-preload.js` — TDLib temp directory maintenance preload
-  - `server/thumb-cache-preload.js` — Thumbnail cache preload
-- `public/` — Browser application and UI runtime
-- `scripts/` — Verification tests plus local install/launch/cleanup tooling
-- `tests/` — End-to-end user-behavior and UI verification test suites
-- `FileGram.vbs` — Silent desktop launcher target
-- `Install FileGram.cmd` — One-time Windows installer
-- `Uninstall FileGram.cmd` — Uninstaller script
-- `Clean Repo After Release.cmd` — Guarded post-release Git cleanup
-
-## Git workflow
-
-`main` is the canonical local-product branch. Keep the working tree clean and run `npm run verify` before changing it. Release feature work should be squash-merged so `main` remains readable and easy to roll back.
+Design and spec: [PRODUCT](docs/PRODUCT.md), [ARCHITECTURE](docs/ARCHITECTURE.md), [UI](docs/UI.md).
