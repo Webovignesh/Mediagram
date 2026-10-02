@@ -200,6 +200,12 @@ export function createMethods(ctx: Ctx) {
       const { local } = await tg.logout()
       return { freed: Math.max(0, before - await dirSize(ctx.paths.tdlib)), local }
     }),
+    'auth.resetCredentials': method(shape({}), async () => {
+      putSetting(db, 'apiId', undefined)
+      putSetting(db, 'apiHash', undefined)
+      await tg.logout().catch(() => ({ local: false }))
+      return { ok: true }
+    }),
 
     'chats.list': method(shape({}), () => tg.chatList()),
     'chats.open': method(shape({ link: text(300, 2), join: flag }), ({ link, join }) => tg.openChat(link, join)),

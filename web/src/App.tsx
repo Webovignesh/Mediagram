@@ -83,13 +83,13 @@ function Sidebar({
       {/* Brand */}
       <div className="border-b border-border p-3 flex items-center justify-between">
         <div className="flex items-center gap-2.5 overflow-hidden">
-          <div className="grid size-8 shrink-0 place-items-center rounded-lg bg-primary text-white shadow-glow">
+          <div className="grid size-8 shrink-0 place-items-center rounded-lg bg-primary/20 text-primary border border-primary/30">
             <Send size={16} />
           </div>
           {!collapsed && (
             <div className="overflow-hidden">
-              <div className="font-bold text-[14px] text-text leading-tight truncate tracking-wide">Mediagram</div>
-              <div className="text-[10.5px] text-muted leading-tight truncate mt-0.5">Telegram Media Manager</div>
+              <div className="font-bold text-[13.5px] text-text leading-tight truncate tracking-wide">Workspace</div>
+              <div className="text-[10.5px] text-muted leading-tight truncate mt-0.5">Telegram Manager</div>
             </div>
           )}
         </div>
@@ -172,17 +172,25 @@ export default function App() {
   const page = rawPage === '' || rawPage === '/' ? '/overview' : rawPage
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-bg">
-      {/* Full-height Sidebar */}
-      <Sidebar
-        activeCount={live.activeCount}
-        collapsed={collapsed}
-        onToggleCollapse={() => setCollapsed(!collapsed)}
-      />
+    <div className="flex h-screen w-screen flex-col overflow-hidden bg-bg">
+      {/* Top Window Bar: Solid 36px bar holding native controls, drag region, and app logo */}
+      <div className="drag flex h-9 shrink-0 items-center justify-between bg-[#0f172a] px-3 select-none z-30 border-b border-white/[0.06]">
+        <div className="no-drag flex items-center gap-2 text-[12px] font-semibold text-text tracking-wide">
+          <div className="grid size-5 place-items-center rounded bg-primary text-white shadow-glow">
+            <Send size={11} />
+          </div>
+          <span>Mediagram</span>
+        </div>
+      </div>
 
-      {/* Main Container */}
-      <div className="relative flex flex-1 flex-col overflow-hidden min-w-0">
-        <WindowDragBar />
+      {/* Main Workspace (Sidebar + Content) */}
+      <div className="flex flex-1 overflow-hidden min-h-0">
+        <Sidebar
+          activeCount={live.activeCount}
+          collapsed={collapsed}
+          onToggleCollapse={() => setCollapsed(!collapsed)}
+        />
+
         <main className="flex-1 overflow-auto">
           {page === '/overview' && <Overview />}
           {page === '/downloads' && <Downloads />}

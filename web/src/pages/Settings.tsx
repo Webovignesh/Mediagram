@@ -1,6 +1,6 @@
 // Phase 5.6: Settings page per UI.md & User Specs
 import { useState, useRef } from 'react'
-import { Settings as SettingsIcon, Download, Upload, Users, Folder, Bell, Shield, Info, ExternalLink, Trash2, LogOut, Clock, Key } from 'lucide-react'
+import { Settings as SettingsIcon, Download, Upload, Users, Folder, Bell, Shield, Info, ExternalLink, Trash2, LogOut, Clock, Key, RotateCcw } from 'lucide-react'
 import { call, useCall } from '../api.ts'
 import { Panel, Toggle, Select, Button, Avatar, Input, Dialog, fmtBytes, fmtDate, confirm, toast } from '../ui.tsx'
 
@@ -65,6 +65,23 @@ export default function Settings() {
       reloadSettings()
     } catch (e) {
       toast((e as Error).message, 'danger')
+    }
+  }
+
+  async function handleResetCredentials() {
+    if (await confirm({
+      title: 'Reset Telegram API Credentials',
+      message: 'Reset your Telegram API credentials? You will be logged out and returned to the initial API setup screen.',
+      confirm: 'Reset Credentials',
+      danger: true,
+    })) {
+      try {
+        await call('auth.resetCredentials')
+        toast('API credentials reset.')
+        window.location.reload()
+      } catch (e) {
+        toast((e as Error).message, 'danger')
+      }
     }
   }
 
@@ -373,14 +390,25 @@ export default function Settings() {
                     <span>Get credentials at my.telegram.org</span>
                     <ExternalLink size={12} />
                   </a>
-                  <Button
-                    variant="primary"
-                    disabled={!editApiId.trim() || !editApiHash.trim()}
-                    onClick={updateCredentials}
-                    className="py-1 px-3 text-[12px]"
-                  >
-                    Update Credentials
-                  </Button>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      variant="tint"
+                      tone="danger"
+                      onClick={handleResetCredentials}
+                      className="py-1 px-3 text-[12px] flex items-center gap-1"
+                    >
+                      <RotateCcw size={12} />
+                      <span>Reset</span>
+                    </Button>
+                    <Button
+                      variant="primary"
+                      disabled={!editApiId.trim() || !editApiHash.trim()}
+                      onClick={updateCredentials}
+                      className="py-1 px-3 text-[12px]"
+                    >
+                      Update Credentials
+                    </Button>
+                  </div>
                 </div>
               </div>
             </div>
