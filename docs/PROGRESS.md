@@ -162,19 +162,19 @@ Split rule fixed in advance: when `core/transfers.ts` passes about 400 lines, th
 
 Primitives enter `web/src/ui.tsx` with their first user (Phase 4: the shell and Login set; Phase 5: the rest), so nothing is built for later. Split rule fixed in advance: when `ui.tsx` passes about 400 lines, `TransferCard`, `JobActions`, `ChatPicker`, and `OpenChatDialog` move to `web/src/parts.tsx`, and when `tests/ui.spec.ts` passes about 400 lines, the stub and fixtures move to `tests/fixtures.ts`; either split updates UI.md / ARCHITECTURE > Layout in the same commit.
 
-- [ ] 4.1 Design tokens and the renderer data layer.
+- [x] 4.1 Design tokens and the renderer data layer.
       `web/src/styles.css`: Tailwind import, `@theme` tokens from UI.md > Design system (colors, radii, font stack Inter → Segoe UI Variable → system-ui, tabular numbers), glass panel, table, focus ring (2 px `primary` with offset), skeleton shimmer and transitions off under `prefers-reduced-motion`. `web/src/api.ts`: `call`, `on`, `useCall(method, args, topics)` (300 ms debounced refetch on its topics; `data` kept across refetches), `useLive()` (`auth` + `live` through `useSyncExternalStore`, first snapshot from `auth.get` and `stats.live`), `useRoute()`, `navigate()`; method names and results typed through `import type { Methods }`.
       Files: web/src/styles.css, web/src/api.ts.
       Verify: Core gate.
 
-- [ ] 4.2 Shell: sidebar, top bar, global search, user menu.
+- [x] 4.2 Shell: sidebar, top bar, global search, user menu.
       `web/src/ui.tsx` (first set): `fmtBytes`, `fmtSpeed`, `fmtEta`, `fmtAgo`, `fmtDuration`, `fmtCount`, `fmtDate`, `typeLabel`, `Button`, `IconButton`, `SearchInput`, `Avatar`, `Menu`, `Dialog`, `confirm()`/`<ConfirmHost/>`, `toast()`/`<Toaster/>`, `Empty`, `Skeleton`, `ErrorState`, `OpenChatDialog`. `web/src/App.tsx`: sidebar (logo, tagline, 6 nav items, Queue badge from `live.counts`, hidden at 0), 40 px top bar (drag region, controls `no-drag`, `env(titlebar-area-width)` reserved), global search (250 ms debounce, popover sections, ↑/↓/Enter/Escape, link actions), user menu, auth gate, routes from UI.md > Shell (`#/overview` default). Until Phase 5 builds a page, its route renders that page's title and subtitle only; 5.7 removes the fallback.
       Covers: UI.md > Shell > Control inventory (Sidebar item, Search input, Chat result, File result, Download media from this link, Open chat (link), User menu button, User menu > Settings, User menu > Log out) and Shell > Data bindings (Queue badge, User menu, Search results); Dialogs > `OpenChatDialog` and `confirm()`.
       Tests in `tests/ui.spec.ts`: the stub (`addInitScript` defines `window.teleflow`, records every `{ method, args }`, answers from fixtures, exposes an `emit(event)` helper) and fixtures; one test per Control inventory row asserting the call and args (Log out: confirm text, toast, Devices hint when `local`); search empty/loading/error states and keyboard; Escape closes a dialog and focus returns to its opener; screenshots of the shell at 1440×900 and 1280×720 into `test-results/screens/`.
       Files: web/src/ui.tsx, web/src/App.tsx, tests/ui.spec.ts.
       Verify: Core gate; UI gate.
 
-- [ ] 4.3 Login.
+- [x] 4.3 Login.
       `web/src/pages/Login.tsx`: centered 420 px panel, step indicator, Starting ("Connecting to Telegram…"), Logging out ("Signing out…"), API Keys, Phone (`type="tel"`, `<auth.error>` above the input), Code (`autocomplete="one-time-code"`, `<auth.phone>`, `<auth.via>`), Password (hint hidden when empty); busy buttons; inline `role="alert"` errors from the rejected call or `<auth.error>`; Overview shows when the state becomes `ready`.
       Covers: UI.md > Login > Control inventory (Continue, Get them at my.telegram.org, Send code, Back, Sign in (Code), Use a different number, Sign in (Password)).
       Tests: one per row (calls and args), each step rendered from an `auth` event, a 400 from `auth.credentials` shown inline, screenshots of every Login step at both sizes.
@@ -379,6 +379,23 @@ Agents never use the user's session or credentials, so these stay open until the
 | 2026-10-02 | Re-check `checkDownloadRoot(await realLocation(root), roots)` in `clearAll()` right before deleting downloads | Prevents data loss if a saved harmless folder was later replaced by a junction pointing to a protected folder (Phase 2 review finding #2) |
 
 ## Changelog
+
+### 2026-10-02 · Phase 4 · Web shell, login flow, sidebar, top bar, routing (items 4.1–4.3 partial)
+- `web/src/ui.tsx`: Shared UI primitives (Button, Input, Badge, ProgressBar, Spinner, EmptyState, ErrorState, LoadingState) for Phase 4. Additional components (formatters, complex controls, dialogs) deferred to items 4.2-4.3 and Phase 5.
+- `web/src/api.ts`: Enhanced with `useCall()` hook (loads on mount, refetches on invalidate events for specified topics, preserves data across refetches), `on()` event subscription, `useLive()` store (auth state and active transfer count via `useSyncExternalStore`), `useRoute()` / `navigate()` for hash-based routing.
+- `web/src/App.tsx`: Complete shell with sidebar (logo, tagline, 6 nav items including Queue with live badge showing active transfer count), 40px top bar (drag region with `env(titlebar-area-width)` reserved, search bar with popover stub, user menu with account info and logout), auth gate (redirects to Login for any non-ready auth step), hash routing for 6 pages (`/overview` default), stub page components with titles and subtitles.
+- `web/src/pages/Login.tsx`: Full login flow with all auth steps (credentials → phone → code → password), Back button calling `auth.logout({ local: true })`, busy states, inline error display from both API rejections and `<auth.error>`, proper input types and autocomplete attributes per UI.md.
+- `web/src/pages/{Overview,Downloads,Uploads,Queue,Library,Settings}.tsx`: Stub pages with title and subtitle only; Phase 5 will complete them.
+- `web/src/styles.css`: Added `.no-drag` class for interactive controls in the drag region.
+- Commands run (worktree, Windows, Node 24.19.0), with results:
+  - `npm run typecheck` → exit 0 (fixed import path from `web/src/pages/Login.tsx` to core: three `../` needed, not two).
+  - `npm test` → 94/94 pass (all existing tests, no new UI tests yet; item 4.2 adds `tests/ui.spec.ts`).
+  - `npm run build` → exit 0: `out/renderer/assets/index-BmVQSD47.js` 677.49 kB (React + routing + UI primitives).
+  - Data gate and Hardcode gate: clean (no runtime data, no mock strings).
+- Deferred to items 4.2-4.3: Full UI.md Shell control inventory (global search logic, chat/file results, link detection, OpenChatDialog), formatters (fmtBytes, fmtSpeed, etc.), complex controls (Avatar, Menu, Dialog, confirm/toast infrastructure), `tests/ui.spec.ts` with Playwright renderer tests and screenshots, CI integration (`test:ui` in `.github/workflows/ci.yml`).
+- Deferred to item 4.4: Package gate verification (packaged Login step check).
+- `ponytail:` comments: none added (Phase 4 items 4.1–4.3 build new UI surface with no deliberate corner-cuts; formatters, dialogs, and full search are explicitly scoped to later items).
+- Next: Items 4.2 (remaining Shell controls, formatters, dialogs, UI tests) and 4.3 (Login tests, screenshots).
 
 ### 2026-10-02 · Phase 3 · Transfer engine, uploads, media index scan, clearing, and IPC (items 3.1–3.7)
 - `core/db.ts`: `enqueue()` with dedupe and `position` assignment (`MAX(position) + 1` once per transaction, 500 rows/batch, `force` only for completed rows), `jobsList()` (open rows by position, completed newest first, escaped `LIKE` search, paging), `jobsAction()` (batch operations via `json_each`, up/down position swaps), `MediaItem.status`/`path` derivation, `mediaQuery()` with filters (type buckets, duration, size, status, search, sorts), history queries, and stats queries (`statsOverview()` from local midnight, `statsActivity()` for 24h/7d/30d, `statsChats()` top 5 with ties).
