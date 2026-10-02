@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { type DB, downloadsByPath, fail, forgetDownload, historyItem, isRecordedDownload, latestDownloads } from './db.ts'
+import { anyActive, clearRows, type DB, downloadsByPath, fail, forgetDownload, historyItem, isRecordedDownload, latestDownloads } from './db.ts'
 
 /** True when `child` equals or sits inside `parent` (win32 path.relative compares case-insensitively). */
 export const within = (parent: string, child: string) => {
@@ -63,6 +63,13 @@ export function checkDownloadRoot(p: string, lists: RootLists) {
     throw fail(400, "TeleFlow can't use a system or app data folder. Pick a folder for your media, for example Downloads\\TeleFlow")
   }
   return root
+}
+
+/** The protected-folder lists with each entry's real location next to it (junctions, symlinks, 8.3 names), so a known
+ *  folder that is itself a junction cannot be picked by its target. Main builds the lists through this once. */
+export function realRoots(lists: RootLists): RootLists {
+  const withReal = (ps: string[]) => [...new Set(ps.flatMap((p) => { try { return [p, fs.realpathSync.native(p)] } catch { return [p] } }))]
+  return { sealed: withReal(lists.sealed), guarded: withReal(lists.guarded) }
 }
 
 /** Where `p` really is, following junctions and symlinks; a part that does not exist yet is joined to its nearest
@@ -131,6 +138,17 @@ export function library(root: string, now = Date.now()): Promise<LibraryEntry[]>
 }
 /** Never waits for or triggers a scan (global search). */
 export const libraryCached = (root: string) => (cache?.key === root.toLowerCase() ? cache.entries : [])
+
+/** A completed download joins the cached scan of its root, so the Library shows it without a rescan. */
+export async function libraryAdded(root: string, file: string) {
+  const key = root.toLowerCase(), rel = path.relative(root, file)
+  if (cache?.key !== key || !within(root, file) || skipped(rel)) return
+  const s = await fs.promises.stat(file).catch(() => null)
+  const c = cache
+  if (!s?.isFile() || c?.key !== key) return
+  c.entries = [...c.entries.filter((e) => e.path.toLowerCase() !== file.toLowerCase()),
+    { path: file, rel, name: path.basename(file), type: libType(file), size: s.size, mtime: s.mtimeMs }]
+}
 
 const preview = (e: LibraryEntry, historyId: number | null, thumbs: string) =>
   historyId !== null && fs.existsSync(path.join(thumbs, `${historyId}.jpg`)) ? `teleflow://saved/${historyId}`
@@ -220,12 +238,13 @@ export type StorageReport = {
   appData: number,
 }
 
+const appDataSize = async (paths: Paths) => (await statAll(['', '-wal', '-shm'].map((s) => paths.db + s))).reduce((sum, [, st]) => sum + st.size, 0)
+
 export async function storageReport(root: string, paths: Paths, cacheSize: () => Promise<number>): Promise<StorageReport> {
   const drive = path.parse(root).root
   const [disk, entries, tdlib, thumbs, tmp, chromium, appData] = await Promise.all([
     fs.promises.statfs(drive).catch(() => null), // an unplugged or unmapped drive reports 0 / 0; the rest still answers
-    library(root), dirSize(path.join(paths.tdlib, 'files')), dirSize(paths.thumbs), dirSize(paths.tmp), cacheSize(),
-    statAll(['', '-wal', '-shm'].map((s) => paths.db + s)).then((s) => s.reduce((sum, [, st]) => sum + st.size, 0)),
+    library(root), dirSize(path.join(paths.tdlib, 'files')), dirSize(paths.thumbs), dirSize(paths.tmp), cacheSize(), appDataSize(paths),
   ])
   const lib = { video: 0, image: 0, audio: 0, document: 0, archive: 0, files: entries.length, total: 0 }
   for (const e of entries) { lib[e.type] += e.size; lib.total += e.size }
@@ -233,4 +252,101 @@ export async function storageReport(root: string, paths: Paths, cacheSize: () =>
     drive: { root: drive, total: disk ? disk.blocks * disk.bsize : 0, free: disk ? disk.bavail * disk.bsize : 0 },
     library: lib, cache: { tdlib, thumbs, tmp, chromium, total: tdlib + thumbs + tmp + chromium }, appData,
   }
+}
+
+// ---- Finalizing downloads (ARCHITECTURE > Download step 6) ----
+
+/** Mark-of-the-Web, so Windows applies SmartScreen and Office Protected View when the file is opened. Logs and continues
+ *  on failure. ponytail: FAT/exFAT volumes have no streams, so their files carry no Mark-of-the-Web. */
+export const markOfTheWeb = (file: string) => fs.promises.writeFile(`${file}:Zone.Identifier`, '[ZoneTransfer]\r\nZoneId=3\r\n')
+  .catch((e: Error) => log('warn', `Mark-of-the-Web failed for ${path.basename(file)}: ${e.message}`))
+
+/** Moves a finished download out of TDLib's files folder. A file under its final name is always complete: a same-volume
+ *  rename is atomic; across volumes the file is copied to `part` (dot-prefixed, so the Library skips it), then renamed.
+ *  ponytail: a part file of a job canceled after a crash is not swept; upgrade: sweep .teleflow-*.part on Clear cache. */
+export async function moveFile(src: string, dest: string, part: string) {
+  await markOfTheWeb(src) // the stream moves with the rename
+  try { await fs.promises.rename(src, dest) } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'EXDEV') throw e
+    await fs.promises.rm(part, { force: true }) // a stale part from an interrupted run
+    try {
+      await fs.promises.copyFile(src, part)
+      await markOfTheWeb(part)
+      await fs.promises.rename(part, dest)
+    } catch (copyError) {
+      await fs.promises.rm(part, { force: true })
+      throw copyError
+    }
+  }
+}
+
+// ---- Clearing (ARCHITECTURE > Storage and maintenance) ----
+
+/** Electron, TDLib, and engine calls the clears need; main passes them in so core/ stays Electron-free. */
+export type ClearDeps = {
+  db: DB, paths: Paths, root: string, roots: RootLists,
+  optimize: () => Promise<unknown>, // TDLib optimizeStorage; rejects when Telegram is not signed in
+  clearChromium: () => Promise<void>, cacheSize: () => Promise<number>, stopScan: () => void,
+  cancelAll: () => void, logout: () => Promise<unknown>, signOut: () => Promise<void>, clearStorageData: () => Promise<void>,
+  loginItemOff: () => void,
+}
+const sum = (ns: number[]) => ns.reduce((a, b) => a + b, 0)
+const emptyDir = async (dir: string, keep = new Set<string>()) => {
+  for (const name of await fs.promises.readdir(dir).catch(() => [])) {
+    if (!keep.has(name)) await fs.promises.rm(path.join(dir, name), { recursive: true, force: true, maxRetries: 3 })
+  }
+}
+const cacheBytes = async (o: ClearDeps) =>
+  sum(await Promise.all([dirSize(path.join(o.paths.tdlib, 'files')), dirSize(o.paths.thumbs), dirSize(o.paths.tmp), o.cacheSize()]))
+
+/** TDLib file cache, saved thumbnails, temp files of finished uploads, Chromium cache. Keeps login, history, queue, and
+ *  downloads; queued, paused, and failed downloads restart from zero (their TDLib partial data is gone). */
+export async function clearCache(o: ClearDeps) {
+  if (anyActive(o.db)) throw fail(409, 'Pause active transfers first')
+  const before = await cacheBytes(o)
+  await o.optimize().catch((e: Error) => log('info', `TDLib cache not optimized: ${e.message}`))
+  await emptyDir(o.paths.thumbs)
+  const unfinished = o.db.prepare(`SELECT id FROM jobs WHERE kind = 'upload' AND status <> 'completed'`).all().map((r) => String(r.id))
+  await emptyDir(o.paths.tmp, new Set(unfinished))
+  await o.clearChromium()
+  o.db.prepare(`UPDATE jobs SET done = 0 WHERE kind = 'download' AND status IN ('queued', 'paused', 'failed')`).run()
+  return { freed: Math.max(0, before - await cacheBytes(o)) }
+}
+
+/** History, queue, media index, and settings (except the credentials and window), then Clear cache. */
+export async function clearAppData(o: ClearDeps) {
+  if (anyActive(o.db)) throw fail(409, 'Pause active transfers first')
+  const before = await appDataSize(o.paths)
+  o.stopScan()
+  const chats = clearRows(o.db, ['apiId', 'apiHash', 'window'])
+  const freed = Math.max(0, before - await appDataSize(o.paths)) + (await clearCache(o)).freed
+  return { freed, chats }
+}
+
+/** Everything: cancels every job, optionally deletes the downloads (the root folder stays), logs out (a local delete when
+ *  Telegram is unreachable), removes the session, cache, and every row, and turns Start with Windows off. */
+export async function clearAll(o: ClearDeps, deleteDownloads: boolean) {
+  // Where the root really is is checked right before anything is deleted: a junction made after it was saved must not
+  // lead the delete into a protected folder (Phase 2 review 1 #2).
+  if (deleteDownloads) checkDownloadRoot(await realLocation(o.root), o.roots)
+  const measure = async () => sum(await Promise.all([dirSize(o.paths.tdlib), dirSize(o.paths.thumbs), dirSize(o.paths.tmp),
+    appDataSize(o.paths), o.cacheSize(), deleteDownloads ? dirSize(o.root) : 0]))
+  const before = await measure()
+  o.cancelAll()
+  if (deleteDownloads) {
+    for (const e of await scanLibrary(o.root)) {
+      await fs.promises.rm(e.path, { force: true }).catch((err: Error) => log('warn', `Could not delete ${e.rel}: ${err.message}`))
+    }
+    const dirs = (await fs.promises.readdir(o.root, { recursive: true, withFileTypes: true }).catch(() => []))
+      .filter((d) => d.isDirectory()).map((d) => path.join(d.parentPath, d.name))
+    for (const dir of dirs.sort((a, b) => b.length - a.length)) await fs.promises.rmdir(dir).catch(() => {}) // only empty ones go
+    cache = null
+  }
+  await o.logout().catch((e: Error) => log('warn', `Logout during Clear All Data failed: ${e.message}`))
+  await o.signOut() // closes the client and forgets the credentials: auth returns to the API Keys step
+  for (const dir of [o.paths.tdlib, o.paths.thumbs, o.paths.tmp]) await fs.promises.rm(dir, { recursive: true, force: true, maxRetries: 5 })
+  const chats = clearRows(o.db, [])
+  await o.clearStorageData()
+  o.loginItemOff()
+  return { freed: Math.max(0, before - await measure()), chats }
 }

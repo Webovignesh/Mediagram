@@ -4,16 +4,16 @@ import fs from 'node:fs'
 import path from 'node:path'
 import tdl, { type Client } from 'tdl'
 import type * as Td from 'tdlib-types'
-import { type AppError, type Emit, fail } from './db.ts'
+import { type AppError, type DB, deleteMedia, type Emit, fail, getScan, mediaCount, putMedia, putScan, type ScanRow } from './db.ts'
 import {
   type AuthState, type Cache, type Chat, type Creds, extractMedia, type Folder, folderOf, mapAuth, mapConnection, type Me,
-  type Message, normalizeLink, rights, tdError, toChat, toMe,
+  type Message, mediaRow, normalizeLink, rights, tdError, toChat, toMe,
 } from './shapes.ts'
 import { log } from './storage.ts'
 
 // ---- Client ----
 
-type Deps = { dir: string /* home\tdlib */, version: string, emit: Emit, showArchived: () => boolean, forgetCredentials: () => void }
+type Deps = { dir: string /* home\tdlib */, version: string, db: DB, emit: Emit, showArchived: () => boolean, forgetCredentials: () => void }
 let deps: Deps
 let client: Client | null = null
 let creds: Creds | null = null
@@ -46,6 +46,14 @@ function changed() {
   deps.emit({ type: 'auth', auth })
 }
 const chatsChanged = () => deps.emit({ type: 'invalidate', topics: ['chats'] })
+
+/** Entering `ready` gives failed media scans one new try; leaving it means TDLib may skip updates for a gap, so no
+ *  chat's top-up counts as current any more (ARCHITECTURE > Media index scan). */
+function setConnection(c: AuthState['connection']) {
+  if (c === 'ready' && connection !== 'ready') failedScans.clear()
+  if (c !== 'ready' && connection === 'ready') current.clear()
+  connection = c
+}
 
 /** Any TDLib call; auth calls use it directly, everything else goes through `invoke`. */
 const call: Td.Invoke = async (req) => {
@@ -80,7 +88,7 @@ async function launch(c: Creds) {
   for (const m of [chats, cache.users, cache.basicGroups, cache.supergroups]) m.clear()
   folders = []
   opened.clear()
-  connection = 'connecting'
+  setConnection('connecting')
   const cl = tdl.createClient({
     apiId: c.apiId, apiHash: c.apiHash,
     databaseDirectory: path.join(deps.dir, 'db'), filesDirectory: path.join(deps.dir, 'files'),
@@ -105,8 +113,15 @@ export async function close() {
   client = null
   tdAuth = null
   me = null
-  connection = 'offline'
+  setConnection('offline')
   await Promise.race([cl.close(), sleep(5000)]).catch((e) => log('warn', `Closing TDLib failed: ${(e as Error).message}`))
+}
+
+/** Clear All Data: closes the client and forgets the credentials, so auth returns to the API Keys step. */
+export function reset() {
+  const run = starting.then(async () => { await close(); creds = null; credError = undefined; changed() })
+  starting = run.catch(() => {})
+  return run
 }
 
 async function rejectCredentials(code: string) {
@@ -180,7 +195,13 @@ function onTdUpdate(cl: Client, u: Td.Update) {
       else me = null
       changed()
       break
-    case 'updateConnectionState': connection = mapConnection(u.state); changed(); break
+    case 'updateConnectionState': setConnection(mapConnection(u.state)); changed(); break
+    case 'updateNewMessage': upkeep(u.message); break
+    case 'updateDeleteMessages':
+      if (!u.is_permanent || u.from_cache) break // TDLib cache evictions are not deletions (FileGram lesson)
+      if (deleteMedia(deps.db, u.chat_id, u.message_ids)) mediaChanged(u.chat_id)
+      deps.emit({ type: 'invalidate', topics: [`messages:${u.chat_id}`] })
+      break
     case 'updateOption':
       if (u.name === 'message_caption_length_max' && me && u.value._ === 'optionValueInteger') { me = { ...me, captionMax: Number(u.value.value) }; changed() }
       break
@@ -301,6 +322,150 @@ export async function messages(chatId: number, limit: number) {
     from = got[got.length - 1].id
   }
   return { messages: out.map(toMessage), more: true }
+}
+
+/** downloads.add `{ link }`: the linked message, or its whole album when the link points at one. */
+export async function linkMessages(link: string) {
+  const t = await linkType(link)
+  if (t._ !== 'internalLinkTypeMessage') throw notALink()
+  const info = await invoke({ _: 'getMessageLinkInfo', url: t.url })
+  if (!info.chat_id) throw fail(404, "You don't have access to that chat")
+  const m = info.message
+  if (!m || !extractMedia(m)) throw fail(400, 'That message has no media to download')
+  if (!info.for_album || m.media_album_id === '0') return { chatId: info.chat_id, messages: [m] }
+  // Siblings share media_album_id; an album has at most 10 messages, so one page around the message holds them all.
+  const page = await invoke({ _: 'getChatHistory', chat_id: info.chat_id, from_message_id: m.id, offset: -10, limit: 20, only_local: false })
+  const album = page.messages.filter((x): x is Td.message => !!x && x.media_album_id === m.media_album_id && !!extractMedia(x))
+  return { chatId: info.chat_id, messages: album.length ? album.sort((a, b) => a.id - b.id) : [m] }
+}
+
+// ---- Media index scan (ARCHITECTURE > Media index scan) ----
+
+const failedScans = new Set<number>() // a page failed: no new scan until the connection next enters ready
+const current = new Set<number>() // top-up finished since the connection was last ready: live upkeep may move newest_id
+let scan: { chatId: number, stop: boolean } | null = null
+let scans = Promise.resolve()
+const throttle = new Map<number, { dirty: boolean }>()
+const counted = [{ _: 'searchMessagesFilterPhoto' }, { _: 'searchMessagesFilterVideo' }, { _: 'searchMessagesFilterDocument' },
+  { _: 'searchMessagesFilterAudio' }, { _: 'searchMessagesFilterAnimation' }, { _: 'searchMessagesFilterVoiceNote' },
+  { _: 'searchMessagesFilterVideoNote' }] as const // TDLib rejects searchMessagesFilterEmpty here
+
+/** Whether chats.media starts a scan: no row yet, backfill unfinished, or a newer last message than the walk has seen. */
+export const scanNeeded = (row: ScanRow | undefined, lastId: number | null, failed: boolean) =>
+  !failed && (!row || !row.complete || (lastId !== null && row.newest_id < lastId))
+
+/** `media:<chatId>` at most once per second (a change inside the second is sent when it ends); `now` for state changes. */
+function mediaChanged(chatId: number, now = false) {
+  const t = throttle.get(chatId)
+  if (t && !now) { t.dirty = true; return }
+  deps.emit({ type: 'invalidate', topics: [`media:${chatId}`] })
+  const entry = { dirty: false }
+  throttle.set(chatId, entry)
+  setTimeout(() => {
+    if (throttle.get(chatId) === entry) throttle.delete(chatId)
+    if (entry.dirty) mediaChanged(chatId)
+  }, 1000)
+}
+
+/** chats.media's index bar; `indexed` is clamped to the approximate total. */
+export function scanInfo(chatId: number) {
+  const row = getScan(deps.db, chatId)
+  const indexed = mediaCount(deps.db, chatId)
+  const state = scan?.chatId === chatId ? 'scanning' as const
+    : row?.complete && row.newest_id >= (chats.get(chatId)?.last_message?.id ?? 0) ? 'done' as const : 'idle' as const
+  return { state, indexed: row?.total != null ? Math.min(indexed, row.total) : indexed, total: row?.total ?? null }
+}
+
+/** Starts this chat's scan when it needs one; asking for another chat stops the current one after its page. */
+export function ensureScan(chatId: number) {
+  if (auth.step !== 'ready' || scan?.chatId === chatId) return
+  if (!scanNeeded(getScan(deps.db, chatId), chats.get(chatId)?.last_message?.id ?? null, failedScans.has(chatId))) return
+  if (scan) scan.stop = true
+  const s = { chatId, stop: false }
+  scan = s
+  scans = scans.then(() => runScan(s))
+}
+/** Clear app data: the running scan stops after its page. */
+export const stopScan = () => { if (scan) scan.stop = true; scan = null }
+
+async function historyPage(chatId: number, from: number, s: { stop: boolean }) {
+  for (;;) {
+    try {
+      const r = await invoke({ _: 'getChatHistory', chat_id: chatId, from_message_id: from, offset: 0, limit: 100, only_local: false })
+      return r.messages.filter((m): m is Td.message => m !== null)
+    } catch (e) {
+      const err = e as AppError
+      if (err.status !== 429 || !err.retryAfter || s.stop) throw e
+      log('warn', `Media scan waits ${err.retryAfter} s (flood wait)`)
+      await sleep(err.retryAfter * 1000) // flood waits sleep and continue
+    }
+  }
+}
+
+function index(chatId: number, messages: Td.message[]) {
+  putMedia(deps.db, messages.flatMap((m) => { const x = extractMedia(m); return x ? [mediaRow(chatId, m, x)] : [] })) // INSERT OR REPLACE: overlaps are harmless
+  mediaChanged(chatId)
+}
+
+/** Top-up from the newest message down to newest_id (the first walk creates the row with its first page), then
+ *  backfill from oldest_id until an empty page. Progress is persisted per page, so a stopped scan resumes later. */
+async function runScan(s: { chatId: number, stop: boolean }) {
+  const { chatId } = s, { db } = deps
+  const stopped = () => s.stop || auth.step !== 'ready'
+  if (stopped()) { if (scan === s) scan = null; return }
+  mediaChanged(chatId, true)
+  try {
+    const total = await Promise.all(counted.map((filter) => invoke({ _: 'getChatMessageCount', chat_id: chatId, filter, return_local: false })))
+      .then((cs) => cs.reduce((n, c) => n + c.count, 0), () => null) // approximate: TDLib says so
+    let row = getScan(db, chatId)
+    const last = chats.get(chatId)?.last_message?.id ?? null
+    if (!row || (last !== null && row.newest_id < last)) {
+      let from = 0, newest = 0
+      for (;;) {
+        if (stopped()) return // newest_id stays, so the next top-up starts from the top again instead of leaving a gap
+        const page = await historyPage(chatId, from, s)
+        if (!page.length) break
+        newest ||= page[0].id
+        index(chatId, page)
+        const oldest = page[page.length - 1].id
+        if (!row) { putScan(db, { chat_id: chatId, newest_id: newest, oldest_id: oldest, complete: 0, total }); break }
+        if (oldest <= row.newest_id) break
+        from = oldest
+      }
+      if (row) putScan(db, { ...row, newest_id: Math.max(row.newest_id, newest), total })
+      else if (!newest) putScan(db, { chat_id: chatId, newest_id: 0, oldest_id: 0, complete: 1, total }) // an empty chat
+      current.add(chatId)
+    } else putScan(db, { ...row, total })
+    let walk: ScanRow = getScan(db, chatId)!
+    while (!walk.complete) {
+      if (stopped()) return
+      const oldest = walk.oldest_id
+      const page = (await historyPage(chatId, oldest, s)).filter((m) => m.id < oldest)
+      index(chatId, page)
+      walk = { ...walk, oldest_id: page.length ? page[page.length - 1].id : oldest, complete: page.length ? 0 : 1 }
+      putScan(db, walk)
+    }
+  } catch (e) {
+    // ponytail: a failed scan shows as idle with no reason in the UI; upgrade: scan.state 'failed' with the error text.
+    if (!stopped()) { failedScans.add(chatId); log('warn', `Media scan of chat ${chatId} stopped: ${(e as Error).message}`) }
+  } finally {
+    if (scan === s) scan = null
+    mediaChanged(chatId, true) // the index bar hides
+  }
+}
+
+/** updateNewMessage: media joins the index of a chat that has one; newest_id moves only for current chats, so after an
+ *  outage the next chats.media runs one top-up over the gap instead of jumping past it.
+ *  ponytail: edits are not tracked, so an edited caption or file stays as indexed; upgrade: handle updateMessageContent. */
+function upkeep(m: Td.message) {
+  deps.emit({ type: 'invalidate', topics: [`messages:${m.chat_id}`] })
+  if (m.sending_state) return // still being sent: a temporary id
+  const row = getScan(deps.db, m.chat_id)
+  if (!row) return
+  const x = extractMedia(m)
+  if (x) putMedia(deps.db, [mediaRow(m.chat_id, m, x)])
+  if (current.has(m.chat_id) && m.id > row.newest_id) putScan(deps.db, { ...row, newest_id: m.id })
+  if (x) mediaChanged(m.chat_id)
 }
 
 /** Local path of a thumbnail or avatar for teleflow://thumb; the size is checked before anything downloads. */

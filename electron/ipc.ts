@@ -2,13 +2,17 @@
 // calls in through ctx, so node:test can load this file.
 import fs from 'node:fs'
 import path from 'node:path'
-import { type AppError, checkSettings, type DB, type DownloadState, downloadStates, type Emit, fail, type MediaItem, putSetting, setSettings, type StoredSettings } from '../core/db.ts'
 import {
-  checkDownloadRoot, dirSize, library, libraryCached, libraryFile, libraryItems, libraryList, libraryMissing, libType, log,
-  pageKey, type Paths, realLocation, type RootLists, storageReport, trash, within, withPreview,
+  type AppError, checkSettings, type DB, downloadStates, type Emit, fail, jobsList, mediaExts, type MediaItem, mediaQuery, putSetting,
+  setSettings, statsActivity, statsChats, statsOverview, type StoredSettings,
+} from '../core/db.ts'
+import { type Chat, extractMedia, isTelegramLink, linkKind, mediaRow } from '../core/shapes.ts'
+import {
+  checkDownloadRoot, clearAll, clearAppData, clearCache, type ClearDeps, dirSize, library, libraryCached, libraryFile, libraryItems,
+  libraryList, libraryMissing, libType, log, pageKey, type Paths, realLocation, type RootLists, storageReport, trash, within, withPreview,
 } from '../core/storage.ts'
 import type * as telegram from '../core/telegram.ts'
-import { type Chat, isTelegramLink, linkKind, type Media, type Message } from '../core/shapes.ts'
+import type { Engine } from '../core/transfers.ts'
 
 export type License = { name: string, version: string, license: string }
 /** Electron calls, passed in by main. */
@@ -19,11 +23,13 @@ export type Native = {
   trashItem(file: string): Promise<void>
   loginItem: { get(): boolean, set(on: boolean): void }
   cacheSize(): Promise<number>
+  clearCache(): Promise<void> // session.clearCache + clearCodeCaches
+  clearStorageData(): Promise<void>
 }
 export type Ctx = {
   version: string, tdlib: string, installedAt: number | null,
   repository: string | undefined /* package.json repository.url */, licenses: License[],
-  paths: Paths, db: DB, settings: () => StoredSettings, roots: RootLists, emit: Emit, tg: typeof telegram, native: Native,
+  paths: Paths, db: DB, settings: () => StoredSettings, roots: RootLists, emit: Emit, tg: typeof telegram, native: Native, engine: Engine,
 }
 
 // Common validators: each failure is a 400 naming the field.
@@ -72,18 +78,51 @@ const list = <T>(check: Check<T>, min: number, max: number): Check<T[]> => (v, f
   if (!Array.isArray(v) || v.length < min || v.length > max) throw reject(f, `must be a list of ${min} to ${max} items`)
   return v.map((x, i) => check(x, `${f}[${i}]`))
 }
-
-/** Args must be absent or a plain object with only the listed keys. */
-export const shape = <S extends Record<string, Check<unknown>>>(spec: S) => (args: unknown) => {
-  const a = args ?? {}
-  if (typeof a !== 'object' || Array.isArray(a)) throw fail(400, 'Arguments must be an object')
-  for (const key of Object.keys(a)) if (!Object.hasOwn(spec, key)) throw fail(400, `Unknown field ${key}`)
-  const out: Record<string, unknown> = {}
-  for (const key of Object.keys(spec)) out[key] = spec[key]((a as Record<string, unknown>)[key], key)
-  return out as { [K in keyof S]: ReturnType<S[K]> }
+const bool: Check<boolean> = (v, f) => {
+  if (typeof v !== 'boolean') throw reject(f, 'must be true or false')
+  return v
 }
 
+/** A plain object with only the listed keys (absent = empty); nested fields are named by their path (filters.type). */
+const fields = <S extends Record<string, Check<unknown>>>(spec: S): Check<{ [K in keyof S]: ReturnType<S[K]> }> => (v, f) => {
+  const a = v ?? {}
+  if (typeof a !== 'object' || Array.isArray(a)) throw f ? reject(f, 'must be an object') : fail(400, 'Arguments must be an object')
+  const at = (key: string) => (f ? `${f}.${key}` : key)
+  for (const key of Object.keys(a)) if (!Object.hasOwn(spec, key)) throw fail(400, `Unknown field ${at(key)}`)
+  const out: Record<string, unknown> = {}
+  for (const key of Object.keys(spec)) out[key] = spec[key]((a as Record<string, unknown>)[key], at(key))
+  return out as { [K in keyof S]: ReturnType<S[K]> }
+}
+/** Method args: absent or a plain object with only the listed keys. */
+export const shape = <S extends Record<string, Check<unknown>>>(spec: S) => (args: unknown) => fields(spec)(args, '')
+
 const method = <A, R>(validate: (args: unknown) => A, run: (args: A) => R) => ({ validate, run })
+
+const kind = oneOf('download', 'upload')
+const range = oneOf('24h', '7d', '30d')
+const message = fields({ chatId: id, messageId: id })
+const ext: Check<string> = (v, f) => match(/^[a-z0-9]{1,16}$/i, 'must be a file extension')(v, f).toLowerCase()
+const filterSpec = {
+  type: opt(oneOf('video', 'photo', 'document', 'audio', 'animation')), ext: opt(ext),
+  duration: opt(oneOf('short', 'medium', 'long', 'xlong')), size: opt(oneOf('small', 'medium', 'large', 'xlarge')),
+  status: opt(oneOf('none', 'queued', 'active', 'paused', 'failed', 'downloaded')), q,
+  sort: opt(oneOf('newest', 'oldest', 'largest', 'smallest', 'name', 'longest')),
+}
+/** downloads.add takes one of three forms, told apart by their keys. */
+const downloadsArgs = (args: unknown) => {
+  const keys = args && typeof args === 'object' ? Object.keys(args) : []
+  if (keys.includes('link')) return shape({ link: text(300, 2) })(args)
+  if (keys.includes('filters')) return shape({ chatId: id, filters: fields(filterSpec) })(args)
+  return shape({ items: list(message, 1, 10_000), force: flag })(args)
+}
+const actionArgs = (args: unknown) => {
+  const a = shape({ action: oneOf('pause', 'resume', 'retry', 'cancel', 'up', 'down', 'clear-completed'), ids: opt(list(id, 1, 1000)) })(args)
+  if ((a.action === 'up' || a.action === 'down') && a.ids?.length !== 1) throw reject('ids', 'must be exactly one job to move')
+  return a
+}
+// The file types TDLib caches for media, thumbnails, and profile photos (Clear cache).
+const cacheTypes = (['Photo', 'Video', 'Document', 'Audio', 'Animation', 'VoiceNote', 'VideoNote', 'Thumbnail', 'ProfilePhoto', 'Unknown'] as const)
+  .map((t) => ({ _: `fileType${t}` as const }))
 
 /** package.json repository.url → an https link, or null (the window-open handler only opens https:). */
 export const repoUrl = (raw: string | undefined) => {
@@ -91,13 +130,8 @@ export const repoUrl = (raw: string | undefined) => {
   return url?.startsWith('https://') ? url : null
 }
 
-const mediaItem = (chatId: number, m: Message, x: Media, s: DownloadState): MediaItem => ({
-  chatId, messageId: m.id, date: m.date, type: x.type, name: x.name, ext: x.ext, size: x.size,
-  duration: x.duration, caption: x.caption, thumb: x.thumb, ...s,
-})
-
 export function createMethods(ctx: Ctx) {
-  const { db, tg } = ctx
+  const { db, tg, engine } = ctx
   const invalidate = (...topics: string[]) => ctx.emit({ type: 'invalidate', topics })
   const root = () => ctx.settings().downloadRoot
   const settings = () => ({ ...ctx.settings(), startWithSystem: ctx.native.loginItem.get() })
@@ -105,12 +139,33 @@ export function createMethods(ctx: Ctx) {
     const error = await ctx.native.openPath(target)
     if (error) throw fail(409, `Windows couldn't open ${path.basename(target)}: ${error}`)
   }
+  const knownChat = (chatId: number) => { const c = tg.chat(chatId); if (!c) throw fail(404, 'Chat not found'); return c }
+  const clearDeps = (): ClearDeps => ({
+    db, paths: ctx.paths, root: root(), roots: ctx.roots, cacheSize: ctx.native.cacheSize, clearChromium: ctx.native.clearCache,
+    optimize: () => tg.invoke({ _: 'optimizeStorage', size: 0, ttl: 0, count: 0, immunity_delay: 0, file_types: cacheTypes,
+      chat_ids: [], exclude_chat_ids: [], return_deleted_file_statistics: false, chat_limit: 0 }),
+    stopScan: tg.stopScan, cancelAll: () => { engine.action('cancel') }, logout: tg.logout, signOut: tg.reset,
+    clearStorageData: ctx.native.clearStorageData, loginItemOff: () => ctx.native.loginItem.set(false),
+  })
+  const cleared = (chats: number[]) => invalidate('jobs', 'history', 'library', 'settings', 'storage', 'chats',
+    ...chats.flatMap((c) => [`media:${c}`, `messages:${c}`]))
 
   return {
     'app.info': method(shape({}), () => ({
       version: ctx.version, tdlib: ctx.tdlib, installedAt: ctx.installedAt, home: ctx.paths.home,
       repository: repoUrl(ctx.repository), licenses: ctx.licenses,
     })),
+    'app.clearCache': method(shape({}), async () => {
+      const r = await clearCache(clearDeps())
+      invalidate('storage', 'jobs', 'history', 'library') // partial progress reset, saved thumbnails gone
+      return r
+    }),
+    'app.clearData': method(shape({}), async () => { const r = await clearAppData(clearDeps()); cleared(r.chats); return { freed: r.freed } }),
+    'app.clearAll': method(shape({ deleteDownloads: bool }), async ({ deleteDownloads }) => {
+      const r = await clearAll(clearDeps(), deleteDownloads)
+      cleared(r.chats)
+      return { freed: r.freed }
+    }),
     'app.storage': method(shape({}), () => storageReport(root(), ctx.paths, ctx.native.cacheSize)),
     'app.pickFolder': method(shape({ title: opt(text(80)) }), async ({ title }) => ({ path: await ctx.native.pickFolder(title) })),
     'app.openPath': method(shape({ target: oneOf('downloads', 'appData', 'logs') }), async ({ target }) => {
@@ -141,8 +196,49 @@ export function createMethods(ctx: Ctx) {
     'chats.messages': method(shape({ chatId: id, limit: int(1, 1000, 30) }), async ({ chatId, limit }) => {
       const r = await tg.messages(chatId, limit)
       const states = downloadStates(db, chatId, r.messages.filter((m) => m.media).map((m) => m.id))
-      return { more: r.more, messages: r.messages.map((m) => ({ ...m, media: m.media && mediaItem(chatId, m, m.media, states.get(m.id)!) })) }
+      return { more: r.more, messages: r.messages.map((m) => ({ ...m, media: m.media && { ...mediaRow(chatId, m, m.media), ...states.get(m.id)! } satisfies MediaItem })) }
     }),
+    'chats.media': method(shape({ chatId: id, ...filterSpec, page, pageSize }), ({ chatId, page, pageSize, ...filters }) => {
+      knownChat(chatId)
+      tg.ensureScan(chatId)
+      return { ...mediaQuery(db, chatId, filters, { page, pageSize }), exts: mediaExts(db, chatId), scan: tg.scanInfo(chatId) }
+    }),
+
+    'downloads.add': method(downloadsArgs, async (a) => {
+      if ('link' in a) {
+        const { chatId, messages } = await tg.linkMessages(a.link)
+        return engine.addDownloads(chatId, messages.map((m) => mediaRow(chatId, m, extractMedia(m)!)))
+      }
+      if ('filters' in a) return engine.addDownloads(knownChat(a.chatId).id, mediaQuery(db, a.chatId, a.filters).items)
+      return engine.addItems(a.items, a.force)
+    }),
+    'uploads.add': method(shape({ chatId: id, paths: list(filePath, 1, 500), caption: text(4096), album: bool, keepNames: bool }), async (a) => {
+      const auth = tg.authState()
+      if (auth.step !== 'ready') throw fail(503, 'Telegram is not connected yet')
+      const chat = knownChat(a.chatId)
+      if (!chat.canPost) throw fail(403, "You can't post in this chat")
+      if (a.caption.length > auth.me.captionMax) throw fail(400, `caption must be at most ${auth.me.captionMax} characters`)
+      // Upload sources are only ever read; each must be an existing regular file within Telegram's size limit.
+      const files = await Promise.all(a.paths.map(async (p, i) => {
+        if (!path.isAbsolute(p) || path.parse(p).root.length < 3) throw reject(`paths[${i}]`, 'must be a full file path')
+        const name = path.basename(p)
+        const st = await fs.promises.stat(p).catch(() => null)
+        if (!st?.isFile()) throw fail(400, `${name} is missing or isn't a file`)
+        if (st.size < 1) throw fail(400, `${name} is empty`)
+        if (st.size > auth.me.uploadMax) throw fail(413, `${name} is larger than Telegram allows for this account`)
+        return { path: path.resolve(p), name, size: st.size }
+      }))
+      const allow = tg.mediaRights(chat.id) ?? { photos: false, videos: false }
+      return engine.addUploads(chat, files, { caption: a.caption, album: a.album, keepNames: a.keepNames, photos: allow.photos, videos: allow.videos })
+    }),
+    'jobs.list': method(shape({ kind: opt(kind), status: opt(oneOf('open', 'queued', 'active', 'paused', 'completed', 'failed')), q, page, pageSize }),
+      (a) => jobsList(db, a, tg.chat)),
+    'jobs.action': method(actionArgs, ({ action, ids }) => engine.action(action, ids)),
+
+    'stats.live': method(shape({}), () => engine.liveStats()),
+    'stats.overview': method(shape({}), () => statsOverview(db, ctx.paths.thumbs)),
+    'stats.activity': method(shape({ range }), ({ range }) => statsActivity(db, range)),
+    'stats.chats': method(shape({ range }), ({ range }) => statsChats(db, range, tg.chat)),
     'search.global': method(shape({ q: text(300, 1) }), async ({ q }) => {
       const needle = q.toLowerCase()
       let chats: Chat[] = []
@@ -183,6 +279,7 @@ export function createMethods(ctx: Ctx) {
         await fs.promises.mkdir(next.downloadRoot, { recursive: true }).catch(() => { throw fail(400, "TeleFlow couldn't create that folder. Pick another one.") })
       }
       setSettings(db, next)
+      engine.pump() // concurrency limits may have changed
       if (next.startWithSystem !== undefined) ctx.native.loginItem.set(next.startWithSystem)
       const topics = ['settings']
       if (next.downloadRoot !== undefined && next.downloadRoot.toLowerCase() !== before.downloadRoot.toLowerCase()) topics.push('library', 'storage')

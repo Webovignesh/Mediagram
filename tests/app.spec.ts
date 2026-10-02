@@ -1,6 +1,6 @@
 // Packaged smoke test (needs `npm run dist`). The exe is launched through its lowercased path, so the renderer URL
 // gets a lowercase drive letter that Chromium uppercases: a working Login proves the IPC sender check (Bridge step 1).
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -93,4 +93,27 @@ test('packaged exe boots, loads TDLib, and shows the API Keys step', async () =>
   } finally {
     await app.close()
   }
+})
+
+test('Start with Windows writes the Run value, reads back on after a relaunch, and turning it off removes it', async () => {
+  test.setTimeout(120_000)
+  const home = tempHome()
+  const runValue = () => spawnSync('reg', ['query', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run', '/v', 'com.teleflow.app']).status
+  let app = await launch(home)
+  try {
+    let win = await app.firstWindow()
+    await expect(win.getByLabel('API ID')).toBeVisible()
+    expect(await win.evaluate(() => window.teleflow.call('settings.set', { startWithSystem: true }))).toMatchObject({ ok: true, data: { startWithSystem: true } })
+    expect(runValue()).toBe(0)
+    await app.close()
+    app = await launch(home)
+    win = await app.firstWindow()
+    expect(await win.evaluate(() => window.teleflow.call('settings.get'))).toMatchObject({ ok: true, data: { startWithSystem: true } })
+    expect(await win.evaluate(() => window.teleflow.call('settings.set', { startWithSystem: false }))).toMatchObject({ ok: true, data: { startWithSystem: false } })
+  } finally {
+    // Leave the machine as it was even when an assertion failed (turning it off deletes the value by name).
+    await app.evaluate(({ app: a }) => a.setLoginItemSettings({ args: ['--hidden'], openAtLogin: false })).catch(() => {})
+    await app.close()
+  }
+  expect(runValue()).not.toBe(0)
 })

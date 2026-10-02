@@ -1,31 +1,68 @@
-// App lifecycle (ARCHITECTURE > Desktop integration). The transfer engine, tray, and notifications land in Phase 3.
+// App lifecycle (ARCHITECTURE > Desktop integration): paths, single instance, window, tray, notifications, IPC, quit.
 import fs from 'node:fs'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { app, BrowserWindow, dialog, ipcMain, net, protocol, screen, session, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, net, Notification, protocol, screen, session, shell, Tray } from 'electron'
 import { getTdjson } from 'prebuilt-tdlib'
 import icon from '../assets/icon.png?asset'
-import { type AppEvent, type DB, getSettings, openDb, putSetting, readSetting } from '../core/db.ts'
-import { library, log, openLog, pageKey, resolvePaths } from '../core/storage.ts'
+import { type AppEvent, type DB, getSettings, type Kind, openDb, putSetting, readSetting } from '../core/db.ts'
+import { library, log, openLog, pageKey, realRoots, resolvePaths } from '../core/storage.ts'
 import * as telegram from '../core/telegram.ts'
+import { createEngine, type Engine, type LiveStats } from '../core/transfers.ts'
 import { createMethods, handleCall, type License, protocolFile } from './ipc.ts'
 
 declare const __LICENSES__: License[] // built by electron.vite.config.ts
 
 let win: BrowserWindow | null = null
+let tray: Tray | null = null
+let engine: Engine | undefined
+let quitting = false
 const send = (e: AppEvent) => { if (win && !win.isDestroyed()) win.webContents.send('event', e) }
 
-// `invalidate` topics are coalesced: flushed every 500 ms, `chats` every 2 s (ARCHITECTURE > Events).
+// `invalidate` topics are coalesced: flushed every 500 ms, `chats` every 2 s (ARCHITECTURE > Events). `auth` also drives
+// the engine (entering and leaving ready); `stats` also updates the tray tooltip.
 const pending = new Set<string>()
 let flushTimer: NodeJS.Timeout | undefined
 let chatsTimer: NodeJS.Timeout | undefined
 function emit(e: AppEvent) {
+  if (e.type === 'auth') engine?.onAuth(e.auth)
+  if (e.type === 'stats') trayTooltip(e.stats)
   if (e.type !== 'invalidate') return send(e)
   for (const topic of e.topics) {
     if (topic === 'chats') chatsTimer ??= setTimeout(() => { chatsTimer = undefined; send({ type: 'invalidate', topics: ['chats'] }) }, 2000)
     else pending.add(topic)
   }
   if (pending.size) flushTimer ??= setTimeout(() => { flushTimer = undefined; send({ type: 'invalidate', topics: [...pending] }); pending.clear() }, 500)
+}
+
+const units = [['gigabyte', 2 ** 30], ['megabyte', 2 ** 20], ['kilobyte', 1024], ['byte', 1]] as const
+const speedText = (bps: number) => {
+  const [unit, div] = units.find(([, d]) => bps >= d) ?? units[3]
+  return new Intl.NumberFormat('en', { style: 'unit', unit: `${unit}-per-second`, maximumFractionDigits: 1 }).format(bps / div)
+}
+function trayTooltip(s: LiveStats) {
+  tray?.setToolTip(`TeleFlow — ${s.counts.download.active + s.counts.upload.active} active · ${speedText(s.speed.download + s.speed.upload)}`)
+}
+function showWindow() {
+  if (!win || win.isDestroyed()) return
+  if (win.isMinimized()) win.restore()
+  win.show()
+  win.focus()
+}
+
+// Notifications: one per 3-second batch, so a large queue does not flood the screen. Clicking shows the window.
+const batch = { download: 0, upload: 0, failed: 0 }
+let notifyTimer: NodeJS.Timeout | undefined
+function flushNotifications() {
+  notifyTimer = undefined
+  const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`
+  const lines = [batch.download && `${plural(batch.download, 'download')} completed`, batch.upload && `${plural(batch.upload, 'upload')} completed`,
+    batch.failed && `${plural(batch.failed, 'transfer')} failed`].filter(Boolean)
+  Object.assign(batch, { download: 0, upload: 0, failed: 0 })
+  if (!lines.length || !Notification.isSupported()) return
+  const n = new Notification({ title: 'TeleFlow', body: lines.join('\n'), icon })
+  n.on('click', showWindow)
+  n.show()
 }
 
 function startup() {
@@ -46,28 +83,41 @@ function startup() {
   const tdlib = telegram.tdlibVersion()
   log('info', `TeleFlow ${app.getVersion()} starting; TDLib ${tdlib}; home ${paths.home}`)
 
-  // 6. (The engine's requeue and upload routing join this step in Phase 3.)
+  // 6. SQLite, the engine, and its recovery (before TDLib starts, so pending upload updates find their files).
   const db = openDb(paths.db)
   const defaultRoot = path.join(app.getPath('downloads'), 'TeleFlow')
   const settings = () => getSettings(db, defaultRoot)
   const env = process.env
-  const roots = {
+  const roots = realRoots({
     sealed: [paths.home, paths.appDir, path.dirname(app.getPath('appData')), env.SystemRoot, env.ProgramFiles, env['ProgramFiles(x86)'], env.ProgramData]
       .filter((p): p is string => !!p),
     guarded: (['home', 'desktop', 'documents', 'downloads', 'pictures', 'videos', 'music'] as const).map((n) => app.getPath(n)),
-  }
-  // One options object for reading and writing: Windows only matches a login item with the same args.
-  const loginItem = app.isPackaged ? { args: ['--hidden'] } : { path: process.execPath, args: [app.getAppPath(), '--hidden'] }
+  })
+  // One options object for reading and writing: Windows only matches a login item with the same args. The path is
+  // quoted because Electron 44 reads it back with CommandLine::FromString, which splits an unquoted path at its first
+  // space (a profile such as C:\Users\First Last), so the toggle would always read back off.
+  const loginItem = { path: `"${process.execPath}"`, args: app.isPackaged ? ['--hidden'] : [app.getAppPath(), '--hidden'] }
   telegram.init({
-    dir: paths.tdlib, version: app.getVersion(), emit, showArchived: () => settings().showArchived,
+    dir: paths.tdlib, version: app.getVersion(), db, emit, showArchived: () => settings().showArchived,
     forgetCredentials: () => { putSetting(db, 'apiId'); putSetting(db, 'apiHash') },
   })
+  const finished = (kind: Kind, ok: boolean) => {
+    const s = settings()
+    if (ok ? !s.notifyComplete : !s.notifyFailed) return
+    if (ok) batch[kind]++
+    else batch.failed++
+    notifyTimer ??= setTimeout(flushNotifications, 3000)
+  }
+  engine = createEngine({ db, invoke: telegram.invoke, onUpdate: telegram.onUpdate, auth: telegram.authState, chat: telegram.chat,
+    emit, paths, settings, finished })
+  engine.recover()
+  const eng = engine
 
   // The env URL is honored only unpackaged, so a packaged app never loads a page named by the environment.
   const rendererUrl = (!app.isPackaged && process.env.ELECTRON_RENDERER_URL) || pathToFileURL(path.join(import.meta.dirname, '../renderer/index.html')).href
   const rendererKey = pageKey(rendererUrl)
   const ctx = {
-    version: app.getVersion(), tdlib, paths, db, settings, roots, emit, tg: telegram,
+    version: app.getVersion(), tdlib, paths, db, settings, roots, emit, tg: telegram, engine: eng,
     installedAt: app.isPackaged ? fs.statSync(appDir).birthtimeMs : null,
     repository: JSON.parse(fs.readFileSync(path.join(app.getAppPath(), 'package.json'), 'utf8')).repository?.url,
     licenses: __LICENSES__,
@@ -85,16 +135,14 @@ function startup() {
         set: (openAtLogin: boolean) => app.setLoginItemSettings({ ...loginItem, openAtLogin }),
       },
       cacheSize: () => session.defaultSession.getCacheSize(),
+      clearCache: async () => { await session.defaultSession.clearCache(); await session.defaultSession.clearCodeCaches({}) },
+      clearStorageData: () => session.defaultSession.clearStorageData(),
     },
   }
   const methods = createMethods(ctx)
 
-  app.on('second-instance', () => {
-    if (!win) return
-    if (win.isMinimized()) win.restore()
-    win.show()
-    win.focus()
-  })
+  app.on('second-instance', showWindow)
+  app.on('window-all-closed', () => app.quit())
 
   // 7.
   app.whenReady().then(async () => {
@@ -113,7 +161,18 @@ function startup() {
       try { sender = e.senderFrame?.url ?? null } catch {} // disposed frame → reject
       return handleCall(methods, rendererKey, sender, req)
     })
-    win = createWindow(rendererUrl, db)
+    // A login-item start (--hidden) stays in the tray only when closing to the tray is on.
+    win = createWindow(rendererUrl, db, process.argv.includes('--hidden') && settings().closeToTray, () => settings().closeToTray)
+    tray = new Tray(icon)
+    trayTooltip(eng.liveStats())
+    tray.setContextMenu(Menu.buildFromTemplate([
+      { label: 'Show TeleFlow', click: showWindow },
+      { label: 'Pause all', click: () => eng.action('pause') },
+      { label: 'Resume all', click: () => eng.action('resume') },
+      { type: 'separator' },
+      { label: 'Quit TeleFlow', click: () => app.quit() },
+    ]))
+    tray.on('double-click', showWindow)
     // 8.
     const apiId = readSetting(db, 'apiId'), apiHash = readSetting(db, 'apiHash')
     if (typeof apiId === 'number' && typeof apiHash === 'string') await telegram.start({ apiId, apiHash })
@@ -121,13 +180,14 @@ function startup() {
     library(settings().downloadRoot).catch((e) => log('warn', `Library scan failed: ${(e as Error).message}`))
   }).catch(fatal)
 
-  // Quit: TDLib flushes its database (up to 5 s), then SQLite closes.
-  let quitting = false
+  // Quit: live progress persisted and running uploads put back in the queue, TDLib flushes its database (up to 5 s),
+  // then SQLite closes. Downloads in progress or finalizing are requeued on the next start.
   app.on('before-quit', (e) => {
     if (quitting) return
     e.preventDefault()
     quitting = true
-    void telegram.close().finally(() => { db.close(); app.quit() })
+    void eng.quit().catch((err: Error) => log('warn', `Saving transfers on quit failed: ${err.message}`))
+      .then(() => telegram.close()).finally(() => { db.close(); tray?.destroy(); app.quit() })
   })
 }
 
@@ -143,10 +203,10 @@ function initialBounds(saved: Partial<WindowState> | undefined) {
   return { width, height, x: area.x + Math.round((area.width - width) / 2), y: area.y + Math.round((area.height - height) / 2) }
 }
 
-function createWindow(url: string, db: DB) {
+function createWindow(url: string, db: DB, hidden: boolean, closeToTray: () => boolean) {
   const saved = readSetting(db, 'window') as Partial<WindowState> | undefined
   const w = new BrowserWindow({
-    ...initialBounds(saved), minWidth: 1024, minHeight: 640, icon,
+    ...initialBounds(saved), minWidth: 1024, minHeight: 640, icon, show: !hidden,
     backgroundColor: '#060b18', // UI.md `bg`
     titleBarStyle: 'hidden',
     titleBarOverlay: { color: '#060b18', symbolColor: '#a3b0cf', height: 40 }, // top bar `bg`, `text-2`, top bar height
@@ -155,7 +215,7 @@ function createWindow(url: string, db: DB) {
       contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true,
     },
   })
-  if (saved?.maximized) w.maximize()
+  if (saved?.maximized && !hidden) w.maximize()
   // Saved debounced on move and resize; emits no topic, so Settings does not refetch while the window moves.
   let timer: NodeJS.Timeout | undefined
   const save = () => {
@@ -169,6 +229,8 @@ function createWindow(url: string, db: DB) {
   w.on('resize', save)
   w.on('maximize', save)
   w.on('unmaximize', save)
+  // Minimize to tray on close: the window hides and transfers keep running; otherwise closing quits.
+  w.on('close', (e) => { if (!quitting && closeToTray()) { e.preventDefault(); w.hide() } })
   w.webContents.on('will-navigate', (e) => e.preventDefault())
   w.webContents.setWindowOpenHandler(({ url: target }) => {
     if (target.startsWith('https://')) void shell.openExternal(target)

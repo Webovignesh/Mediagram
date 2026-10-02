@@ -4,8 +4,9 @@ import os from 'node:os'
 import path from 'node:path'
 import { after, test } from 'node:test'
 import { pathToFileURL } from 'node:url'
-import { type AppEvent, fail, getSettings, openDb, readSetting } from '../core/db.ts'
-import { library, pageKey, resolvePaths } from '../core/storage.ts'
+import { type AppEvent, fail, getSettings, openDb, putMedia, readSetting } from '../core/db.ts'
+import { library, pageKey, realRoots, resolvePaths } from '../core/storage.ts'
+import { createEngine } from '../core/transfers.ts'
 import { createMethods, type Ctx, handleCall, id, oneOf, page, pageSize, protocolFile, q, repoUrl, shape } from '../electron/ipc.ts'
 
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'teleflow-'))
@@ -17,14 +18,18 @@ function fixture(tg: Partial<Ctx['tg']> = {}) {
   const db = openDb(':memory:')
   const events: AppEvent[] = []
   const login = { on: false, sets: [] as boolean[] }
+  const fakeTg = { authState: () => ({ step: 'credentials', connection: 'offline' }), chatList: () => { throw fail(503, 'Telegram is not connected yet') },
+    chat: () => null, invoke: () => Promise.reject(fail(503, 'Telegram is not connected yet')), onUpdate: () => () => {}, ...tg } as unknown as Ctx['tg']
+  const settings = () => getSettings(db, root)
+  const emit = (e: AppEvent) => { events.push(e) }
+  const engine = createEngine({ db, invoke: fakeTg.invoke, onUpdate: fakeTg.onUpdate, auth: fakeTg.authState, chat: fakeTg.chat, emit, paths, settings, finished() {} })
   const ctx: Ctx = {
     version: '9.9.9', tdlib: '0.0.1', installedAt: 42, repository: 'git+https://example.test/team/app.git',
-    licenses: [{ name: 'x', version: '1.2.3', license: 'MIT' }], paths, db, settings: () => getSettings(db, root),
-    roots: { sealed: [paths.home], guarded: [] }, emit: (e) => events.push(e),
-    tg: { authState: () => ({ step: 'credentials', connection: 'offline' }), chatList: () => { throw fail(503, 'Telegram is not connected yet') }, chat: () => null, ...tg } as Ctx['tg'],
+    licenses: [{ name: 'x', version: '1.2.3', license: 'MIT' }], paths, db, settings,
+    roots: { sealed: [paths.home], guarded: [] }, emit, tg: fakeTg, engine,
     native: {
       pickFolder: async () => null, openPath: async () => '', reveal() {}, trashItem: async () => {}, cacheSize: async () => 0,
-      loginItem: { get: () => login.on, set: (on) => { login.sets.push(on) } },
+      loginItem: { get: () => login.on, set: (on) => { login.sets.push(on) } }, clearCache: async () => {}, clearStorageData: async () => {},
     },
   }
   return { ctx, methods: createMethods(ctx), db, root, paths, events, login }
@@ -34,10 +39,13 @@ const rendererUrl = pathToFileURL('C:\\Program Files\\TeleFlow\\resources\\app.a
 const key = pageKey(rendererUrl)
 const { ctx, methods } = fixture()
 
-test('handleCall: 403 for a null sender, a sibling page, and an unparsable URL', async () => {
-  for (const sender of [null, rendererUrl.replace('index.html', 'other.html'), 'not a url']) {
+test('handleCall: 403 for a null sender, a sibling page, another local page (same "null" origin), and an unparsable URL', async () => {
+  const otherApp = pathToFileURL('C:\\Users\\u\\Downloads\\evil\\index.html').href
+  assert.equal(new URL(otherApp).origin, new URL(rendererUrl).origin) // file: origins are all "null": comparing them would accept any page
+  for (const sender of [null, rendererUrl.replace('index.html', 'other.html'), otherApp, 'not a url']) {
     assert.deepEqual(await handleCall(methods, key, sender, { method: 'app.info' }), { ok: false, status: 403, error: 'Not allowed' })
   }
+  assert.equal((await handleCall(methods, key, `${rendererUrl}?x=1#/queue`, { method: 'app.info' })).ok, true) // query and hash are stripped
 })
 
 test('handleCall: 404 for unknown methods, including inherited names', async () => {
@@ -93,10 +101,64 @@ test('repoUrl: strips git+ and .git; only https links survive', () => {
 const phase2 = ['app.info', 'app.storage', 'app.pickFolder', 'app.openPath', 'auth.get', 'auth.credentials', 'auth.phone', 'auth.code',
   'auth.password', 'auth.logout', 'chats.list', 'chats.open', 'chats.messages', 'search.global', 'library.list', 'library.missing',
   'library.open', 'library.reveal', 'library.trash', 'settings.get', 'settings.set']
+const phase3 = ['app.clearCache', 'app.clearData', 'app.clearAll', 'chats.media', 'downloads.add', 'uploads.add', 'jobs.list', 'jobs.action',
+  'stats.live', 'stats.overview', 'stats.activity', 'stats.chats']
 const validate = (name: string, args: unknown) => (methods as Record<string, { validate(a: unknown): unknown }>)[name].validate(args)
+const rejects400 = (cases: [string, unknown, string][]) => {
+  for (const [name, args, field] of cases) {
+    assert.throws(() => validate(name, args), (e: Error & { status?: number }) => e.status === 400 && e.message.startsWith(field), `${name} ${field}`)
+  }
+}
+
+test('validators: all 33 methods are registered; the 12 Phase 3 methods accept valid args and reject bad ones naming the field', () => {
+  assert.deepEqual(Object.keys(methods).sort(), [...phase2, ...phase3].sort())
+  const items = (n: number) => Array.from({ length: n }, (_, i) => ({ chatId: -100, messageId: (i + 1) * 2 ** 20 }))
+  const good: [string, unknown, unknown?][] = [
+    ['app.clearCache', undefined, {}], ['app.clearData', {}], ['app.clearAll', { deleteDownloads: false }, { deleteDownloads: false }],
+    ['chats.media', { chatId: 5 }, { chatId: 5, type: undefined, ext: undefined, duration: undefined, size: undefined, status: undefined, q: '', sort: undefined, page: 1, pageSize: 25 }],
+    ['chats.media', { chatId: 5, type: 'animation', ext: ' MP4 ', duration: 'xlong', size: 'small', status: 'downloaded', q: ' cat ', sort: 'longest', page: 3, pageSize: 100 }],
+    ['downloads.add', { items: items(10_000) }], ['downloads.add', { items: items(1), force: true }, { items: items(1), force: true }],
+    ['downloads.add', { chatId: 5, filters: {} }], ['downloads.add', { chatId: 5, filters: { type: 'video', sort: 'oldest' } }],
+    ['downloads.add', { link: ' t.me/fixture/42 ' }, { link: 't.me/fixture/42' }],
+    ['uploads.add', { chatId: 5, paths: Array(500).fill('C:\\x.jpg'), caption: '', album: true, keepNames: false }],
+    ['jobs.list', {}, { kind: undefined, status: undefined, q: '', page: 1, pageSize: 25 }], ['jobs.list', { kind: 'upload', status: 'open' }],
+    ['jobs.list', { status: 'failed', q: '100%' }], ['jobs.action', { action: 'pause' }, { action: 'pause', ids: undefined }],
+    ['jobs.action', { action: 'cancel', ids: Array.from({ length: 1000 }, (_, i) => i + 1) }], ['jobs.action', { action: 'up', ids: [7] }],
+    ['jobs.action', { action: 'clear-completed' }], ['stats.live', undefined], ['stats.overview', {}],
+    ['stats.activity', { range: '24h' }], ['stats.chats', { range: '30d' }],
+  ]
+  for (const [name, args, expected] of good) {
+    const out = validate(name, args)
+    if (expected !== undefined) assert.deepEqual(out, expected, name)
+  }
+  assert.equal((validate('chats.media', { chatId: 5, ext: ' MP4 ' }) as { ext: string }).ext, 'mp4')
+  rejects400([
+    ['app.clearAll', {}, 'deleteDownloads'], ['app.clearAll', { deleteDownloads: 'yes' }, 'deleteDownloads'], ['app.clearCache', { x: 1 }, 'Unknown field x'],
+    ['chats.media', {}, 'chatId'], ['chats.media', { chatId: 5, type: 'voice' }, 'type'], ['chats.media', { chatId: 5, ext: '.mp4' }, 'ext'],
+    ['chats.media', { chatId: 5, ext: 'x'.repeat(17) }, 'ext'], ['chats.media', { chatId: 5, duration: 'huge' }, 'duration'],
+    ['chats.media', { chatId: 5, size: 'tiny' }, 'size'], ['chats.media', { chatId: 5, status: 'done' }, 'status'], ['chats.media', { chatId: 5, sort: 'size' }, 'sort'],
+    ['chats.media', { chatId: 5, pageSize: 101 }, 'pageSize'],
+    ['downloads.add', {}, 'items'], ['downloads.add', { items: [] }, 'items'], ['downloads.add', { items: items(10_001) }, 'items'],
+    ['downloads.add', { items: [{ chatId: 1, messageId: 0 }] }, 'items[0].messageId'], ['downloads.add', { items: [{ chatId: 1, messageId: 1, x: 1 }] }, 'Unknown field items[0].x'],
+    ['downloads.add', { items: [5] }, 'items[0]'], ['downloads.add', { items: items(1), force: 1 }, 'force'],
+    ['downloads.add', { chatId: 0, filters: {} }, 'chatId'], ['downloads.add', { chatId: 5, filters: { type: 'gif' } }, 'filters.type'],
+    ['downloads.add', { chatId: 5, filters: { page: 2 } }, 'Unknown field filters.page'], ['downloads.add', { chatId: 5, filters: [] }, 'filters'],
+    ['downloads.add', { link: 'x' }, 'link'], ['downloads.add', { link: 'x'.repeat(301) }, 'link'], ['downloads.add', { link: 't.me/a/1', force: true }, 'Unknown field force'],
+    ['uploads.add', { chatId: 5, paths: [], caption: '', album: true, keepNames: true }, 'paths'],
+    ['uploads.add', { chatId: 5, paths: Array(501).fill('C:\\x'), caption: '', album: true, keepNames: true }, 'paths'],
+    ['uploads.add', { chatId: 5, paths: ['C:\\x', ''], caption: '', album: true, keepNames: true }, 'paths[1]'],
+    ['uploads.add', { chatId: 5, paths: ['C:\\x'], caption: 'x'.repeat(4097), album: true, keepNames: true }, 'caption'],
+    ['uploads.add', { chatId: 5, paths: ['C:\\x'], caption: '', keepNames: true }, 'album'],
+    ['uploads.add', { chatId: 5, paths: ['C:\\x'], caption: '', album: true, keepNames: 'no' }, 'keepNames'],
+    ['jobs.list', { kind: 'all' }, 'kind'], ['jobs.list', { status: 'canceled' }, 'status'], ['jobs.list', { q: 'x'.repeat(201) }, 'q'],
+    ['jobs.action', {}, 'action'], ['jobs.action', { action: 'delete' }, 'action'], ['jobs.action', { action: 'pause', ids: [] }, 'ids'],
+    ['jobs.action', { action: 'pause', ids: Array(1001).fill(1) }, 'ids'], ['jobs.action', { action: 'retry', ids: [0] }, 'ids[0]'],
+    ['jobs.action', { action: 'up' }, 'ids'], ['jobs.action', { action: 'down', ids: [1, 2] }, 'ids'],
+    ['stats.activity', {}, 'range'], ['stats.chats', { range: '1y' }, 'range'], ['stats.live', { x: 1 }, 'Unknown field x'],
+  ])
+})
 
 test('validators: the 21 Phase 2 methods accept valid args and reject bad ones with a 400 naming the field', () => {
-  assert.deepEqual(Object.keys(methods).sort(), [...phase2].sort())
   const hash = 'ABCDEF0123456789abcdef0123456789'
   const good: [string, unknown, unknown?][] = [
     ['app.pickFolder', undefined, { title: undefined }], ['app.pickFolder', { title: ' Pick ' }, { title: 'Pick' }], ['app.openPath', { target: 'logs' }],
@@ -174,23 +236,24 @@ test('settings.set: download root rules, folder creation, login item, and topics
   assert.deepEqual(f.events, [{ type: 'invalidate', topics: ['settings', 'library', 'storage'] }])
 })
 
-test('settings.set: a root whose real location is protected (through a junction) is rejected, and nothing is created', async () => {
+test('settings.set: junctions cannot lead into protected folders, either way round; nothing is created on a 400', async () => {
   const f = fixture()
-  const docs = path.join(temp, `Documents${Math.random()}`)
-  for (const d of [docs, f.paths.home]) fs.mkdirSync(d, { recursive: true })
-  f.ctx.roots = { sealed: [fs.realpathSync.native(f.paths.home)], guarded: [fs.realpathSync.native(docs)] } // main's lists are real paths
   const links = path.join(temp, `links${Math.random()}`)
-  fs.mkdirSync(links)
-  fs.symlinkSync(docs, path.join(links, 'docs'), 'junction')
+  const docsTarget = path.join(temp, `DocsTarget${Math.random()}`)
+  for (const d of [links, docsTarget, f.paths.home]) fs.mkdirSync(d, { recursive: true })
+  const knownDocs = path.join(links, 'Documents') // a known folder that is itself a junction, as app.getPath reports it
+  fs.symlinkSync(docsTarget, knownDocs, 'junction')
   fs.symlinkSync(f.paths.home, path.join(links, 'home'), 'junction')
+  f.ctx.roots = realRoots({ sealed: [f.paths.home], guarded: [knownDocs] }) // as main builds them
   const set = (downloadRoot: string) => f.methods['settings.set'].run(f.methods['settings.set'].validate({ downloadRoot }))
-  await assert.rejects(set(path.join(links, 'docs')), { status: 400, message: /subfolder/ })
-  await assert.rejects(set(path.join(links, 'home', 'media')), { status: 400, message: /system or app data/ })
+  await assert.rejects(set(docsTarget), { status: 400, message: /subfolder/ }) // picked by the junction's target
+  await assert.rejects(set(knownDocs), { status: 400, message: /subfolder/ })
+  await assert.rejects(set(path.join(links, 'home', 'media')), { status: 400, message: /system or app data/ }) // a junction into home
   assert.ok(!fs.existsSync(path.join(f.paths.home, 'media')))
   assert.deepEqual(f.events, [])
-  const ok = path.join(links, 'docs', 'TeleFlow') // a subfolder of a known folder is fine; the picked path is stored
+  const ok = path.join(knownDocs, 'TeleFlow') // a subfolder of a known folder is fine; the picked path is stored
   assert.equal((await set(ok)).downloadRoot, ok)
-  assert.ok(fs.statSync(path.join(docs, 'TeleFlow')).isDirectory())
+  assert.ok(fs.statSync(path.join(docsTarget, 'TeleFlow')).isDirectory())
 })
 
 test('library.open and app.openPath: a shell refusal is a readable 409, not a 500', async () => {
@@ -221,4 +284,56 @@ test('protocolFile: thumb ids, saved thumbnails, and images confined to the down
   assert.equal(await img('Chat\\p.jpg'), fs.realpathSync.native(path.join(f.root, 'Chat', 'p.jpg')))
   for (const bad of ['Chat\\v.mp4', 'Chat\\gone.jpg', `..\\outside\\o.jpg`, path.join(outside, 'o.jpg'), 'link\\o.jpg']) assert.equal(await img(bad), null, bad)
   assert.equal(await protocolFile('teleflow://other/x', f.ctx), null)
+})
+
+// ---- Phase 3 methods ----
+
+const call = (f: ReturnType<typeof fixture>, name: string, args: unknown) => {
+  const m = (f.methods as unknown as Record<string, { validate(a: unknown): unknown, run(a: unknown): Promise<unknown> }>)[name]
+  return Promise.resolve().then(() => m.run(m.validate(args))) as Promise<any>
+}
+
+test('uploads.add: needs Telegram, a chat you can post to, a caption within captionMax, and existing files within uploadMax', async () => {
+  const me = { id: 1, captionMax: 10, uploadMax: 4 }
+  const chats: Record<number, object> = { 5: { id: 5, title: 'Fixture channel', canPost: true }, 6: { id: 6, title: 'Fixture read-only', canPost: false } }
+  const f = fixture({ authState: () => ({ step: 'ready', connection: 'ready', me }), chat: (id: number) => chats[id] ?? null,
+    mediaRights: () => ({ post: true, photos: true, videos: false }), invoke: () => new Promise(() => {}) } as unknown as Partial<Ctx['tg']>)
+  const dir = path.join(temp, `up${Math.random()}`)
+  fs.mkdirSync(dir)
+  const file = (name: string, body: string) => { fs.writeFileSync(path.join(dir, name), body); return path.join(dir, name) }
+  const [photo, clip, empty, big] = [file('a.jpg', 'abc'), file('clip.mp4', 'abcd'), file('empty.txt', ''), file('big.bin', 'abcde')]
+  const add = (a: object) => call(f, 'uploads.add', { chatId: 5, caption: '', album: true, keepNames: true, ...a })
+  await assert.rejects(add({ chatId: 9, paths: [photo] }), { status: 404 })
+  await assert.rejects(add({ chatId: 6, paths: [photo] }), { status: 403 })
+  await assert.rejects(add({ paths: [photo], caption: 'x'.repeat(11) }), { status: 400, message: /^caption/ })
+  await assert.rejects(add({ paths: ['a.jpg'] }), { status: 400, message: /^paths\[0\]/ })
+  await assert.rejects(add({ paths: [photo, path.join(dir, 'gone.jpg')] }), { status: 400, message: /^gone\.jpg is missing/ })
+  await assert.rejects(add({ paths: [dir] }), { status: 400 }) // a folder
+  await assert.rejects(add({ paths: [empty] }), { status: 400, message: /is empty/ })
+  await assert.rejects(add({ paths: [big] }), { status: 413 })
+  assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM jobs').get()!.n, 0)
+  assert.deepEqual(await add({ paths: [photo, clip], caption: ' Fixture ' }), { added: 2 })
+  const jobs = f.db.prepare('SELECT type, caption, files FROM jobs ORDER BY position').all()
+  // Videos are not allowed in this chat, so the clip goes as a document and the two files no longer share an album.
+  assert.deepEqual(jobs.map((j) => [j.type, j.caption, JSON.parse(j.files as string)[0].path]), [['photo', 'Fixture', photo], ['document', null, clip]])
+  const signedOut = fixture({ chat: (id: number) => chats[id] ?? null } as unknown as Partial<Ctx['tg']>)
+  await assert.rejects(call(signedOut, 'uploads.add', { chatId: 5, paths: [photo], caption: '', album: true, keepNames: true }), { status: 503 })
+})
+
+test('chats.media and downloads.add: unknown chats are 404s; filters select from the media index; chats.media starts the scan', async () => {
+  const scans: number[] = []
+  const f = fixture({ chat: (id: number) => (id === 5 ? { id: 5, title: 'Fixture channel', canPost: false } : null),
+    ensureScan: (id: number) => { scans.push(id) }, scanInfo: () => ({ state: 'scanning', indexed: 2, total: 9 }) } as unknown as Partial<Ctx['tg']>)
+  const item = (messageId: number, type: 'video' | 'photo', name: string) => ({ chatId: 5, messageId, date: messageId, type, name, ext: name.split('.')[1], size: 1, duration: 0, caption: '', thumb: null })
+  putMedia(f.db, [item(1, 'video', 'v.mp4'), item(2, 'photo', 'p.jpg')])
+  await assert.rejects(call(f, 'chats.media', { chatId: 6 }), { status: 404 })
+  const media = await call(f, 'chats.media', { chatId: 5, type: 'video' })
+  assert.deepEqual([media.items.map((i: { messageId: number }) => i.messageId), media.total, media.exts, media.scan, scans],
+    [[1], 1, ['jpg', 'mp4'], { state: 'scanning', indexed: 2, total: 9 }, [5]])
+  await assert.rejects(call(f, 'downloads.add', { chatId: 6, filters: {} }), { status: 404 })
+  await assert.rejects(call(f, 'downloads.add', { items: [{ chatId: 6, messageId: 1 }] }), { status: 404 })
+  assert.deepEqual(await call(f, 'downloads.add', { chatId: 5, filters: { type: 'photo' } }), { added: 1, skipped: 0 })
+  assert.deepEqual(await call(f, 'downloads.add', { chatId: 5, filters: {} }), { added: 1, skipped: 1 }) // the photo is already queued
+  assert.deepEqual((await call(f, 'jobs.list', { status: 'open' })).items.map((j: { name: string }) => j.name), ['p.jpg', 'v.mp4'])
+  assert.ok(f.events.some((e) => e.type === 'invalidate' && e.topics.includes('media:5')))
 })

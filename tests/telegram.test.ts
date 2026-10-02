@@ -6,7 +6,7 @@ import path from 'node:path'
 import { after, mock, test } from 'node:test'
 import { setImmediate as tick } from 'node:timers/promises'
 import tdl from 'tdl'
-import type { AppEvent } from '../core/db.ts'
+import { type AppEvent, getScan, mediaCount, openDb, putMedia } from '../core/db.ts'
 import { openLog } from '../core/storage.ts'
 import * as tg from '../core/telegram.ts'
 
@@ -42,7 +42,8 @@ const dir = path.join(temp, 'tdlib')
 const events: AppEvent[] = []
 let archived = false
 let forgot = 0
-tg.init({ dir, version: '9.9.9', emit: (e) => events.push(e), showArchived: () => archived, forgetCredentials: () => { forgot++ } })
+const db = openDb(':memory:')
+tg.init({ dir, version: '9.9.9', db, emit: (e) => events.push(e), showArchived: () => archived, forgetCredentials: () => { forgot++ } })
 const creds = { apiId: 12345, apiHash: 'f'.repeat(32) }
 
 const step = () => tg.authState().step
@@ -202,6 +203,122 @@ test('start: overlapping calls never leave two live clients, and the last creden
   await Promise.all([tg.start(creds), tg.start(other)])
   assert.deepEqual(live().map((c) => c.options.apiId), [777])
   assert.equal(live()[0], last())
+})
+
+// ---- Media index scan, links (Phase 3) ----
+
+const sender = { _: 'messageSenderUser', user_id: 100 }
+const docMsg = (chatId: number, id: number, extra: object = {}) => ({ _: 'message', id, chat_id: chatId, date: id, sender_id: sender, media_album_id: '0',
+  content: { _: 'messageDocument', document: { file_name: `f${id}.pdf`, mime_type: 'application/pdf', document: { _: 'file', id, size: 1, expected_size: 1, remote: { id: `r${id}` } } }, caption: { text: '' } }, ...extra })
+const textMsg = (chatId: number, id: number) => ({ _: 'message', id, chat_id: chatId, date: id, sender_id: sender, media_album_id: '0', content: { _: 'messageText', text: { text: 'hi' } } })
+const pages = (cl: Fake) => cl.requests.filter((r) => r._ === 'getChatHistory').length
+
+test('scanNeeded: no row, an unfinished backfill, or a newer last message; never for a chat in failed', () => {
+  const row = { chat_id: 1, newest_id: 10, oldest_id: 1, complete: 1, total: 3 }
+  assert.deepEqual([tg.scanNeeded(undefined, null, false), tg.scanNeeded({ ...row, complete: 0 }, 10, false), tg.scanNeeded(row, 12, false)], [true, true, true])
+  assert.deepEqual([tg.scanNeeded(row, 10, false), tg.scanNeeded(row, null, false), tg.scanNeeded(undefined, null, true)], [false, false, false])
+})
+
+test('media scan: the first walk creates the row and backfills by page; once newest_id equals a text last message nothing restarts; live upkeep', async () => {
+  const chatId = -20
+  const history = Array.from({ length: 10 }, (_, i) => (10 - i) % 2 ? docMsg(chatId, 10 - i) : textMsg(chatId, 10 - i)) // the newest is text
+  const cl = await signIn((req) => {
+    if (req._ === 'getChatMessageCount') return { _: 'count', count: 1 }
+    if (req._ !== 'getChatHistory' || req.chat_id !== chatId) return notFound()
+    const from = req.from_message_id ? history.findIndex((m) => m.id === req.from_message_id) + 1 : 0
+    return { _: 'messages', total_count: 10, messages: history.slice(from, from + 4) } // short pages
+  })
+  cl.update({ _: 'updateNewChat', chat: { ...chatOf(chatId), last_message: { id: 10, date: 10 } } })
+  tg.ensureScan(chatId)
+  assert.equal(tg.scanInfo(chatId).state, 'scanning')
+  await until(() => tg.scanInfo(chatId).state !== 'scanning')
+  assert.deepEqual({ ...getScan(db, chatId) }, { chat_id: chatId, newest_id: 10, oldest_id: 1, complete: 1, total: 7 })
+  assert.deepEqual([pages(cl), tg.scanInfo(chatId)], [4, { state: 'done', indexed: 5, total: 7 }])
+  tg.ensureScan(chatId) // the refetch that the finish invalidation causes
+  await tick()
+  assert.equal(pages(cl), 4)
+  assert.ok(events.some((e) => e.type === 'invalidate' && e.topics.includes(`media:${chatId}`)))
+
+  cl.update({ _: 'updateConnectionState', state: { _: 'connectionStateReady' } })
+  cl.update({ _: 'updateNewMessage', message: docMsg(chatId, 12) }) // a current chat: newest_id follows
+  assert.deepEqual([getScan(db, chatId)!.newest_id, mediaCount(db, chatId)], [12, 6])
+  cl.update({ _: 'updateConnectionState', state: { _: 'connectionStateConnecting' } }) // TDLib may skip updates from here on
+  cl.update({ _: 'updateNewMessage', message: docMsg(chatId, 14) })
+  assert.deepEqual([getScan(db, chatId)!.newest_id, mediaCount(db, chatId)], [12, 7]) // indexed, but the next top-up covers the gap
+  cl.update({ _: 'updateNewMessage', message: docMsg(chatId, 16, { sending_state: { _: 'messageSendingStatePending' } }) }) // a temporary id
+  cl.update({ _: 'updateNewMessage', message: docMsg(chatId, 14) }) // overlaps are harmless
+  putMedia(db, [{ chatId, messageId: 14, date: 14, type: 'document', name: 'f14.pdf', ext: 'pdf', size: 1, duration: 0, caption: '', thumb: null }])
+  assert.equal(mediaCount(db, chatId), 7)
+  cl.update({ _: 'updateDeleteMessages', chat_id: chatId, message_ids: [14], is_permanent: false, from_cache: true }) // a cache eviction
+  assert.equal(mediaCount(db, chatId), 7)
+  cl.update({ _: 'updateDeleteMessages', chat_id: chatId, message_ids: [14], is_permanent: true, from_cache: false })
+  assert.equal(mediaCount(db, chatId), 6)
+  assert.ok(events.some((e) => e.type === 'invalidate' && e.topics.includes(`messages:${chatId}`)))
+})
+
+test('media scan: a page error puts the chat in failed (no rescan on refetch) until the connection next enters ready', async () => {
+  const chatId = -21
+  let broken = true
+  const cl = await signIn((req) => {
+    if (req._ === 'getChatMessageCount') throw new tdl.TDLibError(400, 'Bad filter')
+    if (req._ !== 'getChatHistory') return notFound()
+    if (broken) throw new tdl.TDLibError(400, 'CHANNEL_PRIVATE')
+    return { _: 'messages', total_count: 0, messages: [] }
+  })
+  cl.update({ _: 'updateNewChat', chat: chatOf(chatId) })
+  tg.ensureScan(chatId)
+  await until(() => tg.scanInfo(chatId).state === 'idle' && pages(cl) === 1)
+  tg.ensureScan(chatId)
+  await tick()
+  assert.equal(pages(cl), 1)
+  cl.update({ _: 'updateConnectionState', state: { _: 'connectionStateReady' } }) // one new try
+  broken = false
+  tg.ensureScan(chatId)
+  await until(() => getScan(db, chatId)?.complete === 1)
+  assert.deepEqual({ ...getScan(db, chatId) }, { chat_id: chatId, newest_id: 0, oldest_id: 0, complete: 1, total: null }) // an empty chat; counts failed
+})
+
+test('linkMessages: the message, or its whole album; 400 for links without media or that are not message links, 404 without access', async () => {
+  const album = [docMsg(-40, 3, { media_album_id: '77' }), textMsg(-40, 4), docMsg(-40, 2, { media_album_id: '77' }), docMsg(-40, 1, { media_album_id: '5' })]
+  await signIn((req) => {
+    if (req._ === 'getInternalLinkType') return req.link.includes('/c/') ? { _: 'internalLinkTypeMessage', url: req.link } : { _: 'internalLinkTypePublicChat', chat_username: 'x' }
+    if (req._ === 'getMessageLinkInfo') {
+      if (req.url.endsWith('/9')) return { chat_id: 0, for_album: false }
+      if (req.url.endsWith('/8')) return { chat_id: -40, message: textMsg(-40, 8), for_album: false }
+      return { chat_id: -40, message: album[0], for_album: !req.url.endsWith('single') }
+    }
+    if (req._ === 'getChatHistory') return { _: 'messages', total_count: 4, messages: album }
+    return notFound()
+  })
+  const ids = async (link: string) => (await tg.linkMessages(link)).messages.map((m) => m.id)
+  assert.deepEqual(await ids('https://t.me/c/40/3'), [2, 3])
+  assert.deepEqual(await ids('https://t.me/c/40/3?single'), [3])
+  await assert.rejects(tg.linkMessages('https://t.me/c/40/8'), { status: 400, message: /no media/ })
+  await assert.rejects(tg.linkMessages('https://t.me/c/40/9'), { status: 404 })
+  await assert.rejects(tg.linkMessages('https://t.me/fixture'), { status: 400, message: /isn't a chat or message link/ })
+})
+
+test('openChat invites: preview, request sent → 409, declined → 403, success opens it; thumbFile refuses big files before downloading', async () => {
+  const cl = await signIn((req, c) => {
+    if (req._ === 'getInternalLinkType') return { _: 'internalLinkTypeChatInvite', invite_link: req.link }
+    if (req._ === 'checkChatInviteLink') return { _: 'chatInviteLinkInfo', chat_id: 0, title: 'Fixture group', member_count: 12, photo: null }
+    if (req._ === 'joinChatByInviteLink') {
+      if (req.invite_link.endsWith('req')) return { _: 'chatJoinResultRequestSent' }
+      if (req.invite_link.endsWith('no')) return { _: 'chatJoinResultDeclined' }
+      c.update({ _: 'updateNewChat', chat: chatOf(-30) })
+      return { _: 'chatJoinResultSuccess', chat_id: -30 }
+    }
+    if (req._ === 'getRemoteFile') return { _: 'file', id: 5, size: 0, expected_size: 3 * 2 ** 20, local: { is_downloading_completed: false, path: '' } }
+    return notFound()
+  })
+  assert.deepEqual(await tg.openChat('https://t.me/+fixturereq', false), { invite: { title: 'Fixture group', members: 12, photo: null } })
+  await assert.rejects(tg.openChat('https://t.me/+fixturereq', true), { status: 409, message: /request to join was sent/ })
+  await assert.rejects(tg.openChat('https://t.me/+fixtureno', true), { status: 403 })
+  const opened = await tg.openChat('https://t.me/+fixtureok', true)
+  assert.equal((opened as { chat: { id: number } }).chat.id, -30)
+  assert.ok(tg.chatList().chats.some((c) => c.id === -30))
+  await assert.rejects(tg.thumbFile('AgACAgIAAxk-fixture'), { status: 413 })
+  assert.equal(cl.requests.filter((r) => r._ === 'downloadFile').length, 0)
 })
 
 test('logout: online it waits for the fresh client; offline it deletes the session after 15 s and restarts', async () => {

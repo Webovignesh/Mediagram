@@ -3,7 +3,7 @@
 import path from 'node:path'
 import tdl from 'tdl'
 import type * as Td from 'tdlib-types'
-import { type AppError, fail, type MediaType } from './db.ts'
+import { type AppError, fail, type MediaRow, type MediaType } from './db.ts'
 
 export type Me = { id: number, name: string, firstName: string, username: string | null,
   phone: string /* masked */, photo: string | null /* remote file id */, premium: boolean,
@@ -138,6 +138,10 @@ export function extractMedia(m: Td.message): Media | null {
   const [type, file, name, duration, thumb] = r
   return { type, file, name, ext: path.extname(name).slice(1).toLowerCase(), size: file.size || file.expected_size, duration, caption: 'caption' in c ? c.caption.text : '', thumb }
 }
+/** A message's media as a media index row (scan, downloads.add, Chat View). */
+export const mediaRow = (chatId: number, m: { id: number, date: number }, x: Media): MediaRow => ({
+  chatId, messageId: m.id, date: m.date, type: x.type, name: x.name, ext: x.ext, size: x.size, duration: x.duration, caption: x.caption, thumb: x.thumb,
+})
 
 export const isTelegramLink = (q: string) => /^(?:https?:\/\/)?(?:www\.)?(?:t\.me|telegram\.me|telegram\.dog)\/|^tg:\/\//i.test(q.trim())
 /** Bare `@name` or `name` → https://t.me/name; a scheme-less t.me link gets https://. */
