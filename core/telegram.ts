@@ -301,6 +301,8 @@ export async function openChat(link: string, join: boolean) {
     }
   } else throw notALink()
   opened.add(c.id)
+  c.unread_count = 0
+  void invoke({ _: 'openChat', chat_id: c.id }).catch(() => {})
   chatsChanged()
   return { chat: toChat(chats.get(c.id) ?? c, cache) as Chat }
 }
@@ -326,6 +328,15 @@ export async function messages(chatId: number, limit: number) {
     if (!got.length) {
       const msgs = out.map(toMessage)
       prefetchThumbs(msgs.map((m) => m.media?.thumb))
+      if (out.length) {
+        void invoke({ _: 'viewMessages', chat_id: chatId, message_ids: out.map((m) => m.id), force_read: true }).catch(() => {})
+        void invoke({ _: 'openChat', chat_id: chatId }).catch(() => {})
+        const c = chats.get(chatId)
+        if (c && c.unread_count > 0) {
+          c.unread_count = 0
+          chatsChanged()
+        }
+      }
       return { messages: msgs, more: false }
     }
     out.push(...got)
@@ -333,6 +344,15 @@ export async function messages(chatId: number, limit: number) {
   }
   const msgs = out.map(toMessage)
   prefetchThumbs(msgs.map((m) => m.media?.thumb))
+  if (out.length) {
+    void invoke({ _: 'viewMessages', chat_id: chatId, message_ids: out.map((m) => m.id), force_read: true }).catch(() => {})
+    void invoke({ _: 'openChat', chat_id: chatId }).catch(() => {})
+    const c = chats.get(chatId)
+    if (c && c.unread_count > 0) {
+      c.unread_count = 0
+      chatsChanged()
+    }
+  }
   return { messages: msgs, more: true }
 }
 

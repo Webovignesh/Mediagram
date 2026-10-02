@@ -806,8 +806,13 @@ export function MediaPreviewModal({
   onClose: () => void
   onDownload?: () => void
 }) {
+  const [downloading, setDownloading] = useState(false)
+
   useEffect(() => {
-    if (!open) return
+    if (!open) {
+      setDownloading(false)
+      return
+    }
     const handleKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
     window.addEventListener('keydown', handleKey)
     return () => window.removeEventListener('keydown', handleKey)
@@ -829,7 +834,7 @@ export function MediaPreviewModal({
       onClick={onClose}
     >
       <div
-        className="relative flex w-[90vw] max-w-5xl max-h-[92vh] min-h-[500px] flex-col rounded-2xl border border-white/10 bg-[#121c2d] p-6 shadow-2xl backdrop-blur-xl"
+        className="relative flex w-[90vw] max-w-5xl max-h-[92vh] min-h-[520px] flex-col rounded-2xl border border-white/10 bg-[#121c2d] p-6 shadow-2xl backdrop-blur-xl"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -856,7 +861,10 @@ export function MediaPreviewModal({
             ) : onDownload ? (
               <Button
                 variant="primary"
-                onClick={() => { onDownload(); onClose() }}
+                onClick={() => {
+                  setDownloading(true)
+                  onDownload()
+                }}
                 className="py-1.5 px-3.5 text-[12px] flex items-center gap-1.5"
               >
                 <Download size={14} /> Download
@@ -873,7 +881,7 @@ export function MediaPreviewModal({
         </div>
 
         {/* Media Content */}
-        <div className="flex flex-1 items-center justify-center overflow-hidden min-h-[420px] bg-black/40 rounded-xl p-2 border border-white/5">
+        <div className="flex flex-1 items-center justify-center overflow-hidden min-h-[440px] bg-black/50 rounded-xl p-2 border border-white/5">
           {isVideo ? (
             localUrl ? (
               <video
@@ -883,22 +891,49 @@ export function MediaPreviewModal({
                 className="max-h-[75vh] w-full max-w-4xl rounded-lg shadow-2xl bg-black object-contain"
               />
             ) : (
-              <div className="flex flex-col items-center justify-center gap-4 py-8 px-4 text-center">
-                {thumbUrl && (
-                  <div className="relative max-h-[60vh] max-w-2xl overflow-hidden rounded-xl shadow-2xl">
-                    <img src={thumbUrl} alt={item.name} className="max-h-[55vh] object-contain rounded-xl" />
-                    <div className="absolute inset-0 flex items-center justify-center bg-black/40">
-                      <div className="size-16 rounded-full bg-primary/90 text-white flex items-center justify-center shadow-xl">
-                        <Play size={28} className="ml-1 fill-white" />
+              <div className="flex flex-col items-center justify-center gap-4 py-4 px-2 text-center w-full">
+                {thumbUrl ? (
+                  <div className="relative w-full max-w-4xl h-[60vh] flex items-center justify-center overflow-hidden rounded-2xl bg-black/90 shadow-2xl">
+                    <img src={thumbUrl} alt={item.name} className="w-full h-full object-contain rounded-2xl" />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (onDownload) {
+                          setDownloading(true)
+                          onDownload()
+                        }
+                      }}
+                      className="absolute inset-0 flex items-center justify-center group/play cursor-pointer bg-black/25 hover:bg-black/35 transition-colors"
+                      title="Click to Download and Play"
+                    >
+                      <div className="size-20 rounded-full bg-primary text-white flex items-center justify-center shadow-2xl group-hover/play:scale-110 transition-transform">
+                        <Play size={36} className="ml-1 fill-white" />
                       </div>
-                    </div>
+                    </button>
+                  </div>
+                ) : (
+                  <div className="size-20 rounded-full bg-primary/20 text-primary flex items-center justify-center mb-2">
+                    <Play size={32} className="ml-1" />
                   </div>
                 )}
                 <div className="text-[13px] text-muted">
-                  Video preview available. Download the file to play in full quality.
+                  {downloading ? (
+                    <span className="text-cyan font-medium animate-pulse">
+                      Downloading video to play in full quality… check Queue for progress.
+                    </span>
+                  ) : (
+                    'Video preview available. Click to download and play in full quality.'
+                  )}
                 </div>
-                {onDownload && (
-                  <Button variant="primary" onClick={() => { onDownload(); onClose() }} className="py-2 px-5 text-[13px] flex items-center gap-2">
+                {onDownload && !downloading && (
+                  <Button
+                    variant="primary"
+                    onClick={() => {
+                      setDownloading(true)
+                      onDownload()
+                    }}
+                    className="py-2 px-6 text-[13px] flex items-center gap-2 shadow-lg"
+                  >
                     <Download size={15} /> Download &amp; Play
                   </Button>
                 )}
@@ -908,7 +943,7 @@ export function MediaPreviewModal({
             <img
               src={localUrl || thumbUrl!}
               alt={item.name}
-              className="max-h-[75vh] max-w-full object-contain rounded-lg shadow-2xl"
+              className="max-h-[78vh] max-w-full object-contain rounded-lg shadow-2xl"
             />
           ) : isAudio ? (
             localUrl ? (
@@ -928,9 +963,18 @@ export function MediaPreviewModal({
                   <Play size={32} className="ml-1" />
                 </div>
                 <div className="text-[14px] text-white font-medium">{item.name}</div>
-                <div className="text-[12px] text-muted">Audio file not downloaded yet.</div>
-                {onDownload && (
-                  <Button variant="primary" onClick={() => { onDownload(); onClose() }} className="py-2 px-5 text-[13px] flex items-center gap-2">
+                <div className="text-[12px] text-muted">
+                  {downloading ? 'Downloading audio file…' : 'Audio file not downloaded yet.'}
+                </div>
+                {onDownload && !downloading && (
+                  <Button
+                    variant="primary"
+                    onClick={() => {
+                      setDownloading(true)
+                      onDownload()
+                    }}
+                    className="py-2 px-5 text-[13px] flex items-center gap-2"
+                  >
                     <Download size={15} /> Download &amp; Play
                   </Button>
                 )}
@@ -941,7 +985,7 @@ export function MediaPreviewModal({
               <img
                 src={thumbUrl}
                 alt={item.name}
-                className="max-h-[70vh] max-w-full object-contain rounded-lg shadow-lg"
+                className="max-h-[72vh] max-w-full object-contain rounded-lg shadow-lg"
               />
               <div className="text-[12px] text-muted text-center">
                 Preview thumbnail. {item.path ? '' : 'Download the file to view full content.'}
@@ -956,8 +1000,15 @@ export function MediaPreviewModal({
               <div className="text-[12px] text-muted mt-1.5">
                 {item.path ? 'Ready to open with your system default application.' : 'File not downloaded yet.'}
               </div>
-              {!item.path && onDownload && (
-                <Button variant="primary" onClick={() => { onDownload(); onClose() }} className="mt-4 py-2 px-5 text-[13px] flex items-center gap-2">
+              {!item.path && onDownload && !downloading && (
+                <Button
+                  variant="primary"
+                  onClick={() => {
+                    setDownloading(true)
+                    onDownload()
+                  }}
+                  className="mt-4 py-2 px-5 text-[13px] flex items-center gap-2"
+                >
                   <Download size={15} /> Download File
                 </Button>
               )}

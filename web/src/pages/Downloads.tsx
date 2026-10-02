@@ -1,6 +1,6 @@
 // Phase 5.2: Downloads page per UI.md & Mockup Reference
-import React, { useState, useRef, useEffect } from 'react'
-import { Plus, RotateCcw, Download, Folder, CheckSquare, Square, FolderOpen, Send, ExternalLink, Copy, Filter, FileText, ChevronDown, Play, SlidersHorizontal, ArrowDown, Trash2, Film, LogOut } from 'lucide-react'
+import React, { useState, useRef, useEffect, useLayoutEffect } from 'react'
+import { Plus, RotateCcw, Download, Folder, CheckSquare, Square, FolderOpen, Send, ExternalLink, Copy, Filter, FileText, ChevronDown, Play, SlidersHorizontal, ArrowDown, Trash2, Film, LogOut, MoreVertical } from 'lucide-react'
 import { call, useCall, useLive, navigate } from '../api.ts'
 import type { LiveStats } from '../../../core/transfers.ts'
 import { Panel, SearchInput, Chip, Select, Button, Avatar, Pill, Thumb, TypeChip, Pagination, Empty, Skeleton, ErrorState, OpenChatDialog, MediaPreviewModal, Dialog, fmtBytes, fmtAgo, fmtDuration, toast, triggerFlyToQueue, confirm } from '../ui.tsx'
@@ -227,29 +227,35 @@ export default function Downloads() {
     messagesEndRef.current?.scrollIntoView({ behavior })
   }
 
+  const prevScrollHeightRef = useRef<number>(0)
+  const prevScrollTopRef = useRef<number>(0)
+  const [channelMenuOpen, setChannelMenuOpen] = useState(false)
+
   // Only scroll to bottom when switching chats or entering chat view
   useEffect(() => {
     if (view === 'chat' && activeChatId) {
-      setTimeout(() => scrollToBottom('auto'), 100)
+      setTimeout(() => scrollToBottom('auto'), 80)
     }
   }, [view, activeChatId])
 
+  // Preserve scroll position when older messages are loaded at the top
+  useLayoutEffect(() => {
+    if (prevScrollHeightRef.current > 0 && chatScrollRef.current) {
+      const newScrollHeight = chatScrollRef.current.scrollHeight
+      const diff = newScrollHeight - prevScrollHeightRef.current
+      if (diff > 0) {
+        chatScrollRef.current.scrollTop = prevScrollTopRef.current + diff
+      }
+      prevScrollHeightRef.current = 0
+    }
+  }, [messages.length])
+
   const handleLoadOlder = () => {
     if (chatScrollRef.current) {
-      const scrollContainer = chatScrollRef.current
-      const prevScrollHeight = scrollContainer.scrollHeight
-      const prevScrollTop = scrollContainer.scrollTop
-      setMsgLimit((l) => Math.min(l + 30, 1000))
-      // Preserve scroll position so it doesn't jump to bottom
-      setTimeout(() => {
-        if (chatScrollRef.current) {
-          const newScrollHeight = chatScrollRef.current.scrollHeight
-          chatScrollRef.current.scrollTop = newScrollHeight - prevScrollHeight + prevScrollTop
-        }
-      }, 250)
-    } else {
-      setMsgLimit((l) => Math.min(l + 30, 1000))
+      prevScrollHeightRef.current = chatScrollRef.current.scrollHeight
+      prevScrollTopRef.current = chatScrollRef.current.scrollTop
     }
+    setMsgLimit((l) => Math.min(l + 30, 1000))
   }
 
   const [newMsgText, setNewMsgText] = useState('')
@@ -367,7 +373,20 @@ export default function Downloads() {
         chatsReload()
         toast(`Opened ${res.chat.title || 'chat'}`)
       } else if (res.invite) {
-        setOpenChat(true)
+        const title = res.invite.title || 'Channel'
+        const count = res.invite.members ? ` (${res.invite.members} members)` : ''
+        if (await confirm({
+          title: `Join ${title}?`,
+          message: `Would you like to join "${title}"${count} and open its media in Mediagram?`,
+          confirm: 'Join & Open',
+        })) {
+          const joined = await call<any>('chats.open', { link: link.trim(), join: true })
+          if (joined.chat?.id) {
+            setChatId(joined.chat.id)
+            chatsReload()
+            toast(`Joined ${joined.chat.title || 'chat'}`)
+          }
+        }
       } else {
         window.open(link.startsWith('http') ? link : `https://${link}`, '_blank')
       }
@@ -616,7 +635,12 @@ export default function Downloads() {
               return (
                 <div
                   key={c.id}
-                  onClick={() => { setChatId(c.id); setPage(1); setSelectedIds([]) }}
+                  onClick={() => {
+                    setChatId(c.id)
+                    setPage(1)
+                    setSelectedIds([])
+                    c.unread = 0
+                  }}
                   className={`group relative flex w-full items-center gap-2.5 rounded-lg p-2 text-left transition-colors cursor-pointer ${
                     active ? 'bg-primary/20 border border-primary/30 text-text' : 'hover:bg-tile text-text-2 hover:text-text'
                   }`}
@@ -673,39 +697,6 @@ export default function Downloads() {
             </Button>
           </div>
 
-          {activeChat && (
-            <div className="flex items-center gap-2 max-w-sm min-w-0">
-              <span className="text-[13px] text-text font-medium truncate">
-                {activeChat.title} {activeChat.username && <span className="text-muted text-[11px]">(@{activeChat.username})</span>}
-              </span>
-              <div className="flex items-center gap-1 shrink-0">
-                {activeChat.username && (
-                  <button
-                    onClick={() => copyChatLink(activeChat.username)}
-                    className="rounded p-1.5 text-muted hover:text-white hover:bg-white/10 transition-colors"
-                    title="Copy Telegram Link"
-                  >
-                    <Copy size={13} />
-                  </button>
-                )}
-                <button
-                  onClick={() => clearChatHistory(activeChat.id, activeChat.title)}
-                  className="rounded p-1.5 text-muted hover:text-white hover:bg-white/10 transition-colors"
-                  title="Clear Chat History"
-                >
-                  <RotateCcw size={13} />
-                </button>
-                <button
-                  onClick={() => confirmLeaveChat(activeChat.id, activeChat.title)}
-                  className="rounded p-1.5 text-danger/80 hover:text-danger hover:bg-danger/15 transition-colors"
-                  title="Leave / Delete Channel"
-                >
-                  <Trash2 size={13} />
-                </button>
-              </div>
-            </div>
-          )}
-
           <div className="w-64">
             <SearchInput
               placeholder="Search files in this channel…"
@@ -761,6 +752,64 @@ export default function Downloads() {
         {/* Main area depending on Files View vs Chat View */}
         {view === 'files' ? (
           <div className="space-y-3 flex-1 flex flex-col">
+            {/* Active Channel header in Files View */}
+            {activeChat && (
+              <div className="flex items-center justify-between pb-3 border-b border-border/40">
+                <div className="flex items-center gap-3 min-w-0">
+                  <Avatar src={activeChat.photo} name={activeChat.title} size={34} />
+                  <div className="min-w-0">
+                    <div className="text-[14px] font-bold text-text truncate leading-tight tracking-wide">
+                      {activeChat.title}
+                    </div>
+                    <div className="text-[11.5px] text-muted truncate leading-tight mt-0.5">
+                      {activeChat.username ? `@${activeChat.username}` : activeChat.kind || 'Channel'} • {mediaData?.total ?? 0} files
+                    </div>
+                  </div>
+                </div>
+
+                {/* 3-dot channel menu */}
+                <div className="relative">
+                  <button
+                    onClick={() => setChannelMenuOpen(!channelMenuOpen)}
+                    className="flex size-8 items-center justify-center rounded-lg border border-border bg-tile text-muted hover:text-white hover:border-primary transition-colors"
+                    title="Channel Actions"
+                  >
+                    <MoreVertical size={16} />
+                  </button>
+                  {channelMenuOpen && (
+                    <div
+                      className="absolute right-0 top-full mt-1.5 z-50 w-48 rounded-xl border border-border bg-[#182533] p-1.5 shadow-2xl backdrop-blur-xl space-y-0.5"
+                      onClick={() => setChannelMenuOpen(false)}
+                    >
+                      {activeChat.username && (
+                        <button
+                          onClick={() => copyChatLink(activeChat.username)}
+                          className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12px] text-text hover:bg-white/10 transition-colors"
+                        >
+                          <Copy size={13} className="text-muted" />
+                          <span>Copy Link</span>
+                        </button>
+                      )}
+                      <button
+                        onClick={() => clearChatHistory(activeChat.id, activeChat.title)}
+                        className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12px] text-text hover:bg-white/10 transition-colors"
+                      >
+                        <RotateCcw size={13} className="text-muted" />
+                        <span>Clear Chat History</span>
+                      </button>
+                      <button
+                        onClick={() => confirmLeaveChat(activeChat.id, activeChat.title)}
+                        className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12px] text-danger hover:bg-danger/15 transition-colors"
+                      >
+                        <Trash2 size={13} />
+                        <span>Leave / Delete Channel</span>
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
             {/* Filter toolbar: Clean 3 selects + Custom + Reset */}
             <div className="flex items-center gap-2 flex-wrap">
               <Select
@@ -1019,30 +1068,44 @@ export default function Downloads() {
                       {activeChat?.title || 'Messages'}
                     </span>
                     {activeChat && (
-                      <div className="flex items-center gap-1 shrink-0">
-                        {activeChat.username && (
-                          <button
-                            onClick={() => copyChatLink(activeChat.username)}
-                            className="rounded p-1 text-muted hover:text-white hover:bg-white/10 transition-colors"
-                            title="Copy Telegram Link"
+                      <div className="relative shrink-0">
+                        <button
+                          onClick={() => setChannelMenuOpen(!channelMenuOpen)}
+                          className="flex size-7 items-center justify-center rounded-lg border border-border bg-tile text-muted hover:text-white hover:border-primary transition-colors"
+                          title="Channel Actions"
+                        >
+                          <MoreVertical size={14} />
+                        </button>
+                        {channelMenuOpen && (
+                          <div
+                            className="absolute left-0 top-full mt-1.5 z-50 w-48 rounded-xl border border-border bg-[#182533] p-1.5 shadow-2xl backdrop-blur-xl space-y-0.5"
+                            onClick={() => setChannelMenuOpen(false)}
                           >
-                            <Copy size={12} />
-                          </button>
+                            {activeChat.username && (
+                              <button
+                                onClick={() => copyChatLink(activeChat.username)}
+                                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12px] text-text hover:bg-white/10 transition-colors"
+                              >
+                                <Copy size={13} className="text-muted" />
+                                <span>Copy Link</span>
+                              </button>
+                            )}
+                            <button
+                              onClick={() => clearChatHistory(activeChat.id, activeChat.title)}
+                              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12px] text-text hover:bg-white/10 transition-colors"
+                            >
+                              <RotateCcw size={13} className="text-muted" />
+                              <span>Clear Chat History</span>
+                            </button>
+                            <button
+                              onClick={() => confirmLeaveChat(activeChat.id, activeChat.title)}
+                              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12px] text-danger hover:bg-danger/15 transition-colors"
+                            >
+                              <Trash2 size={13} />
+                              <span>Leave / Delete Channel</span>
+                            </button>
+                          </div>
                         )}
-                        <button
-                          onClick={() => clearChatHistory(activeChat.id, activeChat.title)}
-                          className="rounded p-1 text-muted hover:text-white hover:bg-white/10 transition-colors"
-                          title="Clear Chat History"
-                        >
-                          <RotateCcw size={12} />
-                        </button>
-                        <button
-                          onClick={() => confirmLeaveChat(activeChat.id, activeChat.title)}
-                          className="rounded p-1 text-danger/80 hover:text-danger hover:bg-danger/15 transition-colors"
-                          title="Leave / Delete Channel"
-                        >
-                          <Trash2 size={13} />
-                        </button>
                       </div>
                     )}
                   </div>
@@ -1083,7 +1146,7 @@ export default function Downloads() {
                 const isNearBottom = target.scrollHeight - target.scrollTop - target.clientHeight < 120
                 setShowScrollBottom(!isNearBottom)
               }}
-              className="flex-1 overflow-y-auto space-y-3.5 pr-2 scroll-smooth"
+              className="flex-1 overflow-y-auto space-y-3.5 pr-2"
             >
               {msgErr ? (
                 <ErrorState error={msgErr} onRetry={msgReload} />
