@@ -41,7 +41,7 @@ const speedText = (bps: number) => {
   return new Intl.NumberFormat('en', { style: 'unit', unit: `${unit}-per-second`, maximumFractionDigits: 1 }).format(bps / div)
 }
 function trayTooltip(s: LiveStats) {
-  tray?.setToolTip(`TeleFlow — ${s.counts.download.active + s.counts.upload.active} active · ${speedText(s.speed.download + s.speed.upload)}`)
+  tray?.setToolTip(`Mediagram — ${s.counts.download.active + s.counts.upload.active} active · ${speedText(s.speed.download + s.speed.upload)}`)
 }
 function showWindow() {
   if (!win || win.isDestroyed()) return
@@ -60,7 +60,7 @@ function flushNotifications() {
     batch.failed && `${plural(batch.failed, 'transfer')} failed`].filter(Boolean)
   Object.assign(batch, { download: 0, upload: 0, failed: 0 })
   if (!lines.length || !Notification.isSupported()) return
-  const n = new Notification({ title: 'TeleFlow', body: lines.join('\n'), icon })
+  const n = new Notification({ title: 'Mediagram', body: lines.join('\n'), icon })
   n.on('click', showWindow)
   n.show()
 }
@@ -76,12 +76,12 @@ function startup() {
   app.setAppUserModelId('com.teleflow.app')
   if (!app.requestSingleInstanceLock()) return app.quit()
   // 5.
-  protocol.registerSchemesAsPrivileged([{ scheme: 'teleflow', privileges: { standard: true, secure: true } }])
+  protocol.registerSchemesAsPrivileged([{ scheme: 'teleflow', privileges: { standard: true, secure: true, stream: true, supportFetchAPI: true } }])
 
   // tdjson.dll is loaded by the OS loader, which cannot read inside app.asar.
   telegram.configure(getTdjson().replace('app.asar', 'app.asar.unpacked'), path.join(paths.logs, 'tdlib.log'))
   const tdlib = telegram.tdlibVersion()
-  log('info', `TeleFlow ${app.getVersion()} starting; TDLib ${tdlib}; home ${paths.home}`)
+  log('info', `Mediagram ${app.getVersion()} starting; TDLib ${tdlib}; home ${paths.home}`)
 
   // 6. SQLite, the engine, and its recovery (before TDLib starts, so pending upload updates find their files).
   const db = openDb(paths.db)
@@ -166,11 +166,11 @@ function startup() {
     tray = new Tray(icon)
     trayTooltip(eng.liveStats())
     tray.setContextMenu(Menu.buildFromTemplate([
-      { label: 'Show TeleFlow', click: showWindow },
+      { label: 'Show Mediagram', click: showWindow },
       { label: 'Pause all', click: () => eng.action('pause') },
       { label: 'Resume all', click: () => eng.action('resume') },
       { type: 'separator' },
-      { label: 'Quit TeleFlow', click: () => app.quit() },
+      { label: 'Quit Mediagram', click: () => app.quit() },
     ]))
     tray.on('double-click', showWindow)
     // 8.
@@ -207,9 +207,9 @@ function createWindow(url: string, db: DB, hidden: boolean, closeToTray: () => b
   const saved = readSetting(db, 'window') as Partial<WindowState> | undefined
   const w = new BrowserWindow({
     ...initialBounds(saved), minWidth: 1024, minHeight: 640, icon, show: !hidden,
-    backgroundColor: '#060b18', // UI.md `bg`
+    backgroundColor: '#0f172a',
     titleBarStyle: 'hidden',
-    titleBarOverlay: { color: '#060b18', symbolColor: '#a3b0cf', height: 40 }, // top bar `bg`, `text-2`, top bar height
+    titleBarOverlay: { color: '#0f172a', symbolColor: '#94a3b8', height: 36 },
     webPreferences: {
       preload: path.join(import.meta.dirname, '../preload/preload.cjs'),
       contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true,
@@ -243,7 +243,7 @@ function createWindow(url: string, db: DB, hidden: boolean, closeToTray: () => b
 function fatal(e: unknown) {
   const message = e instanceof Error ? e.message : String(e)
   log('error', `Startup failed: ${e instanceof Error ? e.stack : message}`)
-  dialog.showErrorBox('TeleFlow could not start', message)
+  dialog.showErrorBox('Mediagram could not start', message)
   app.exit(1)
 }
 

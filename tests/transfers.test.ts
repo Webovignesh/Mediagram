@@ -271,6 +271,46 @@ test('download: finalize moves the file out of tdlib\\files under its final name
   assert.ok(t.events.some((e) => e.type === 'invalidate' && e.topics.includes('library') && e.topics.includes(`media:${CHAT}`)))
 })
 
+test('download: priority is 32 and survives getRemoteFile rejection', async () => {
+  const t = rig()
+  const tg = telegramWith(t, { 8: { fileId: 8, name: 'Doc.pdf', body: 'data' } })
+  const origAnswer = t.answer
+  t.answer = (req) => {
+    if (req._ === 'getRemoteFile') throw fail(400, "Can't find remote file")
+    return origAnswer(req)
+  }
+  t.engine.addDownloads(CHAT, [row(8, 'Doc.pdf')])
+  const [job] = jobIds(t.db)
+  await until(() => t.calls('downloadFile').length === 1)
+  const call = t.calls('downloadFile')[0]
+  assert.equal(call.priority, 32)
+  assert.equal(call.file_id, 8)
+  tg.done(8)
+  await until(() => t.status(job) === 'completed')
+})
+
+test('download: stale completed path triggers deleteFile and fresh download', async () => {
+  const t = rig()
+  const tg = telegramWith(t, { 9: { fileId: 9, name: 'Stale.pdf', body: 'fresh' } })
+  const origAnswer = t.answer
+  t.answer = (req) => {
+    if (req._ === 'getRemoteFile') {
+      const res = origAnswer(req) as any
+      res.local.is_downloading_completed = true
+      res.local.path = 'C:\\non\\existent\\stale.pdf'
+      return res
+    }
+    return origAnswer(req)
+  }
+  t.engine.addDownloads(CHAT, [row(9, 'Stale.pdf')])
+  const [job] = jobIds(t.db)
+  await until(() => t.calls('deleteFile').length === 1)
+  assert.equal(t.calls('deleteFile')[0].file_id, 9)
+  await until(() => t.calls('downloadFile').length === 1)
+  tg.done(9)
+  await until(() => t.status(job) === 'completed')
+})
+
 test('skip existing: completes without downloading and stays downloaded after Clear Completed, so a re-add is skipped', async () => {
   const t = rig()
   telegramWith(t, { 5: { fileId: 5, name: 'Report.pdf', body: 'hello' } })

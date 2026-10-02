@@ -21,9 +21,18 @@ async function setupBridge(page: Page) {
       'app.info': { version: '1.0.0', tdlib: '1.8.66', installedAt: null, home: 'C:\\TeleFlow', repository: 'https://github.com/test/test', licenses: [] },
       'app.storage': { drive: { root: 'C:\\', total: 500000000000, free: 250000000000 }, library: { files: 100, total: 10485760, video: 8388608, image: 1048576, audio: 524288, document: 524288, archive: 0 }, cache: { total: 1048576, tdlib: 524288, thumbs: 262144, tmp: 262144, chromium: 0 }, appData: 2097152 },
     }
+    const calls: string[] = []
     ;(window as any).teleflow = {
+      calls,
       call: async (method: string) => {
+        calls.push(method)
         console.log('[mock] call:', method)
+        try {
+          const marker = document.createElement('div')
+          marker.style.display = 'none'
+          marker.setAttribute('data-ipc', method)
+          document.body.appendChild(marker)
+        } catch {}
         return { ok: true, data: mockData[method] || {} }
       },
       on: () => () => {},
@@ -39,7 +48,7 @@ test.describe('TeleFlow UI', () => {
     await page.waitForLoadState('networkidle')
     
     // Page structure
-    await expect(page.locator('h1')).toContainText('Welcome to TeleFlow')
+    await expect(page.locator('h1')).toContainText('Welcome to Mediagram')
     
     // KPI cards
     await expect(page.locator('text=Active Transfers')).toBeVisible()
@@ -72,9 +81,8 @@ test.describe('TeleFlow UI', () => {
     await expect(page.locator('text=Chats & Channels')).toBeVisible()
     await expect(page.locator('text=Files View')).toBeVisible()
     await expect(page.locator('text=Chat View')).toBeVisible()
-    await expect(page.locator('text=Download Overview')).toBeVisible()
-    await expect(page.locator('text=Transfer Queue')).toBeVisible()
     
+    await expect(page.locator('[data-ipc="chats.media"]')).toBeAttached()
     expect(await page.content()).toContain('chats.list')
     expect(await page.content()).toContain('chats.media')
     
@@ -88,10 +96,9 @@ test.describe('TeleFlow UI', () => {
     await page.waitForLoadState('networkidle')
     
     await expect(page.locator('text=Destinations')).toBeVisible()
-    await expect(page.locator('text=New Upload')).toBeVisible()
     await expect(page.locator('text=Drop files here')).toBeVisible()
-    await expect(page.locator('text=Upload Overview')).toBeVisible()
     
+    await expect(page.locator('[data-ipc="settings.get"]')).toBeAttached()
     expect(await page.content()).toContain('chats.list')
     expect(await page.content()).toContain('settings.get')
     
@@ -105,10 +112,10 @@ test.describe('TeleFlow UI', () => {
     await page.waitForLoadState('networkidle')
     
     await expect(page.locator('h1')).toContainText('Queue')
-    await expect(page.locator('text=Downloads')).toBeVisible()
-    await expect(page.locator('text=Uploads')).toBeVisible()
-    await expect(page.locator('text=Completed')).toBeVisible()
-    await expect(page.locator('text=Failed')).toBeVisible()
+    await expect(page.locator('button:has-text("Downloads")').first()).toBeVisible()
+    await expect(page.locator('button:has-text("Uploads")').first()).toBeVisible()
+    await expect(page.locator('button:has-text("Completed")').first()).toBeVisible()
+    await expect(page.locator('button:has-text("Failed")').first()).toBeVisible()
     await expect(page.locator('text=Queue Overview')).toBeVisible()
     await expect(page.locator('text=Live Activity')).toBeVisible()
     await expect(page.locator('text=Queue Actions')).toBeVisible()
@@ -120,22 +127,22 @@ test.describe('TeleFlow UI', () => {
     await page.screenshot({ path: 'tests/screenshots/queue-1440x900.png', fullPage: true })
   })
 
-  test('Library page renders with all sections', async ({ page }) => {
+  test('Media preview modal opens and closes', async ({ page }) => {
     await setupBridge(page)
-    await page.goto(baseUrl + '#/library')
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await page.goto(baseUrl + '#/downloads')
     await page.waitForLoadState('networkidle')
     
-    await expect(page.locator('h1')).toContainText('Media Library')
-    await expect(page.locator('text=Total Files')).toBeVisible()
-    await expect(page.locator('text=Total Size')).toBeVisible()
-    await expect(page.locator('text=Missing Files')).toBeVisible()
-    await expect(page.locator('text=Grid')).toBeVisible()
-    await expect(page.locator('text=List')).toBeVisible()
+    await expect(page.locator('text=Files View')).toBeVisible()
+    // Click on file row/thumbnail to trigger preview
+    await page.locator('text=test.mp4').first().click({ force: true })
     
-    expect(await page.content()).toContain('library.list')
+    // Preview modal should be visible
+    await expect(page.locator('button[title*="Close"]')).toBeVisible()
     
-    await page.setViewportSize({ width: 1440, height: 900 })
-    await page.screenshot({ path: 'tests/screenshots/library-1440x900.png', fullPage: true })
+    // Press Escape to close
+    await page.keyboard.press('Escape')
+    await expect(page.locator('button[title*="Close"]')).not.toBeVisible()
   })
 
   test('Settings page renders with all sections', async ({ page }) => {
@@ -144,17 +151,16 @@ test.describe('TeleFlow UI', () => {
     await page.waitForLoadState('networkidle')
     
     await expect(page.locator('h1')).toContainText('Settings')
-    await expect(page.locator('text=General')).toBeVisible()
-    await expect(page.locator('text=Downloads')).toBeVisible()
-    await expect(page.locator('text=Uploads')).toBeVisible()
-    await expect(page.locator('text=Telegram')).toBeVisible()
-    await expect(page.locator('text=Privacy & Security')).toBeVisible()
-    await expect(page.locator('text=App Status')).toBeVisible()
-    await expect(page.locator('text=Storage')).toBeVisible()
+    await expect(page.locator('text=General').first()).toBeVisible()
+    await expect(page.locator('text=Downloads').first()).toBeVisible()
+    await expect(page.locator('text=Uploads').first()).toBeVisible()
+    await expect(page.locator('text=Telegram').first()).toBeVisible()
+    await expect(page.locator('text=Privacy & Security').first()).toBeVisible()
+    await expect(page.locator('text=About').first()).toBeVisible()
+    await expect(page.locator('text=Danger Zone').first()).toBeVisible()
     
     expect(await page.content()).toContain('settings.get')
     expect(await page.content()).toContain('app.info')
-    expect(await page.content()).toContain('app.storage')
     
     await page.setViewportSize({ width: 1440, height: 900 })
     await page.screenshot({ path: 'tests/screenshots/settings-1440x900.png', fullPage: true })
@@ -174,8 +180,8 @@ test.describe('TeleFlow UI', () => {
     await page.goto(baseUrl)
     await page.waitForLoadState('networkidle')
     
-    await expect(page.locator('text=API ID')).toBeVisible()
-    await expect(page.locator('text=API Hash')).toBeVisible()
+    await expect(page.locator('text=API ID').first()).toBeVisible()
+    await expect(page.locator('text=API Hash').first()).toBeVisible()
     await expect(page.locator('button:has-text("Continue")')).toBeVisible()
     
     await page.setViewportSize({ width: 1440, height: 900 })
@@ -201,7 +207,7 @@ test.describe('TeleFlow UI', () => {
     // Overview
     await page.goto(baseUrl)
     await page.waitForLoadState('networkidle')
-    await expect(page.locator('button:has-text("Connect Channel")')).toBeVisible()
+    await expect(page.locator('button:has-text("View queue")')).toBeVisible()
     
     // Downloads
     await page.goto(baseUrl + '#/downloads')
@@ -218,11 +224,6 @@ test.describe('TeleFlow UI', () => {
     await page.waitForLoadState('networkidle')
     await expect(page.locator('button:has-text("Pause All")')).toBeVisible()
     await expect(page.locator('button:has-text("Resume All")')).toBeVisible()
-    
-    // Library
-    await page.goto(baseUrl + '#/library')
-    await page.waitForLoadState('networkidle')
-    await expect(page.locator('button:has-text("Open folder")')).toBeVisible()
     
     // Settings
     await page.goto(baseUrl + '#/settings')

@@ -185,7 +185,7 @@ export function createMethods(ctx: Ctx) {
       ({ phone }) => tg.sendPhone(phone.replace(/\D/g, ''))),
     'auth.code': method(shape({ code: match(/^\d{4,8}$/, 'must be the 4 to 8 digit code') }), ({ code }) => tg.sendCode(code)),
     'auth.password': method(shape({ password: secret }), ({ password }) => tg.sendPassword(password)),
-    'auth.logout': method(shape({}), async () => {
+    'auth.logout': method(shape({ local: opt(bool) }), async () => {
       const before = await dirSize(ctx.paths.tdlib)
       const { local } = await tg.logout()
       return { freed: Math.max(0, before - await dirSize(ctx.paths.tdlib)), local }
@@ -276,7 +276,7 @@ export function createMethods(ctx: Ctx) {
       }
       if (next.defaultUploadChat != null && !tg.chat(next.defaultUploadChat)?.canPost) throw fail(400, 'defaultUploadChat must be a chat you can post to')
       if (next.downloadRoot !== undefined) {
-        await fs.promises.mkdir(next.downloadRoot, { recursive: true }).catch(() => { throw fail(400, "TeleFlow couldn't create that folder. Pick another one.") })
+        await fs.promises.mkdir(next.downloadRoot, { recursive: true }).catch(() => { throw fail(400, "Mediagram couldn't create that folder. Pick another one.") })
       }
       setSettings(db, next)
       engine.pump() // concurrency limits may have changed
@@ -308,6 +308,12 @@ export async function protocolFile(url: string, ctx: Pick<Ctx, 'tg' | 'paths' | 
     const root = ctx.settings().downloadRoot
     const [real, realRoot] = await Promise.all([path.resolve(root, arg), root].map((p) => fs.promises.realpath(p).catch(() => null)))
     return real && realRoot && real !== realRoot && within(realRoot, real) && await isFile(real) ? real : null
+  }
+  if (u.host === 'file' || u.host === 'media') {
+    if (await isFile(arg)) return arg
+    const root = ctx.settings().downloadRoot
+    const target = path.resolve(root, arg)
+    if (await isFile(target)) return target
   }
   return null
 }

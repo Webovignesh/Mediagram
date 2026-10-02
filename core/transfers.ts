@@ -120,7 +120,7 @@ export function createEngine(d: EngineDeps) {
   const inFlight = new Map<number, number>() // TDLib file id → job id: updateFile routing, same-file wait, cancel cleanup
   const waiting = new Map<number, number>() // queued job id → the in-flight file id it waits for
   const reserved = new Set<string>() // lowercased paths chosen by finalizes that have not completed yet
-  const gates: Record<Kind, Gate> = { download: newGate(600), upload: newGate(1000) }
+  const gates: Record<Kind, Gate> = { download: newGate(150), upload: newGate(250) }
   let history: number[] = []
   let pumpTimer: NodeJS.Timeout | undefined, statsTimer: NodeJS.Timeout | undefined
   let lastSample = 0, lastCleanup = 0, day = new Date().toDateString(), wasReady = false, stopped = false
@@ -221,7 +221,9 @@ export function createEngine(d: EngineDeps) {
       const media = extractMedia(m)
       if (!media) throw fail(400, 'This message has no media to download', { final: true })
       // Stored file ids go stale (FileGram lesson): the remote id gives the current one.
-      const file = media.file.remote.id ? await d.invoke({ _: 'getRemoteFile', remote_file_id: media.file.remote.id }) : media.file
+      const file = media.file.remote.id
+        ? await d.invoke({ _: 'getRemoteFile', remote_file_id: media.file.remote.id }).catch(() => media.file)
+        : media.file
       if (!isLive(l)) return
       const owner = inFlight.get(file.id)
       if (owner !== undefined && owner !== job.id) {
@@ -245,9 +247,17 @@ export function createEngine(d: EngineDeps) {
       }
       l.fileIds = [file.id]
       inFlight.set(file.id, job.id)
-      if (file.local.is_downloading_completed) return finalize(l, file.local.path)
+      if (file.local.is_downloading_completed) {
+        if (file.local.path && fs.existsSync(file.local.path)) return finalize(l, file.local.path)
+        await d.invoke({ _: 'deleteFile', file_id: file.id }).catch(() => {})
+      }
       progress(l, file.local.downloaded_size)
-      onFile(await d.invoke({ _: 'downloadFile', file_id: file.id, priority: 1, offset: 0, limit: 0, synchronous: false }))
+      const res = await d.invoke({ _: 'downloadFile', file_id: file.id, priority: 32, offset: 0, limit: 0, synchronous: false })
+      if (res && res.id) {
+        inFlight.set(res.id, job.id)
+        if (!l.fileIds.includes(res.id)) l.fileIds.push(res.id)
+      }
+      onFile(res)
     } catch (e) { failed(l, e) }
   }
 
@@ -359,13 +369,19 @@ export function createEngine(d: EngineDeps) {
     try {
       const f = await d.invoke({ _: 'getFile', file_id }).catch(() => null)
       if (!isLive(l) || l.finalizing) return
+      if (f) onFile(f)
       if (f?.local.is_downloading_completed) return void finalize(l, f.local.path)
       if (f && !f.local.can_be_downloaded) return failed(l, fail(403, "Telegram doesn't allow downloading this file", { final: true }))
       if (decision === 'fail') return failed(l, fail(500, 'Download keeps stalling', { final: true }))
       if (decision === 'reassert') {
         l.stalls++
         log('warn', `Download ${l.id} stalled; asking TDLib again (${l.stalls})`)
-        onFile(await d.invoke({ _: 'downloadFile', file_id, priority: 1, offset: 0, limit: 0, synchronous: false }))
+        const res = await d.invoke({ _: 'downloadFile', file_id, priority: 32, offset: 0, limit: 0, synchronous: false })
+        if (res && res.id) {
+          inFlight.set(res.id, l.id)
+          if (!l.fileIds.includes(res.id)) l.fileIds.push(res.id)
+        }
+        onFile(res)
         return
       }
       // Third stall in a row: restart in the same queue position; the next start counts as an attempt.
@@ -466,7 +482,12 @@ export function createEngine(d: EngineDeps) {
    *  cannot be resolved (deleted, no media) count as skipped. */
   async function addItems(items: { chatId: number, messageId: number }[], force: boolean) {
     const byChat = Map.groupBy(items, (i) => i.chatId)
-    for (const chatId of byChat.keys()) if (!d.chat(chatId)) throw fail(404, 'Chat not found')
+    for (const chatId of byChat.keys()) {
+      if (!d.chat(chatId)) {
+        await d.invoke({ _: 'getChat', chat_id: chatId }).catch(() => null)
+        if (!d.chat(chatId)) throw fail(404, 'Chat not found')
+      }
+    }
     let added = 0
     for (const [chatId, list] of byChat) {
       const ids = [...new Set(list.map((i) => i.messageId))]

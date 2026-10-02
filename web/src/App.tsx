@@ -1,247 +1,148 @@
-import { useState } from 'react'
-import { Home, Download, Upload, ListOrdered, FolderOpen, Settings as SettingsIcon, Search, ChevronDown, Send } from 'lucide-react'
+import { useState, useRef, useEffect } from 'react'
+import { Home, Download, Upload, ListOrdered, Settings as SettingsIcon, ChevronDown, Send, LogOut, PanelLeftClose, PanelLeftOpen } from 'lucide-react'
 import { call, useCall, useLive, useRoute, navigate } from './api.ts'
-import { Empty, ErrorState, Badge } from './ui.tsx'
-import type { AuthState, Me, Chat } from '../../core/shapes.ts'
+import { Empty, ErrorState, Badge, Avatar, toast, confirm } from './ui.tsx'
+import type { AuthState, Me } from '../../core/shapes.ts'
 import Login from './pages/Login.tsx'
 import Overview from './pages/Overview.tsx'
 import Downloads from './pages/Downloads.tsx'
 import Uploads from './pages/Uploads.tsx'
 import Queue from './pages/Queue.tsx'
-import Library from './pages/Library.tsx'
 import Settings from './pages/Settings.tsx'
 
-// Phase 4.3: Top bar with search and user menu
-function TopBar({ me }: { me: Me }) {
-  const [searchOpen, setSearchOpen] = useState(false)
-  const [menuOpen, setMenuOpen] = useState(false)
-  const [query, setQuery] = useState('')
-  const [results, setResults] = useState<{ chats: Chat[], files: { name: string, chat: string | null, path: string }[], link: { kind: 'message' | 'chat' | 'invite' } | null } | null>(null)
-  const [loading, setLoading] = useState(false)
-
-  async function searchGlobal(q: string) {
-    if (q.length === 0) {
-      setResults(null)
-      return
-    }
-    setLoading(true)
-    try {
-      const res = await call<{ chats: Chat[], files: { name: string, chat: string | null, path: string }[], link: { kind: 'message' | 'chat' | 'invite' } | null }>('search.global', { q })
-      setResults(res)
-    } catch (err) {
-      setResults({ chats: [], files: [], link: null })
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  async function handleDownloadLink() {
-    if (!results?.link) return
-    try {
-      const res = await call<{ added: number, skipped: number }>('downloads.add', { link: query })
-      alert(`Added ${res.added}, skipped ${res.skipped}`)
-      setSearchOpen(false)
-      setQuery('')
-    } catch (err) {
-      alert((err as Error).message)
-    }
-  }
-
-  async function handleOpenChat() {
-    if (!results?.link) return
-    try {
-      const res = await call<{ chatId: number, joined: boolean }>('chats.open', { link: query, join: false })
-      navigate(`/downloads?chat=${res.chatId}`)
-      setSearchOpen(false)
-      setQuery('')
-    } catch (err) {
-      alert((err as Error).message)
-    }
-  }
-
-  async function logout() {
-    if (confirm('Log out of Telegram?')) {
-      try {
-        await call('auth.logout', {})
-      } catch (err) {
-        alert((err as Error).message)
-      }
-    }
-  }
-
-  const initial = me.firstName.charAt(0).toUpperCase()
-
+// Clean, native window drag titlebar (no text, seamless color match with native controls)
+function TitleBar() {
   return (
-    <div className="drag flex h-10 items-center border-b border-border bg-bg px-4" style={{ paddingRight: 'calc(1rem + env(titlebar-area-width, 0px))' }}>
-      <div className="no-drag relative flex-1" style={{ maxWidth: '670px' }}>
-        <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
-        <input
-          type="text"
-          value={query}
-          onChange={(e) => {
-            const q = e.target.value
-            setQuery(q)
-            setTimeout(() => {
-              if (q === query) searchGlobal(q)
-            }, 250)
-          }}
-          placeholder="Search channels, chats, files, or paste a Telegram link…"
-          className="w-full rounded-lg border border-border bg-tile py-1.5 pl-9 pr-3 text-sm placeholder:text-muted focus:border-primary"
-          onFocus={() => setSearchOpen(true)}
-          onBlur={() => setTimeout(() => setSearchOpen(false), 200)}
-        />
-        {searchOpen && query.length > 0 && (
-          <div className="absolute left-0 right-0 top-full mt-1 max-h-96 overflow-y-auto rounded-lg border border-border bg-panel shadow-lg">
-            {loading ? (
-              <div className="p-4 text-center text-muted">Searching…</div>
-            ) : results ? (
-              <>
-                {results.chats.length > 0 && (
-                  <div className="border-b border-border p-2">
-                    <div className="px-2 py-1 text-xs font-semibold text-text-2">Chats</div>
-                    {results.chats.map((chat) => (
-                      <button
-                        key={chat.id}
-                        onClick={() => { navigate(`/downloads?chat=${chat.id}`); setSearchOpen(false); setQuery('') }}
-                        className="flex w-full items-center gap-2 rounded p-2 text-left hover:bg-tile"
-                      >
-                        <div className="text-sm">{chat.title}</div>
-                        {chat.username && <div className="text-xs text-text-2">@{chat.username}</div>}
-                      </button>
-                    ))}
-                  </div>
-                )}
-                {results.files.length > 0 && (
-                  <div className="border-b border-border p-2">
-                    <div className="px-2 py-1 text-xs font-semibold text-text-2">Downloaded files</div>
-                    {results.files.map((file, i) => (
-                      <button
-                        key={i}
-                        onClick={() => { navigate(`/library?q=${encodeURIComponent(file.name)}`); setSearchOpen(false); setQuery('') }}
-                        className="flex w-full flex-col gap-0.5 rounded p-2 text-left hover:bg-tile"
-                      >
-                        <div className="text-sm">{file.name}</div>
-                        {file.chat && <div className="text-xs text-text-2">{file.chat}</div>}
-                      </button>
-                    ))}
-                  </div>
-                )}
-                {results.link && (
-                  <div className="p-2">
-                    {results.link.kind === 'message' && (
-                      <button
-                        onClick={handleDownloadLink}
-                        className="w-full rounded p-2 text-left hover:bg-tile"
-                      >
-                        <div className="text-sm text-primary">Download media from this link</div>
-                      </button>
-                    )}
-                    <button
-                      onClick={handleOpenChat}
-                      className="w-full rounded p-2 text-left hover:bg-tile"
-                    >
-                      <div className="text-sm text-primary">Open chat</div>
-                    </button>
-                  </div>
-                )}
-                {!results.chats.length && !results.files.length && !results.link && (
-                  <div className="p-4 text-center text-muted">No matches</div>
-                )}
-              </>
-            ) : null}
-          </div>
-        )}
-      </div>
-      <div className="no-drag relative ml-auto">
-        <button
-          onClick={() => setMenuOpen(!menuOpen)}
-          className="flex items-center gap-2 rounded-lg px-3 py-1.5 hover:bg-tile"
-        >
-          <div className="flex size-7 items-center justify-center rounded-full bg-primary font-semibold">
-            {initial}
-          </div>
-          <span className="text-sm">{me.name}</span>
-          <ChevronDown size={16} className="text-text-2" />
-        </button>
-        {menuOpen && (
-          <div className="absolute right-0 top-full mt-1 w-64 rounded-lg border border-border bg-panel p-2 shadow-lg">
-            <div className="border-b border-border px-3 py-2">
-              <div className="font-semibold">{me.name}</div>
-              <div className="text-xs text-text-2">{me.phone}</div>
-              {me.username && <div className="text-xs text-text-2">@{me.username}</div>}
-            </div>
-            <button
-              onClick={() => { setMenuOpen(false); navigate('/settings') }}
-              className="flex w-full items-center gap-2 rounded px-3 py-2 text-left hover:bg-tile"
-            >
-              <SettingsIcon size={16} />
-              <span>Settings</span>
-            </button>
-            <button
-              onClick={logout}
-              className="flex w-full items-center gap-2 rounded px-3 py-2 text-left text-danger hover:bg-danger/10"
-            >
-              <span>Log out</span>
-            </button>
-          </div>
-        )}
-      </div>
-    </div>
+    <div
+      className="drag flex h-9 shrink-0 items-center justify-between bg-[#0f172a] px-4 select-none z-30"
+      style={{ paddingRight: 'calc(1rem + env(titlebar-area-width, 0px))' }}
+    />
   )
 }
 
-// Phase 4.4: Sidebar navigation
-function Sidebar({ activeCount }: { activeCount: number }) {
+// Collapsible Sidebar navigation
+function Sidebar({
+  activeCount,
+  collapsed,
+  onToggleCollapse,
+}: {
+  activeCount: number
+  collapsed: boolean
+  onToggleCollapse: () => void
+}) {
   const route = useRoute()
-  const page = route.split('?')[0]
+  const rawPage = route.split('?')[0] || '/overview'
+  const page = rawPage === '' || rawPage === '/' ? '/overview' : rawPage
+
+  const [flyingPlane, setFlyingPlane] = useState<{ startX: number, startY: number, key: number } | null>(null)
+  const [queueBumping, setQueueBumping] = useState(false)
+
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail || {}
+      setFlyingPlane({ startX: detail.x || window.innerWidth / 2, startY: detail.y || window.innerHeight / 2, key: Date.now() })
+      setTimeout(() => {
+        setQueueBumping(true)
+        setTimeout(() => setQueueBumping(false), 600)
+      }, 550)
+      setTimeout(() => {
+        setFlyingPlane(null)
+      }, 700)
+    }
+    window.addEventListener('mediagram-fly-to-queue', handler)
+    return () => window.removeEventListener('mediagram-fly-to-queue', handler)
+  }, [])
 
   const items = [
     { id: '/overview', icon: Home, label: 'Overview' },
     { id: '/downloads', icon: Download, label: 'Downloads' },
     { id: '/uploads', icon: Upload, label: 'Uploads' },
     { id: '/queue', icon: ListOrdered, label: 'Queue', badge: activeCount },
-    { id: '/library', icon: FolderOpen, label: 'Media Library' },
     { id: '/settings', icon: SettingsIcon, label: 'Settings' },
   ]
 
   return (
-    <div className="flex w-[170px] flex-col border-r border-border bg-sidebar">
-      <div className="border-b border-border p-4">
-        <div className="flex items-center gap-2">
-          <div className="grid size-8 place-items-center rounded-lg bg-primary">
+    <div
+      className={`flex h-full shrink-0 flex-col border-r border-border bg-sidebar select-none transition-all duration-200 ${
+        collapsed ? 'w-[64px]' : 'w-[200px]'
+      }`}
+    >
+      {flyingPlane && (
+        <div
+          key={flyingPlane.key}
+          className="fly-to-queue-plane fixed pointer-events-none z-[9999] flex items-center justify-center size-8 rounded-full bg-cyan text-white shadow-xl"
+          style={{
+            '--fly-start-x': `${flyingPlane.startX}px`,
+            '--fly-start-y': `${flyingPlane.startY}px`,
+          } as any}
+        >
+          <Send size={15} />
+        </div>
+      )}
+
+      {/* Brand */}
+      <div className="border-b border-border p-3 flex items-center justify-between">
+        <div className="flex items-center gap-2.5 overflow-hidden">
+          <div className="grid size-8 shrink-0 place-items-center rounded-lg bg-primary text-white shadow-glow">
             <Send size={16} />
           </div>
-          <div>
-            <div className="font-bold">TeleFlow</div>
-            <div className="text-[11px] text-muted">Download. Upload. Organize.</div>
-          </div>
+          {!collapsed && (
+            <div className="overflow-hidden">
+              <div className="font-bold text-[14px] text-text leading-tight truncate">Mediagram</div>
+              <div className="text-[10px] text-muted leading-tight truncate">Telegram Media Manager</div>
+            </div>
+          )}
         </div>
       </div>
-      <nav className="flex-1 p-2">
+
+      {/* Nav List */}
+      <nav className="flex-1 p-2 space-y-1 overflow-y-auto">
         {items.map(({ id, icon: Icon, label, badge }) => {
           const active = page === id
           return (
             <button
               key={id}
               onClick={() => navigate(id)}
-              className={`flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-left transition-colors ${
-                active ? 'bg-primary text-text shadow-glow' : 'text-text-2 hover:bg-tile'
-              }`}
+              title={collapsed ? label : undefined}
+              className={`flex w-full items-center gap-2.5 rounded-lg transition-all ${
+                collapsed ? 'justify-center p-2.5' : 'px-3 py-2 text-left'
+              } ${
+                active ? 'bg-primary text-text shadow-glow font-medium' : 'text-text-2 hover:bg-tile hover:text-text'
+              } ${id === '/queue' && queueBumping ? 'scale-110 ring-2 ring-cyan shadow-glow' : ''}`}
             >
-              <Icon size={18} />
-              <span className="flex-1 text-sm">{label}</span>
-              {badge !== undefined && <Badge count={badge} />}
+              <Icon size={18} className="shrink-0" />
+              {!collapsed && <span className="flex-1 text-[13px] truncate">{label}</span>}
+              {badge !== undefined && (
+                collapsed ? (
+                  badge > 0 ? <span className="size-2 rounded-full bg-primary absolute top-2 right-2" /> : null
+                ) : (
+                  <Badge count={badge} />
+                )
+              )}
             </button>
           )
         })}
       </nav>
+
+      {/* Collapse Toggle */}
+      <div className="border-t border-border p-2">
+        <button
+          onClick={onToggleCollapse}
+          className="flex w-full items-center justify-center gap-2 rounded-lg p-2 text-text-2 hover:bg-tile hover:text-text transition-colors text-[12px]"
+          title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+        >
+          {collapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
+          {!collapsed && <span>Collapse</span>}
+        </button>
+      </div>
     </div>
   )
 }
 
-// Phase 4.5: Main App with routing and auth gate
+// Main App with full-height sidebar and topbar inside main flex container
 export default function App() {
-  const { data: auth, error, reload } = useCall<AuthState>('auth.get', undefined, ['auth'])
+  const [collapsed, setCollapsed] = useState(false)
+  const { data: auth, error, reload, loading } = useCall<AuthState>('auth.get', undefined, ['auth'])
   const live = useLive()
   const route = useRoute()
 
@@ -254,28 +155,41 @@ export default function App() {
     )
   }
 
-  if (!auth) return null
+  if (loading || !auth) {
+    return (
+      <div className="flex h-full items-center justify-center">
+        <div className="text-text-2">Loading…</div>
+      </div>
+    )
+  }
 
   // Auth gate: any step other than 'ready' shows Login
   if (auth.step !== 'ready') {
     return <Login />
   }
 
-  const page = route.split('?')[0]
+  const rawPage = route.split('?')[0] || '/overview'
+  const page = rawPage === '' || rawPage === '/' ? '/overview' : rawPage
 
   return (
-    <div className="flex h-full flex-col">
-      <TopBar me={auth.me} />
-      <div className="flex flex-1 overflow-hidden">
-        <Sidebar activeCount={live.activeCount} />
+    <div className="flex h-screen w-screen overflow-hidden bg-bg">
+      {/* Full-height Sidebar */}
+      <Sidebar
+        activeCount={live.activeCount}
+        collapsed={collapsed}
+        onToggleCollapse={() => setCollapsed(!collapsed)}
+      />
+
+      {/* Main Container */}
+      <div className="flex flex-1 flex-col overflow-hidden min-w-0">
+        <TitleBar />
         <main className="flex-1 overflow-auto">
           {page === '/overview' && <Overview />}
           {page === '/downloads' && <Downloads />}
           {page === '/uploads' && <Uploads />}
           {page === '/queue' && <Queue />}
-          {page === '/library' && <Library />}
           {page === '/settings' && <Settings />}
-          {!['/overview', '/downloads', '/uploads', '/queue', '/library', '/settings'].includes(page) && (
+          {!['/overview', '/downloads', '/uploads', '/queue', '/settings'].includes(page) && (
             <div className="flex h-full items-center justify-center">
               <Empty message="Page not found" action={{ label: 'Go to Overview', onClick: () => navigate('/overview') }} />
             </div>

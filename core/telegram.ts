@@ -92,7 +92,7 @@ async function launch(c: Creds) {
   const cl = tdl.createClient({
     apiId: c.apiId, apiHash: c.apiHash,
     databaseDirectory: path.join(deps.dir, 'db'), filesDirectory: path.join(deps.dir, 'files'),
-    tdlibParameters: { use_message_database: true, use_secret_chats: false, system_language_code: 'en',
+    tdlibParameters: { use_message_database: true, use_chat_info_database: true, use_file_database: true, use_secret_chats: false, system_language_code: 'en',
       device_model: 'TeleFlow', system_version: 'Windows', application_version: deps.version },
   })
   client = cl
@@ -274,7 +274,13 @@ export const linkType = (link: string) => invoke({ _: 'getInternalLinkType', lin
   .catch((e) => { throw (e as AppError).status === 404 ? notALink() : e })
 const getChat = async (id: number) => {
   if (!id) throw fail(404, "You don't have access to that chat")
-  return chats.get(id) ?? await invoke({ _: 'getChat', chat_id: id })
+  let c = chats.get(id)
+  if (!c) {
+    c = await invoke({ _: 'getChat', chat_id: id })
+    chats.set(c.id, c)
+    chatsChanged()
+  }
+  return c
 }
 
 /** Opens a public chat, invite link, or message link; an unjoined invite returns a preview unless `join`. */

@@ -1,6 +1,7 @@
 // Phase 5: Complete UI primitives per UI.md
 import { type ReactNode, type LegacyRef, useState, useEffect, useRef, createContext, useContext } from 'react'
-import { Loader2, ChevronDown, X, Search, Check } from 'lucide-react'
+import { Loader2, ChevronDown, X, Search, Check, Pause, Play } from 'lucide-react'
+import { call } from './api.ts'
 
 type Tone = 'primary' | 'success' | 'warning' | 'danger' | 'neutral'
 type Status = 'queued' | 'active' | 'paused' | 'completed' | 'failed'
@@ -50,7 +51,7 @@ export function Button({
   children: ReactNode, variant?: 'primary' | 'secondary' | 'tint' | 'danger', tone?: Tone, busy?: boolean
   disabled?: boolean, type?: 'button' | 'submit', onClick?: () => void, className?: string
 }) {
-  const base = 'rounded-[10px] px-4 py-2 text-[13px] font-semibold transition-colors disabled:opacity-60'
+  const base = 'rounded-md px-3.5 py-1.5 text-[13px] font-medium transition-colors disabled:opacity-60'
   const variants = {
     primary: 'bg-primary text-text hover:bg-[#3b82f6]',
     secondary: 'border border-border bg-tile hover:border-primary',
@@ -78,7 +79,7 @@ export function IconButton({
   return (
     <button
       onClick={onClick} disabled={disabled} aria-label={label} title={label}
-      className={`rounded-[10px] p-2 transition-colors ${variant === 'primary' ? 'bg-primary hover:bg-[#3b82f6]'
+      className={`rounded-md p-2 transition-colors ${variant === 'primary' ? 'bg-primary hover:bg-[#3b82f6]'
         : variant === 'tint' && tone === 'danger' ? 'bg-danger/15 hover:bg-danger/25' : 'bg-tile hover:bg-tile/80'} ${className || ''}`}
     >
       {icon}
@@ -93,7 +94,7 @@ export function Input({
   placeholder?: string, required?: boolean, autoComplete?: string
   inputMode?: 'text' | 'numeric' | 'tel', spellCheck?: boolean
 }) {
-  const input = 'mt-1 block w-full rounded-[10px] border border-border bg-tile px-3 py-2 text-[13px] text-text placeholder:text-muted focus:border-primary'
+  const input = 'mt-1 block w-full rounded-md border border-border bg-tile px-3 py-2 text-[13px] text-text placeholder:text-muted focus:border-primary'
   const field = (
     <input
       type={type} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder}
@@ -108,7 +109,7 @@ export function Panel({ title, icon, subtitle, action, children }: {
   title?: string, icon?: ReactNode, subtitle?: string, action?: ReactNode, children: ReactNode 
 }) {
   return (
-    <div className="rounded-[14px] border border-border bg-panel/85 p-4 backdrop-blur">
+    <div className="rounded-lg border border-border bg-panel/85 p-4 backdrop-blur">
       {title && (
         <div className="mb-4 flex items-start justify-between">
           <div className="flex items-center gap-3">
@@ -151,32 +152,100 @@ export function Stat({ icon, tone, label, value, split }: {
   )
 }
 
-export function Pill({ kind, status, finalizing, label }: { 
-  kind?: Kind, status?: Status, finalizing?: boolean, label?: string 
+export function Pill({
+  kind,
+  status,
+  finalizing,
+  label,
+}: {
+  kind?: Kind
+  status?: Status | 'none' | 'downloaded' | string
+  finalizing?: boolean
+  label?: string
 }) {
-  const text = label || (finalizing ? 'Finalizing' : status === 'queued' ? 'Queued' : status === 'active' 
-    ? (kind === 'upload' ? 'Uploading' : 'Downloading') : status === 'paused' ? 'Paused' 
-    : status === 'completed' ? 'Completed' : 'Failed')
-  const cls = finalizing || status === 'active' ? 'bg-primary text-text' 
-    : status === 'paused' || finalizing ? 'border border-warning text-warning'
-    : status === 'completed' ? 'border border-success text-success'
-    : status === 'failed' ? 'border border-danger text-danger'
-    : 'border border-border text-muted'
-  return <span className={`inline-flex h-6 items-center rounded-full px-2.5 text-[11px] font-medium ${cls}`}>{text}</span>
+  if (label) {
+    return <span className="inline-flex h-6 items-center rounded-full border border-white/10 bg-white/5 px-2.5 text-[11px] font-medium text-text-2">{label}</span>
+  }
+  if (finalizing) {
+    return (
+      <span className="inline-flex h-6 items-center gap-1.5 rounded-full border border-warning/40 bg-warning/15 px-2.5 text-[11px] font-semibold text-warning">
+        <span className="size-1.5 rounded-full bg-warning animate-pulse" />
+        Finalizing
+      </span>
+    )
+  }
+  if (status === 'downloading' || (status === 'active' && kind !== 'upload')) {
+    return (
+      <span className="inline-flex h-6 items-center gap-1.5 rounded-full border border-cyan/40 bg-cyan/15 px-2.5 text-[11px] font-semibold text-cyan">
+        <span className="size-1.5 rounded-full bg-cyan animate-pulse" />
+        Downloading
+      </span>
+    )
+  }
+  if (status === 'uploading' || (status === 'active' && kind === 'upload')) {
+    return (
+      <span className="inline-flex h-6 items-center gap-1.5 rounded-full border border-upload/40 bg-upload/15 px-2.5 text-[11px] font-semibold text-upload">
+        <span className="size-1.5 rounded-full bg-upload animate-pulse" />
+        Uploading
+      </span>
+    )
+  }
+  if (status === 'downloaded' || status === 'completed') {
+    return (
+      <span className="inline-flex h-6 items-center gap-1.5 rounded-full border border-success/40 bg-success/15 px-2.5 text-[11px] font-semibold text-success">
+        <span className="size-1.5 rounded-full bg-success" />
+        Downloaded
+      </span>
+    )
+  }
+  if (status === 'queued') {
+    return (
+      <span className="inline-flex h-6 items-center gap-1.5 rounded-full border border-white/10 bg-white/5 px-2.5 text-[11px] font-semibold text-text-2">
+        <span className="size-1.5 rounded-full bg-muted" />
+        Queued
+      </span>
+    )
+  }
+  if (status === 'paused') {
+    return (
+      <span className="inline-flex h-6 items-center gap-1.5 rounded-full border border-warning/40 bg-warning/15 px-2.5 text-[11px] font-semibold text-warning">
+        <span className="size-1.5 rounded-full bg-warning" />
+        Paused
+      </span>
+    )
+  }
+  if (status === 'failed') {
+    return (
+      <span className="inline-flex h-6 items-center gap-1.5 rounded-full border border-danger/40 bg-danger/15 px-2.5 text-[11px] font-semibold text-danger">
+        <span className="size-1.5 rounded-full bg-danger" />
+        Failed
+      </span>
+    )
+  }
+  return <span className="inline-flex h-6 items-center rounded-full border border-white/10 bg-white/5 px-2.5 text-[11px] font-medium text-muted">Not downloaded</span>
 }
 
 export function Progress({ done, size, tone = 'primary' }: { done: number, size: number, tone?: Tone }) {
   const percent = size > 0 ? (done / size) * 100 : 0
-  const tones = { primary: 'bg-primary', success: 'bg-success', warning: 'bg-warning', danger: 'bg-danger', neutral: 'bg-muted' }
+  const tones = {
+    primary: 'bg-cyan',
+    success: 'bg-success',
+    warning: 'bg-upload',
+    danger: 'bg-danger',
+    neutral: 'bg-muted',
+  }
   return (
-    <div>
-      <div className="flex items-center justify-between text-[12px]">
-        <span className="tabular-nums">{Math.round(percent)}%</span>
+    <div className="w-full">
+      <div className="flex items-center justify-between text-[11px] mb-1 font-medium">
+        <span className="tabular-nums font-semibold text-text">{Math.round(percent)}%</span>
+        <span className="text-muted tabular-nums">{fmtBytes(done)} / {fmtBytes(size)}</span>
       </div>
-      <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-[#1e2a47]">
-        <div className={`h-full transition-all ${tones[tone]}`} style={{ width: `${Math.min(100, percent)}%` }} />
+      <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/[0.08]">
+        <div
+          className={`h-full rounded-full transition-all duration-300 ${tones[tone]}`}
+          style={{ width: `${Math.min(100, Math.max(percent > 0 ? 1 : 0, percent))}%` }}
+        />
       </div>
-      <div className="mt-0.5 text-[11px] text-muted">{fmtBytes(done)} / {fmtBytes(size)}</div>
     </div>
   )
 }
@@ -210,11 +279,11 @@ export function Select({ label, value, options, onChange, className }: {
     <div className="relative">
       <select
         value={value} onChange={(e) => onChange(options.find((o) => String(o.value) === e.target.value)!.value)}
-        className={`appearance-none rounded-[10px] border border-border bg-tile py-2 pl-3 pr-9 text-[13px] hover:border-primary ${className || ''}`}
+        className={`appearance-none rounded-md border border-border bg-tile py-1.5 pl-3 pr-8 text-[12.5px] hover:border-primary ${className || ''}`}
       >
         {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
       </select>
-      <ChevronDown size={16} className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-muted" />
+      <ChevronDown size={14} className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-muted" />
     </div>
   )
   return label ? <label className="block text-[12px] text-muted">{label}<div className="mt-1">{sel}</div></label> : sel
@@ -224,11 +293,11 @@ export function Segmented({ options, value, onChange }: {
   options: { value: string, label: string, icon: ReactNode }[], value: string, onChange: (v: string) => void 
 }) {
   return (
-    <div role="radiogroup" className="inline-flex gap-1 rounded-[10px] bg-tile p-1">
+    <div role="radiogroup" className="inline-flex gap-1 rounded-md bg-tile p-1">
       {options.map((o) => (
         <button
           key={o.value} role="radio" aria-checked={value === o.value} onClick={() => onChange(o.value)}
-          className={`flex items-center gap-2 rounded-lg px-3 py-1.5 text-[13px] font-medium transition ${
+          className={`flex items-center gap-2 rounded-md px-3 py-1.5 text-[12.5px] font-medium transition ${
             value === o.value ? 'bg-primary text-text' : 'hover:bg-tile/60'
           }`}
         >
@@ -239,14 +308,46 @@ export function Segmented({ options, value, onChange }: {
   )
 }
 
-export function Toggle({ label, checked, onChange }: { label: string, checked: boolean, onChange: (v: boolean) => void }) {
+export function Toggle({
+  label,
+  checked,
+  onChange,
+  disabled,
+}: {
+  label?: string
+  checked: boolean
+  onChange: (v: boolean) => void
+  disabled?: boolean
+}) {
   return (
-    <label className="flex cursor-pointer items-center gap-3">
-      <input type="checkbox" role="switch" checked={checked} onChange={(e) => onChange(e.target.checked)} className="peer sr-only" />
-      <div className="h-6 w-11 rounded-full bg-tile transition peer-checked:bg-primary relative">
-        <div className="absolute top-1 left-1 h-4 w-4 rounded-full bg-white transition peer-checked:translate-x-5" />
+    <label
+      onClick={(e) => {
+        e.preventDefault()
+        if (!disabled) onChange(!checked)
+      }}
+      className={`inline-flex items-center gap-3 select-none ${disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+    >
+      <input
+        type="checkbox"
+        role="switch"
+        aria-checked={checked}
+        checked={checked}
+        onChange={() => {}}
+        className="sr-only"
+        disabled={disabled}
+      />
+      <div
+        className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full border transition-colors duration-200 ease-in-out ${
+          checked ? 'bg-primary border-primary' : 'bg-tile border-border'
+        }`}
+      >
+        <span
+          className={`pointer-events-none inline-block size-4 rounded-full bg-white shadow transition-transform duration-200 ease-in-out ${
+            checked ? 'translate-x-6' : 'translate-x-1'
+          }`}
+        />
       </div>
-      <span className="text-[13px]">{label}</span>
+      {label && <span className="text-[13px] text-text font-medium">{label}</span>}
     </label>
   )
 }
@@ -259,11 +360,11 @@ export function SearchInput({ value, onChange, placeholder, className }: {
       <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
       <input
         type="search" value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder}
-        className="w-full rounded-[10px] border border-border bg-tile py-2 pl-9 pr-3 text-[13px] placeholder:text-muted focus:border-primary"
+        className="w-full rounded-md border border-border bg-tile py-1.5 pl-8 pr-3 text-[12.5px] placeholder:text-muted focus:border-primary outline-none"
       />
       {value && (
         <button onClick={() => onChange('')} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted hover:text-text">
-          <X size={16} />
+          <X size={14} />
         </button>
       )}
     </div>
@@ -307,13 +408,28 @@ export function Avatar({ src, name, size = 36 }: { src: string | null, name: str
 }
 
 export function Thumb({ src, name }: { src: string | null, name: string }) {
-  const ext = name.split('.').pop()?.toLowerCase()
-  return src ? (
-    <img src={src} alt={name} className="h-7 w-10 rounded object-cover" />
-  ) : (
-    <div className="flex h-7 w-10 items-center justify-center rounded bg-tile text-[9px] font-bold uppercase text-muted">
-      {ext?.slice(0, 3)}
-    </div>
+  const [failed, setFailed] = useState(false)
+  const ext = (name.split('.').pop() || 'FILE').toUpperCase()
+
+  if (!src || failed) {
+    return (
+      <div className="flex h-7 w-10 shrink-0 items-center justify-center rounded bg-tile text-[9px] font-bold uppercase text-muted border border-border/40">
+        {ext.slice(0, 3)}
+      </div>
+    )
+  }
+
+  const url = src.startsWith('teleflow://') || src.startsWith('data:') || src.startsWith('blob:') || src.startsWith('http')
+    ? src
+    : `teleflow://thumb/${src}`
+
+  return (
+    <img
+      src={url}
+      alt={name}
+      onError={() => setFailed(true)}
+      className="h-7 w-10 shrink-0 rounded object-cover border border-border/40"
+    />
   )
 }
 
@@ -353,61 +469,104 @@ export function Menu({ trigger, items }: MenuProps) {
 export function Dialog({ open, onClose, title, children, actions }: { 
   open: boolean, onClose: () => void, title: string, children: ReactNode, actions?: ReactNode 
 }) {
-  const ref = useRef<HTMLDialogElement>(null)
   useEffect(() => {
-    if (open && !ref.current?.open) ref.current?.showModal()
-    if (!open && ref.current?.open) ref.current?.close()
-  }, [open])
-  useEffect(() => {
-    const dialog = ref.current
-    const handleClose = () => onClose()
+    if (!open) return
     const handleEscape = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
-    dialog?.addEventListener('close', handleClose)
-    dialog?.addEventListener('keydown', handleEscape)
-    return () => {
-      dialog?.removeEventListener('close', handleClose)
-      dialog?.removeEventListener('keydown', handleEscape)
-    }
-  }, [onClose])
+    window.addEventListener('keydown', handleEscape)
+    return () => window.removeEventListener('keydown', handleEscape)
+  }, [open, onClose])
+
+  if (!open) return null
+
   return (
-    <dialog ref={ref} className="rounded-[14px] border border-border bg-panel p-6 backdrop:bg-black/50">
-      <h2 className="mb-4 text-[18px] font-bold">{title}</h2>
-      <div className="mb-4">{children}</div>
-      {actions && <div className="flex justify-end gap-2">{actions}</div>}
-    </dialog>
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm select-none"
+      onClick={onClose}
+    >
+      <div
+        className="relative w-full max-w-md rounded-xl border border-border bg-[#1e293b] p-6 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h2 className="mb-3 text-[17px] font-bold text-text">{title}</h2>
+        <div className="mb-4 text-text">{children}</div>
+        {actions && <div className="flex justify-end gap-2">{actions}</div>}
+      </div>
+    </div>
   )
 }
 
-const confirmCtx = createContext<(opts: { title: string, message: string, confirm: string, danger?: boolean, typed?: string, checkbox?: string }) => Promise<boolean>>(null as any)
+type ConfirmOpts = {
+  title: string
+  message: string
+  confirm: string
+  danger?: boolean
+  typed?: string
+  checkbox?: string
+}
+
+type ConfirmState = {
+  opts: ConfirmOpts
+  resolve: (value: boolean) => void
+}
+
+let confirmDispatcher: ((s: ConfirmState | null) => void) | null = null
+
+export function confirm(opts: ConfirmOpts): Promise<boolean> {
+  if (!confirmDispatcher) {
+    return Promise.resolve(window.confirm(`${opts.title}\n\n${opts.message}`))
+  }
+  return new Promise<boolean>((resolve) => {
+    confirmDispatcher!({ opts, resolve })
+  })
+}
+
 export function ConfirmHost({ children }: { children: ReactNode }) {
-  const [state, setState] = useState<{ opts: any, resolve: (v: boolean) => void } | null>(null)
+  const [state, setState] = useState<ConfirmState | null>(null)
   const [typed, setTyped] = useState('')
   const [checked, setChecked] = useState(false)
-  const confirm = (opts: any) => new Promise<boolean>((resolve) => setState({ opts, resolve }))
-  const close = (result: boolean) => { state?.resolve(result); setState(null); setTyped(''); setChecked(false) }
+
+  useEffect(() => {
+    confirmDispatcher = (s) => {
+      setTyped('')
+      setChecked(false)
+      setState(s)
+    }
+    return () => { confirmDispatcher = null }
+  }, [])
+
+  const close = (result: boolean) => {
+    state?.resolve(result)
+    setState(null)
+    setTyped('')
+    setChecked(false)
+  }
+
   return (
-    <confirmCtx.Provider value={confirm}>
+    <>
       {children}
       {state && (
         <Dialog open title={state.opts.title} onClose={() => close(false)}>
-          <p className="text-[13px]">{state.opts.message}</p>
+          <p className="text-[13px] text-text-2">{state.opts.message}</p>
           {state.opts.typed && (
             <input
-              value={typed} onChange={(e) => setTyped(e.target.value)} placeholder={`Type ${state.opts.typed} to confirm`}
-              className="mt-3 w-full rounded-lg border border-border bg-tile px-3 py-2 text-[13px]"
+              value={typed}
+              onChange={(e) => setTyped(e.target.value)}
+              placeholder={`Type ${state.opts.typed} to confirm`}
+              className="mt-3 w-full rounded-[10px] border border-border bg-tile px-3 py-2 text-[13px] text-text focus:border-primary outline-none"
+              autoFocus
             />
           )}
           {state.opts.checkbox && (
-            <label className="mt-3 flex items-center gap-2 text-[13px]">
+            <label className="mt-3 flex items-center gap-2 text-[13px] text-text cursor-pointer select-none">
               <input type="checkbox" checked={checked} onChange={(e) => setChecked(e.target.checked)} />
-              {state.opts.checkbox}
+              <span>{state.opts.checkbox}</span>
             </label>
           )}
-          <div className="mt-4 flex justify-end gap-2">
+          <div className="mt-5 flex justify-end gap-2">
             <Button variant="secondary" onClick={() => close(false)}>Cancel</Button>
             <Button
               variant={state.opts.danger ? 'danger' : 'primary'}
-              disabled={state.opts.typed && typed !== state.opts.typed}
+              disabled={Boolean(state.opts.typed && typed.trim().toUpperCase() !== state.opts.typed.trim().toUpperCase())}
               onClick={() => close(true)}
             >
               {state.opts.confirm}
@@ -415,10 +574,9 @@ export function ConfirmHost({ children }: { children: ReactNode }) {
           </div>
         </Dialog>
       )}
-    </confirmCtx.Provider>
+    </>
   )
 }
-export const confirm = (opts: { title: string, message: string, confirm: string, danger?: boolean, typed?: string, checkbox?: string }) => useContext(confirmCtx)(opts)
 
 const toasts: { id: number, message: string, tone?: Tone }[] = []
 const toastListeners = new Set<() => void>()
@@ -476,4 +634,288 @@ export function ErrorState({ error, onRetry }: { error: string, onRetry: () => v
       <Button variant="secondary" onClick={onRetry}>Retry</Button>
     </div>
   )
+}
+
+export function OpenChatDialog({
+  open,
+  onClose,
+  onSuccess,
+}: {
+  open: boolean
+  onClose: () => void
+  onSuccess?: (chatId: number) => void
+}) {
+  const [link, setLink] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const [invite, setInvite] = useState<{ title: string, members: number, photo: string | null } | null>(null)
+
+  const handleOpen = async (join = false) => {
+    if (!link.trim()) return
+    setBusy(true)
+    setError('')
+    try {
+      const res = await call<any>('chats.open', { link: link.trim(), join })
+      if (res.invite && !join) {
+        setInvite(res.invite)
+      } else if (res.chat) {
+        onSuccess?.(res.chat.id)
+        onClose()
+        setLink('')
+        setInvite(null)
+      }
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const resetAndClose = () => {
+    setLink('')
+    setError('')
+    setInvite(null)
+    onClose()
+  }
+
+  return (
+    <Dialog open={open} onClose={resetAndClose} title={invite ? 'Join Channel?' : 'Connect Channel or Chat'}>
+      {invite ? (
+        <div>
+          <p className="text-[13px] text-text-2">
+            Do you want to join <strong className="text-text">{invite.title}</strong> ({invite.members} members)?
+          </p>
+          {error && <p role="alert" className="mt-3 text-[13px] text-danger">{error}</p>}
+          <div className="mt-4 flex justify-end gap-2">
+            <Button variant="secondary" onClick={() => setInvite(null)} disabled={busy}>Back</Button>
+            <Button variant="primary" busy={busy} onClick={() => handleOpen(true)}>Join & Open</Button>
+          </div>
+        </div>
+      ) : (
+        <div>
+          <p className="text-[13px] text-text-2 mb-3">
+            Enter a public channel username (@channel), t.me link, or private invite link.
+          </p>
+          <input
+            type="text"
+            placeholder="@username, t.me/channel, or https://t.me/+..."
+            value={link}
+            onChange={(e) => setLink(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') handleOpen(false) }}
+            className="w-full rounded-[10px] border border-border bg-tile px-3 py-2 text-[13px] text-text placeholder:text-muted focus:border-primary outline-none"
+          />
+          {error && <p role="alert" className="mt-3 text-[13px] text-danger">{error}</p>}
+          <div className="mt-4 flex justify-end gap-2">
+            <Button variant="secondary" onClick={resetAndClose} disabled={busy}>Cancel</Button>
+            <Button variant="primary" busy={busy} disabled={!link.trim()} onClick={() => handleOpen(false)}>Open</Button>
+          </div>
+        </div>
+      )}
+    </Dialog>
+  )
+}
+
+export function TransferCard({
+  job,
+  onPause,
+  onResume,
+  onCancel,
+}: {
+  job: any
+  onPause?: (id: number) => void
+  onResume?: (id: number) => void
+  onCancel?: (id: number) => void
+}) {
+  return (
+    <div className="rounded-xl border border-white/[0.08] bg-[#0c142b]/80 p-3 shadow-sm hover:border-white/20 transition-colors">
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex items-center gap-2.5 overflow-hidden min-w-0 flex-1">
+          <Thumb src={job.thumb} name={job.name} />
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-[13px] font-medium text-text" title={job.name}>{job.name}</div>
+            {job.chatTitle && <div className="text-[11px] text-muted truncate">{job.chatTitle}</div>}
+          </div>
+        </div>
+        <Pill kind={job.kind} status={job.status} finalizing={job.finalizing} />
+      </div>
+      <div className="mt-2.5">
+        <Progress done={job.done || 0} size={job.size || 0} tone={job.kind === 'upload' ? 'warning' : 'primary'} />
+      </div>
+      <div className="mt-2 flex items-center justify-between text-[11px] text-text-2">
+        <div className="flex items-center gap-2">
+          {job.speed > 0 && <span className="text-cyan font-semibold tabular-nums">{fmtSpeed(job.speed)}</span>}
+          <span>{job.status === 'active' && job.eta ? `${fmtEta(job.eta)} left` : fmtBytes(job.size || 0)}</span>
+        </div>
+        <div className="flex items-center gap-1">
+          {job.status === 'active' && onPause && (
+            <button
+              onClick={() => onPause(job.id)}
+              className="rounded p-1 hover:bg-white/10 text-muted hover:text-text transition-colors"
+              title="Pause"
+            >
+              <Pause size={13} />
+            </button>
+          )}
+          {job.status === 'paused' && onResume && (
+            <button
+              onClick={() => onResume(job.id)}
+              className="rounded p-1 hover:bg-white/10 text-muted hover:text-text transition-colors"
+              title="Resume"
+            >
+              <Play size={13} />
+            </button>
+          )}
+          {onCancel && (
+            <button
+              onClick={() => onCancel(job.id)}
+              className="rounded p-1 hover:bg-danger/20 text-muted hover:text-danger transition-colors"
+              title="Cancel"
+            >
+              <X size={13} />
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+export function MediaPreviewModal({
+  open,
+  item,
+  onClose,
+  onDownload,
+}: {
+  open: boolean
+  item: {
+    name: string
+    path?: string | null
+    thumb?: string | null
+    type?: string
+    size?: number
+    duration?: number
+  } | null
+  onClose: () => void
+  onDownload?: () => void
+}) {
+  useEffect(() => {
+    if (!open) return
+    const handleKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', handleKey)
+    return () => window.removeEventListener('keydown', handleKey)
+  }, [open, onClose])
+
+  if (!open || !item) return null
+
+  const ext = item.name.split('.').pop()?.toLowerCase() || ''
+  const isVideo = ['mp4', 'webm', 'mkv', 'mov', 'm4v'].includes(ext) || item.type === 'video' || item.type === 'video_note'
+  const isImage = ['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp'].includes(ext) || item.type === 'photo' || item.type === 'image'
+  const isAudio = ['mp3', 'ogg', 'wav', 'flac', 'm4a', 'aac'].includes(ext) || item.type === 'audio' || item.type === 'voice'
+
+  const localUrl = item.path ? `teleflow://file/${encodeURIComponent(item.path)}` : null
+  const thumbUrl = item.thumb ? `teleflow://thumb/${item.thumb}` : null
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-black/85 p-6 backdrop-blur-md"
+      onClick={onClose}
+    >
+      <div
+        className="relative flex max-h-[90vh] max-w-[90vw] flex-col rounded-xl border border-border bg-[#1e293b] p-5 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="mb-4 flex items-center justify-between gap-4 border-b border-border/50 pb-3">
+          <div className="min-w-0 flex-1">
+            <h3 className="truncate text-[15px] font-bold text-text" title={item.name}>
+              {item.name}
+            </h3>
+            <div className="mt-0.5 flex items-center gap-3 text-[11px] text-muted">
+              {item.size ? <span>{fmtBytes(item.size)}</span> : null}
+              {item.duration ? <span>{fmtDuration(item.duration)}</span> : null}
+              <TypeChip ext={ext.toUpperCase()} />
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            {item.path ? (
+              <Button
+                variant="secondary"
+                onClick={() => call('library.open', { path: item.path })}
+                className="py-1 px-3 text-[12px]"
+              >
+                Open in App
+              </Button>
+            ) : onDownload ? (
+              <Button
+                variant="primary"
+                onClick={() => { onDownload(); onClose() }}
+                className="py-1 px-3 text-[12px]"
+              >
+                Download
+              </Button>
+            ) : null}
+            <button
+              onClick={onClose}
+              className="flex size-8 items-center justify-center rounded-lg border border-border bg-tile text-text-2 hover:border-primary hover:text-text transition-colors"
+              title="Close (Esc)"
+            >
+              <X size={16} />
+            </button>
+          </div>
+        </div>
+
+        {/* Media Content */}
+        <div className="flex flex-1 items-center justify-center overflow-hidden">
+          {isVideo && localUrl ? (
+            <video
+              src={localUrl}
+              controls
+              autoPlay
+              className="max-h-[70vh] max-w-[80vw] rounded-lg shadow-lg"
+            />
+          ) : isImage && (localUrl || thumbUrl) ? (
+            <img
+              src={localUrl || thumbUrl!}
+              alt={item.name}
+              className="max-h-[70vh] max-w-[80vw] object-contain rounded-lg shadow-lg"
+            />
+          ) : isAudio && localUrl ? (
+            <div className="flex flex-col items-center gap-4 py-8 px-12">
+              <div className="text-[14px] text-text font-medium">{item.name}</div>
+              <audio src={localUrl} controls autoPlay className="w-80" />
+            </div>
+          ) : thumbUrl ? (
+            <div className="flex flex-col items-center gap-3">
+              <img
+                src={thumbUrl}
+                alt={item.name}
+                className="max-h-[60vh] max-w-[70vw] object-contain rounded-lg shadow-lg"
+              />
+              <div className="text-[12px] text-muted text-center">
+                Preview thumbnail. {item.path ? '' : 'Download the file to view full content.'}
+              </div>
+            </div>
+          ) : (
+            <div className="flex flex-col items-center justify-center py-16 px-20 text-center">
+              <div className="size-16 rounded-2xl bg-primary/20 flex items-center justify-center text-primary mb-3">
+                <TypeChip ext={ext.toUpperCase() || 'FILE'} />
+              </div>
+              <div className="text-[14px] font-semibold text-text max-w-sm truncate">{item.name}</div>
+              <div className="text-[12px] text-muted mt-1">
+                {item.path ? 'Ready to open with your system default app.' : 'File not downloaded yet.'}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/** Dispatches animation event for flying Telegram logo to the Queue nav item */
+export function triggerFlyToQueue(e?: React.MouseEvent | { clientX: number, clientY: number }) {
+  if (typeof window === 'undefined') return
+  const x = e ? ('clientX' in e ? e.clientX : window.innerWidth / 2) : window.innerWidth / 2
+  const y = e ? ('clientY' in e ? e.clientY : window.innerHeight / 2) : window.innerHeight / 2
+  window.dispatchEvent(new CustomEvent('mediagram-fly-to-queue', { detail: { x, y } }))
 }

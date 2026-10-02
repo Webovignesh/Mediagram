@@ -1,6 +1,6 @@
 {
-  "name": "teleflow",
-  "version": "1.0.0",
+  "name": "mediagram",
+  "version": "1.0.6",
   "private": true,
   "description": "Desktop download and upload manager for Telegram media, powered by TDLib.",
   "type": "module",
@@ -35,15 +35,15 @@
     "electron-builder": "26.15.3",
     "electron-vite": "5.0.0",
     "lucide-react": "1.49.0",
-    "react": "19.3.0",
-    "react-dom": "19.3.0",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
     "tailwindcss": "4.3.3",
     "typescript": "7.0.2",
     "vite": "7.3.6"
   },
   "build": {
-    "appId": "com.teleflow.app",
-    "productName": "TeleFlow",
+    "appId": "com.mediagram.app",
+    "productName": "Mediagram",
     "directories": {
       "output": "release",
       "buildResources": "assets"
@@ -70,7 +70,7 @@
       "createStartMenuShortcut": true,
       "deleteAppDataOnUninstall": false,
       "include": "assets/installer.nsh",
-      "artifactName": "TeleFlow-Setup-${version}.${ext}"
+      "artifactName": "Mediagram-Setup-${version}.${ext}"
     }
   }
 }

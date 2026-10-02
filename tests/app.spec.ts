@@ -6,7 +6,9 @@ import os from 'node:os'
 import path from 'node:path'
 import { _electron as electron, expect, test } from '@playwright/test'
 
-const exe = path.resolve('release/win-unpacked/TeleFlow.exe').toLowerCase()
+const exe = (fs.existsSync(path.resolve('release/win-unpacked/Mediagram.exe'))
+  ? path.resolve('release/win-unpacked/Mediagram.exe')
+  : path.resolve('release/win-unpacked/TeleFlow.exe')).toLowerCase()
 const homes: string[] = []
 const tempHome = () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'teleflow-'))
@@ -98,7 +100,10 @@ test('packaged exe boots, loads TDLib, and shows the API Keys step', async () =>
 test('Start with Windows writes the Run value, reads back on after a relaunch, and turning it off removes it', async () => {
   test.setTimeout(120_000)
   const home = tempHome()
-  const runValue = () => spawnSync('reg', ['query', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run', '/v', 'com.teleflow.app']).status
+  const runValue = () => {
+    const s1 = spawnSync('reg', ['query', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run', '/v', 'com.mediagram.app']).status
+    return s1 === 0 ? 0 : spawnSync('reg', ['query', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run', '/v', 'com.teleflow.app']).status
+  }
   let app = await launch(home)
   try {
     let win = await app.firstWindow()
