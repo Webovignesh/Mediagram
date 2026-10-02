@@ -1,0 +1,30 @@
+{
+  "verdict": "APPROVED",
+  "findings": [
+    {
+      "id": 1,
+      "severity": "NIT",
+      "title": "The failed scan set is cleared only when the connection leaves ready, so an error raised while offline sticks until the next outage",
+      "where": "ARCHITECTURE > Media index scan (failed set; Live upkeep clearing rule)",
+      "problem": "A page error during a connection outage (auth still ready) adds the chat to failed after the clear has already run, so the reconnect does not give it the promised new try; it waits for the next outage or a restart.",
+      "fix": "current is cleared whenever updateConnectionState leaves ready; failed is cleared whenever it enters ready."
+    },
+    {
+      "id": 2,
+      "severity": "NIT",
+      "title": "An upload TDLib is still sending after a restart has no live state, so it holds no slot and shows no progress",
+      "where": "ARCHITECTURE > Transfer engine > Pump (free = limit minus jobs with live state); Upload step 6 (sendingStatePending -> keep waiting)",
+      "problem": "With the review-4 free rule, a recovered pending upload does not count against maxUploads, so a second upload starts beside it; its updateFile events are unrouted, so its Queue bar is frozen until it settles. No duplicate posts; throughput and cosmetics only.",
+      "fix": "Either: a pending id in sendingStatePending gives its job live state (file id from extractMedia(m).file.id into inFlight), or add a ponytail: note with the upgrade path in Upload step 6 and PROGRESS."
+    },
+    {
+      "id": 3,
+      "severity": "NIT",
+      "title": "The review-4 response header will point at the wrong review file",
+      "where": "ARCHITECTURE > Design review 4: responses; PROGRESS > Phases > 1. Setup",
+      "problem": "docs/.design-review.md now holds review 5; the review-4 header does not say so, unlike earlier response sections.",
+      "fix": "Header: 'Review 4 (CHANGES_REQUESTED, 0 HIGH, 2 MEDIUM, 2 NIT; docs/.design-review.md now holds review 5, APPROVED)'; tick 'Design review 5 approved' in PROGRESS Phase 1."
+    }
+  ],
+  "reviewDoc": "c:\\Users\\REBEL DUKER\\Downloads\\tele\\.worktrees\\teleflow\\docs/.design-review.md"
+}

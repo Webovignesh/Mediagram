@@ -1,0 +1,33 @@
+{
+  "verdict": "APPROVED",
+  "findings": [
+    {
+      "id": 1,
+      "severity": "LOW",
+      "blocking": false,
+      "confidence": "confirmed",
+      "title": "Protected-folder lists not resolved for the real-location check",
+      "detail": "settings.set runs checkDownloadRoot on realLocation(root), but electron/main.ts builds roots.sealed and roots.guarded from raw paths (paths.home, paths.appDir, AppData, env folders, app.getPath known folders) with no realpath. A known folder that is itself a junction (for example C:\\Users\\u\\Documents -> D:\\Docs, which app.getPath('documents') still reports as C:\\Users\\u\\Documents) can be picked by its target D:\\Docs: both the path check and the real check pass. The same applies to TELEFLOW_HOME or a custom install folder reached through a junction or 8.3 path. The new ipc test realpaths the lists itself ('main's lists are real paths'), which main does not do, so the test masks the gap. Nothing is deleted until 3.6 adds Clear All Data's 'delete downloads', but the Library would list that folder.",
+      "action": "When main builds the lists, include each entry's fs.realpathSync.native form next to the raw one (fall back to the raw path when it throws). Change the test to pass the junction path as the guarded entry and assert its target is rejected. Land before 3.6."
+    },
+    {
+      "id": 2,
+      "severity": "LOW",
+      "blocking": false,
+      "confidence": "confirmed",
+      "title": "Real-location check runs only at save time",
+      "detail": "The junction rule is enforced only when settings.set receives a downloadRoot. The default root (app.getPath('downloads')\\TeleFlow) is returned by getSettings without being stored or checked, and a saved root can later be replaced by a junction into a protected folder. ARCHITECTURE's 'a junction such as D:\\Media -> Documents gets the same 400' holds only at save time. Review 1 #6 offered a 3.6-side check as the alternative; it is still needed because Clear All Data's delete is the action that turns a bad root into data loss.",
+      "action": "Phase 3 item 3.6: run checkDownloadRoot(await realLocation(root), roots) right before Clear All Data deletes downloads, and refuse the delete on a 400; note it in ARCHITECTURE > Storage and maintenance."
+    },
+    {
+      "id": 3,
+      "severity": "NIT",
+      "blocking": false,
+      "confidence": "confirmed",
+      "title": "Invite joins and thumbnail size cap have no runnable check",
+      "detail": "tests/telegram.test.ts covers the branches review 1 named, but core/telegram.ts openChat's invite branches (preview without join, chatJoinResultRequestSent -> 409, declined/guard-bot -> 403, success adds to opened) and thumbFile's 413 before downloadFile (keeps teleflow://thumb from fetching large files) are untested. Also untested: the updateOption caption refresh and updateUser premium change on me, and linkType's 404 -> 400 mapping.",
+      "action": "Add two small cases to tests/telegram.test.ts with the existing fake client (invite results; thumbFile with expected_size > 2 MB asserts 413 and no downloadFile request), for example with 3.5's telegram.ts work."
+    }
+  ],
+  "reviewDoc": "c:\\Users\\REBEL DUKER\\Downloads\\tele\\.worktrees\\teleflow\\docs/.phase2-review.md"
+}
