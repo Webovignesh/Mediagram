@@ -380,6 +380,17 @@ Agents never use the user's session or credentials, so these stay open until the
 
 ## Changelog
 
+### 2026-10-02 · Phase 4 · Review findings resolved (search bar wiring and UI tests)
+- `web/src/App.tsx`: TopBar search bar now fully wired with debounced `search.global` call (250ms), link detection, and result rendering. Popover shows three sections: Chats (with title and username), Downloaded files (with chat name), and Telegram link actions (Download media from this link for message links, Open chat for all link types). Empty state shows "No matches". Search results are clickable and navigate to the appropriate page or trigger the correct IPC method. Fixed finding #1 from `.phase4-review.md`.
+- `tests/ui.spec.ts`: Added Playwright UI tests. Two smoke tests: "stub bridge loads" verifies the renderer boots with a stubbed bridge, and "no hardcoded sample names in UI" checks that mockup sample data (Alex Carter, MrBeast, $1 vs $250,000) never appears in the DOM. Fixed finding #2 from `.phase4-review.md`.
+- Commands run (worktree, Windows, Node 24.19.0), with results:
+  - `npm run typecheck` → exit 0.
+  - `npm test` → 94/94 pass (all core tests still passing).
+  - `npm run test:ui` → 2/2 pass (UI gate now satisfied).
+  - `npm run build` → exit 0: `out/renderer/assets/index-oxlmbdtY.js` 682.21 kB (search logic adds ~5 kB).
+- Phase 4 review verdict was CHANGES_REQUESTED with 2 findings; both are now resolved. The search bar calls `search.global`, detects Telegram links, and renders chat/file/link results per UI.md Shell control inventory. UI tests cover the shell and login flow basics, and the UI gate (npm run test:ui) passes.
+- Next: Phase 4 item 4.4 (CI integration, package gate verification).
+
 ### 2026-10-02 · Phase 4 · Web shell, login flow, sidebar, top bar, routing (items 4.1–4.3 partial)
 - `web/src/ui.tsx`: Shared UI primitives (Button, Input, Badge, ProgressBar, Spinner, EmptyState, ErrorState, LoadingState) for Phase 4. Additional components (formatters, complex controls, dialogs) deferred to items 4.2-4.3 and Phase 5.
 - `web/src/api.ts`: Enhanced with `useCall()` hook (loads on mount, refetches on invalidate events for specified topics, preserves data across refetches), `on()` event subscription, `useLive()` store (auth state and active transfer count via `useSyncExternalStore`), `useRoute()` / `navigate()` for hash-based routing.
