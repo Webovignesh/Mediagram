@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Home, Download, Upload, ListOrdered, FolderOpen, Settings as SettingsIcon, Search, ChevronDown, Send } from 'lucide-react'
 import { call, useCall, useLive, useRoute, navigate } from './api.ts'
-import { Badge, EmptyState, ErrorState } from './ui.tsx'
+import { Empty, ErrorState, Badge } from './ui.tsx'
 import type { AuthState, Me, Chat } from '../../core/shapes.ts'
 import Login from './pages/Login.tsx'
 import Overview from './pages/Overview.tsx'
@@ -277,7 +277,7 @@ export default function App() {
           {page === '/settings' && <Settings />}
           {!['/overview', '/downloads', '/uploads', '/queue', '/library', '/settings'].includes(page) && (
             <div className="flex h-full items-center justify-center">
-              <EmptyState message="Page not found" action={{ label: 'Go to Overview', onClick: () => navigate('/overview') }} />
+              <Empty message="Page not found" action={{ label: 'Go to Overview', onClick: () => navigate('/overview') }} />
             </div>
           )}
         </main>
