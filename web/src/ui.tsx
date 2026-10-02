@@ -1,6 +1,6 @@
 // Phase 5: Complete UI primitives per UI.md
 import { type ReactNode, type LegacyRef, useState, useEffect, useRef, createContext, useContext } from 'react'
-import { Loader2, ChevronDown, X, Search, Check, Pause, Play } from 'lucide-react'
+import { Loader2, ChevronDown, X, Search, Check, Pause, Play, Download } from 'lucide-react'
 import { call } from './api.ts'
 
 type Tone = 'primary' | 'success' | 'warning' | 'danger' | 'neutral'
@@ -164,11 +164,11 @@ export function Pill({
   label?: string
 }) {
   if (label) {
-    return <span className="inline-flex h-6 items-center rounded-full border border-white/10 bg-white/5 px-2.5 text-[11px] font-medium text-text-2">{label}</span>
+    return <span className="inline-flex h-6 items-center justify-center rounded-full border border-white/10 bg-white/5 px-3 text-[11px] font-medium text-text-2 whitespace-nowrap shrink-0">{label}</span>
   }
   if (finalizing) {
     return (
-      <span className="inline-flex h-6 items-center gap-1.5 rounded-full border border-warning/40 bg-warning/15 px-2.5 text-[11px] font-semibold text-warning">
+      <span className="inline-flex h-6 items-center justify-center gap-1.5 rounded-full border border-warning/40 bg-warning/15 px-3 text-[11px] font-semibold text-warning whitespace-nowrap shrink-0">
         <span className="size-1.5 rounded-full bg-warning animate-pulse" />
         Finalizing
       </span>
@@ -176,7 +176,7 @@ export function Pill({
   }
   if (status === 'downloading' || (status === 'active' && kind !== 'upload')) {
     return (
-      <span className="inline-flex h-6 items-center gap-1.5 rounded-full border border-cyan/40 bg-cyan/15 px-2.5 text-[11px] font-semibold text-cyan">
+      <span className="inline-flex h-6 items-center justify-center gap-1.5 rounded-full border border-cyan/40 bg-cyan/15 px-3 text-[11px] font-semibold text-cyan whitespace-nowrap shrink-0">
         <span className="size-1.5 rounded-full bg-cyan animate-pulse" />
         Downloading
       </span>
@@ -184,15 +184,23 @@ export function Pill({
   }
   if (status === 'uploading' || (status === 'active' && kind === 'upload')) {
     return (
-      <span className="inline-flex h-6 items-center gap-1.5 rounded-full border border-upload/40 bg-upload/15 px-2.5 text-[11px] font-semibold text-upload">
+      <span className="inline-flex h-6 items-center justify-center gap-1.5 rounded-full border border-upload/40 bg-upload/15 px-3 text-[11px] font-semibold text-upload whitespace-nowrap shrink-0">
         <span className="size-1.5 rounded-full bg-upload animate-pulse" />
         Uploading
       </span>
     )
   }
-  if (status === 'downloaded' || status === 'completed') {
+  if (status === 'uploaded' || (status === 'completed' && kind === 'upload')) {
     return (
-      <span className="inline-flex h-6 items-center gap-1.5 rounded-full border border-success/40 bg-success/15 px-2.5 text-[11px] font-semibold text-success">
+      <span className="inline-flex h-6 items-center justify-center gap-1.5 rounded-full border border-success/40 bg-success/15 px-3 text-[11px] font-semibold text-success whitespace-nowrap shrink-0">
+        <span className="size-1.5 rounded-full bg-success" />
+        Uploaded
+      </span>
+    )
+  }
+  if (status === 'downloaded' || (status === 'completed' && kind !== 'upload')) {
+    return (
+      <span className="inline-flex h-6 items-center justify-center gap-1.5 rounded-full border border-success/40 bg-success/15 px-3 text-[11px] font-semibold text-success whitespace-nowrap shrink-0">
         <span className="size-1.5 rounded-full bg-success" />
         Downloaded
       </span>
@@ -200,7 +208,7 @@ export function Pill({
   }
   if (status === 'queued') {
     return (
-      <span className="inline-flex h-6 items-center gap-1.5 rounded-full border border-white/10 bg-white/5 px-2.5 text-[11px] font-semibold text-text-2">
+      <span className="inline-flex h-6 items-center justify-center gap-1.5 rounded-full border border-white/10 bg-white/5 px-3 text-[11px] font-semibold text-text-2 whitespace-nowrap shrink-0">
         <span className="size-1.5 rounded-full bg-muted" />
         Queued
       </span>
@@ -208,7 +216,7 @@ export function Pill({
   }
   if (status === 'paused') {
     return (
-      <span className="inline-flex h-6 items-center gap-1.5 rounded-full border border-warning/40 bg-warning/15 px-2.5 text-[11px] font-semibold text-warning">
+      <span className="inline-flex h-6 items-center justify-center gap-1.5 rounded-full border border-warning/40 bg-warning/15 px-3 text-[11px] font-semibold text-warning whitespace-nowrap shrink-0">
         <span className="size-1.5 rounded-full bg-warning" />
         Paused
       </span>
@@ -216,13 +224,13 @@ export function Pill({
   }
   if (status === 'failed') {
     return (
-      <span className="inline-flex h-6 items-center gap-1.5 rounded-full border border-danger/40 bg-danger/15 px-2.5 text-[11px] font-semibold text-danger">
+      <span className="inline-flex h-6 items-center justify-center gap-1.5 rounded-full border border-danger/40 bg-danger/15 px-3 text-[11px] font-semibold text-danger whitespace-nowrap shrink-0">
         <span className="size-1.5 rounded-full bg-danger" />
         Failed
       </span>
     )
   }
-  return <span className="inline-flex h-6 items-center rounded-full border border-white/10 bg-white/5 px-2.5 text-[11px] font-medium text-muted">Not downloaded</span>
+  return <span className="inline-flex h-6 items-center justify-center rounded-full border border-white/10 bg-white/5 px-3 text-[11px] font-medium text-muted whitespace-nowrap shrink-0">Not downloaded</span>
 }
 
 export function Progress({ done, size, tone = 'primary' }: { done: number, size: number, tone?: Tone }) {
@@ -357,10 +365,10 @@ export function SearchInput({ value, onChange, placeholder, className }: {
 }) {
   return (
     <div className={`relative ${className || ''}`}>
-      <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+      <Search size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
       <input
         type="search" value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder}
-        className="w-full rounded-md border border-border bg-tile py-1.5 pl-8 pr-3 text-[12.5px] placeholder:text-muted focus:border-primary outline-none"
+        className="w-full rounded-lg border border-border bg-tile py-1.5 pl-9 pr-3 text-[12.5px] placeholder:text-muted focus:border-primary outline-none"
       />
       {value && (
         <button onClick={() => onChange('')} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted hover:text-text">
@@ -821,7 +829,7 @@ export function MediaPreviewModal({
       onClick={onClose}
     >
       <div
-        className="relative flex max-h-[90vh] max-w-[90vw] flex-col rounded-xl border border-border bg-[#1e293b] p-5 shadow-2xl"
+        className="relative flex w-[90vw] max-w-5xl max-h-[92vh] min-h-[500px] flex-col rounded-2xl border border-white/10 bg-[#121c2d] p-6 shadow-2xl backdrop-blur-xl"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -841,7 +849,7 @@ export function MediaPreviewModal({
               <Button
                 variant="secondary"
                 onClick={() => call('library.open', { path: item.path })}
-                className="py-1 px-3 text-[12px]"
+                className="py-1.5 px-3.5 text-[12px]"
               >
                 Open in App
               </Button>
@@ -849,9 +857,9 @@ export function MediaPreviewModal({
               <Button
                 variant="primary"
                 onClick={() => { onDownload(); onClose() }}
-                className="py-1 px-3 text-[12px]"
+                className="py-1.5 px-3.5 text-[12px] flex items-center gap-1.5"
               >
-                Download
+                <Download size={14} /> Download
               </Button>
             ) : null}
             <button
@@ -865,31 +873,75 @@ export function MediaPreviewModal({
         </div>
 
         {/* Media Content */}
-        <div className="flex flex-1 items-center justify-center overflow-hidden">
-          {isVideo && localUrl ? (
-            <video
-              src={localUrl}
-              controls
-              autoPlay
-              className="max-h-[70vh] max-w-[80vw] rounded-lg shadow-lg"
-            />
+        <div className="flex flex-1 items-center justify-center overflow-hidden min-h-[420px] bg-black/40 rounded-xl p-2 border border-white/5">
+          {isVideo ? (
+            localUrl ? (
+              <video
+                src={localUrl}
+                controls
+                autoPlay
+                className="max-h-[75vh] w-full max-w-4xl rounded-lg shadow-2xl bg-black object-contain"
+              />
+            ) : (
+              <div className="flex flex-col items-center justify-center gap-4 py-8 px-4 text-center">
+                {thumbUrl && (
+                  <div className="relative max-h-[60vh] max-w-2xl overflow-hidden rounded-xl shadow-2xl">
+                    <img src={thumbUrl} alt={item.name} className="max-h-[55vh] object-contain rounded-xl" />
+                    <div className="absolute inset-0 flex items-center justify-center bg-black/40">
+                      <div className="size-16 rounded-full bg-primary/90 text-white flex items-center justify-center shadow-xl">
+                        <Play size={28} className="ml-1 fill-white" />
+                      </div>
+                    </div>
+                  </div>
+                )}
+                <div className="text-[13px] text-muted">
+                  Video preview available. Download the file to play in full quality.
+                </div>
+                {onDownload && (
+                  <Button variant="primary" onClick={() => { onDownload(); onClose() }} className="py-2 px-5 text-[13px] flex items-center gap-2">
+                    <Download size={15} /> Download &amp; Play
+                  </Button>
+                )}
+              </div>
+            )
           ) : isImage && (localUrl || thumbUrl) ? (
             <img
               src={localUrl || thumbUrl!}
               alt={item.name}
-              className="max-h-[70vh] max-w-[80vw] object-contain rounded-lg shadow-lg"
+              className="max-h-[75vh] max-w-full object-contain rounded-lg shadow-2xl"
             />
-          ) : isAudio && localUrl ? (
-            <div className="flex flex-col items-center gap-4 py-8 px-12">
-              <div className="text-[14px] text-text font-medium">{item.name}</div>
-              <audio src={localUrl} controls autoPlay className="w-80" />
-            </div>
+          ) : isAudio ? (
+            localUrl ? (
+              <div className="flex flex-col items-center justify-center gap-6 py-12 px-16 w-full max-w-md">
+                <div className="size-24 rounded-full bg-primary/20 text-primary flex items-center justify-center shadow-xl border border-primary/30">
+                  <Play size={36} className="ml-1 fill-primary" />
+                </div>
+                <div className="text-center">
+                  <div className="text-[15px] text-white font-semibold truncate max-w-sm">{item.name}</div>
+                  <div className="text-[12px] text-muted mt-1">{item.size ? fmtBytes(item.size) : ''} {item.duration ? `• ${fmtDuration(item.duration)}` : ''}</div>
+                </div>
+                <audio src={localUrl} controls autoPlay className="w-full" />
+              </div>
+            ) : (
+              <div className="flex flex-col items-center justify-center gap-4 py-12 px-8 text-center">
+                <div className="size-20 rounded-full bg-primary/20 text-primary flex items-center justify-center mb-2">
+                  <Play size={32} className="ml-1" />
+                </div>
+                <div className="text-[14px] text-white font-medium">{item.name}</div>
+                <div className="text-[12px] text-muted">Audio file not downloaded yet.</div>
+                {onDownload && (
+                  <Button variant="primary" onClick={() => { onDownload(); onClose() }} className="py-2 px-5 text-[13px] flex items-center gap-2">
+                    <Download size={15} /> Download &amp; Play
+                  </Button>
+                )}
+              </div>
+            )
           ) : thumbUrl ? (
             <div className="flex flex-col items-center gap-3">
               <img
                 src={thumbUrl}
                 alt={item.name}
-                className="max-h-[60vh] max-w-[70vw] object-contain rounded-lg shadow-lg"
+                className="max-h-[70vh] max-w-full object-contain rounded-lg shadow-lg"
               />
               <div className="text-[12px] text-muted text-center">
                 Preview thumbnail. {item.path ? '' : 'Download the file to view full content.'}
@@ -897,13 +949,18 @@ export function MediaPreviewModal({
             </div>
           ) : (
             <div className="flex flex-col items-center justify-center py-16 px-20 text-center">
-              <div className="size-16 rounded-2xl bg-primary/20 flex items-center justify-center text-primary mb-3">
+              <div className="size-20 rounded-2xl bg-primary/20 flex items-center justify-center text-primary mb-4 shadow">
                 <TypeChip ext={ext.toUpperCase() || 'FILE'} />
               </div>
-              <div className="text-[14px] font-semibold text-text max-w-sm truncate">{item.name}</div>
-              <div className="text-[12px] text-muted mt-1">
-                {item.path ? 'Ready to open with your system default app.' : 'File not downloaded yet.'}
+              <div className="text-[15px] font-semibold text-text max-w-md truncate">{item.name}</div>
+              <div className="text-[12px] text-muted mt-1.5">
+                {item.path ? 'Ready to open with your system default application.' : 'File not downloaded yet.'}
               </div>
+              {!item.path && onDownload && (
+                <Button variant="primary" onClick={() => { onDownload(); onClose() }} className="mt-4 py-2 px-5 text-[13px] flex items-center gap-2">
+                  <Download size={15} /> Download File
+                </Button>
+              )}
             </div>
           )}
         </div>

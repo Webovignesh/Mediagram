@@ -220,6 +220,8 @@ test('mediaQuery: type buckets, duration needs > 0, size buckets, status, escape
   assert.deepEqual([ids({ type: 'video' }), ids({ type: 'audio' }), ids({ type: 'photo' })], [[2, 1], [5, 4], [3]])
   assert.deepEqual([ids({ duration: 'short' }), ids({ duration: 'medium' }), ids({ duration: 'long' }), ids({ duration: 'xlong' })], [[5, 1], [], [2], [4]])
   assert.deepEqual([ids({ size: 'small' }), ids({ size: 'medium' }), ids({ size: 'large' }), ids({ size: 'xlarge' })], [[6, 3, 1], [2], [4], [5]])
+  assert.deepEqual(ids({ size: `custom:${4 * MB}:${60 * MB}` }), [2, 1])
+  assert.deepEqual(ids({ duration: 'custom:20:800' }), [2, 1])
   assert.deepEqual([ids({ ext: 'pdf' }), ids({ q: '%' }), ids({ q: 'quarter' }), ids({ q: 'g_1' })], [[6], [6], [6], [4]])
   assert.deepEqual([ids({ status: 'downloaded' }), ids({ status: 'queued' }), ids({ status: 'none' })], [[3], [2], [6, 5, 4, 1]])
   const items = mediaQuery(db, 7, {}).items

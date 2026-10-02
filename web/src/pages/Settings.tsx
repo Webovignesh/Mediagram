@@ -133,9 +133,9 @@ export default function Settings() {
         </div>
       </Dialog>
 
-      {/* Category Navigation Column (~180px) */}
-      <div className="w-[180px] shrink-0 border-r border-border bg-panel/30 p-3 space-y-1 overflow-y-auto">
-        <div className="px-2 py-2 text-[12px] font-bold text-muted uppercase">Settings</div>
+      {/* Category Navigation Column (~240px) */}
+      <div className="w-[240px] shrink-0 border-r border-border bg-panel/30 p-3 space-y-1 overflow-y-auto">
+        <div className="px-2 py-2.5 text-[11px] font-bold text-muted uppercase tracking-wider">Settings</div>
         {[
           { id: 'general', icon: SettingsIcon, label: 'General', subtitle: 'Startup & tray' },
           { id: 'downloads', icon: Download, label: 'Downloads', subtitle: 'Location & limits' },
@@ -157,8 +157,8 @@ export default function Settings() {
           >
             <Icon size={16} className="mt-0.5 shrink-0" />
             <div className="min-w-0">
-              <div className="text-[13px] font-medium leading-tight">{label}</div>
-              <div className={`text-[10px] leading-tight ${activeSection === id ? 'text-white/80' : 'text-muted'}`}>{subtitle}</div>
+              <div className="text-[13px] font-medium leading-snug">{label}</div>
+              <div className={`text-[11px] leading-normal mt-0.5 ${activeSection === id ? 'text-white/85' : 'text-muted'}`}>{subtitle}</div>
             </div>
           </button>
         ))}
@@ -166,9 +166,11 @@ export default function Settings() {
 
       {/* Main Settings Panels (Full-Width Flex-1 Center, Right Column Removed) */}
       <div className="flex-1 overflow-y-auto p-6 space-y-5 w-full">
-        <div>
-          <h1 className="text-[28px] font-bold">Settings</h1>
-          <p className="mt-1 text-[13px] text-text-2">Customize your experience and manage application preferences</p>
+        <div className="flex items-center justify-between pr-40">
+          <div>
+            <h1 className="text-[26px] font-bold text-white tracking-wide">Settings</h1>
+            <p className="mt-1 text-[13px] text-text-2">Customize your experience and manage application preferences</p>
+          </div>
         </div>
 
         {/* General */}

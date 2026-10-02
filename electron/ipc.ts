@@ -102,9 +102,19 @@ const kind = oneOf('download', 'upload')
 const range = oneOf('24h', '7d', '30d')
 const message = fields({ chatId: id, messageId: id })
 const ext: Check<string> = (v, f) => match(/^[a-z0-9]{1,16}$/i, 'must be a file extension')(v, f).toLowerCase()
+const durationVal: Check<string> = (v, f) => {
+  if (v === 'short' || v === 'medium' || v === 'long' || v === 'xlong') return v
+  if (typeof v === 'string' && /^custom:\d+:\d+$/.test(v)) return v
+  throw reject(f, 'must be one of: short, medium, long, xlong')
+}
+const sizeVal: Check<string> = (v, f) => {
+  if (v === 'small' || v === 'medium' || v === 'large' || v === 'xlarge') return v
+  if (typeof v === 'string' && /^custom:\d+:\d+$/.test(v)) return v
+  throw reject(f, 'must be one of: small, medium, large, xlarge')
+}
 const filterSpec = {
   type: opt(oneOf('video', 'photo', 'document', 'audio', 'animation')), ext: opt(ext),
-  duration: opt(oneOf('short', 'medium', 'long', 'xlong')), size: opt(oneOf('small', 'medium', 'large', 'xlarge')),
+  duration: opt(durationVal), size: opt(sizeVal),
   status: opt(oneOf('none', 'queued', 'active', 'paused', 'failed', 'downloaded')), q,
   sort: opt(oneOf('newest', 'oldest', 'largest', 'smallest', 'name', 'longest')),
 }
@@ -193,6 +203,22 @@ export function createMethods(ctx: Ctx) {
 
     'chats.list': method(shape({}), () => tg.chatList()),
     'chats.open': method(shape({ link: text(300, 2), join: flag }), ({ link, join }) => tg.openChat(link, join)),
+    'chats.leave': method(shape({ chatId: id }), async ({ chatId }) => {
+      await tg.leaveChat(chatId)
+      return { ok: true }
+    }),
+    'chats.delete': method(shape({ chatId: id }), async ({ chatId }) => {
+      await tg.deleteChat(chatId)
+      return { ok: true }
+    }),
+    'chats.clear': method(shape({ chatId: id }), async ({ chatId }) => {
+      await tg.clearChat(chatId)
+      return { ok: true }
+    }),
+    'chats.send': method(shape({ chatId: id, text: text(4096, 1) }), async ({ chatId, text: msgText }) => {
+      await tg.sendMessage(chatId, msgText)
+      return { ok: true }
+    }),
     'chats.messages': method(shape({ chatId: id, limit: int(1, 1000, 30) }), async ({ chatId, limit }) => {
       const r = await tg.messages(chatId, limit)
       const states = downloadStates(db, chatId, r.messages.filter((m) => m.media).map((m) => m.id))

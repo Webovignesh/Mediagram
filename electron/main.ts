@@ -151,9 +151,12 @@ function startup() {
       try {
         const file = req.method === 'GET' ? await protocolFile(req.url, ctx) : null
         if (!file) return new Response(null, { status: 404 })
+        if (req.url.startsWith('teleflow://thumb/')) {
+          const buf = await fs.promises.readFile(file)
+          return new Response(buf, { headers: { 'Content-Type': 'image/jpeg', 'Cache-Control': 'public, max-age=2592000, immutable' } })
+        }
         const res = await net.fetch(pathToFileURL(file).href)
-        if (!req.url.startsWith('teleflow://thumb/')) return res
-        return new Response(res.body, { headers: { 'Content-Type': res.headers.get('Content-Type') ?? '', 'Cache-Control': 'private, max-age=86400' } })
+        return res
       } catch { return new Response(null, { status: 404 }) } // not signed in, bad URL, file gone
     })
     ipcMain.handle('call', (e, req) => {

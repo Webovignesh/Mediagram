@@ -323,11 +323,66 @@ export async function messages(chatId: number, limit: number) {
   for (let from = 0; out.length < limit;) {
     const page = await invoke({ _: 'getChatHistory', chat_id: chatId, from_message_id: from, offset: 0, limit: Math.min(100, limit - out.length), only_local: false })
     const got = page.messages.filter((m) => m !== null)
-    if (!got.length) return { messages: out.map(toMessage), more: false }
+    if (!got.length) {
+      const msgs = out.map(toMessage)
+      prefetchThumbs(msgs.map((m) => m.media?.thumb))
+      return { messages: msgs, more: false }
+    }
     out.push(...got)
     from = got[got.length - 1].id
   }
-  return { messages: out.map(toMessage), more: true }
+  const msgs = out.map(toMessage)
+  prefetchThumbs(msgs.map((m) => m.media?.thumb))
+  return { messages: msgs, more: true }
+}
+
+/** Leave a channel or supergroup, or delete chat from list */
+export async function leaveChat(chatId: number) {
+  if (auth.step !== 'ready') throw fail(503, 'Telegram is not connected yet')
+  try {
+    await invoke({ _: 'leaveChat', chat_id: chatId })
+  } catch {
+    await invoke({ _: 'deleteChatHistory', chat_id: chatId, remove_from_chat_list: true, revoke: false })
+  }
+  chats.delete(chatId)
+  opened.delete(chatId)
+  chatsChanged()
+}
+
+/** Delete chat history and remove from chat list */
+export async function deleteChat(chatId: number) {
+  if (auth.step !== 'ready') throw fail(503, 'Telegram is not connected yet')
+  try {
+    await invoke({ _: 'deleteChatHistory', chat_id: chatId, remove_from_chat_list: true, revoke: true })
+  } catch {
+    await invoke({ _: 'leaveChat', chat_id: chatId })
+  }
+  chats.delete(chatId)
+  opened.delete(chatId)
+  chatsChanged()
+}
+
+/** Clear all message history in a chat without leaving */
+export async function clearChat(chatId: number) {
+  if (auth.step !== 'ready') throw fail(503, 'Telegram is not connected yet')
+  await invoke({ _: 'deleteChatHistory', chat_id: chatId, remove_from_chat_list: false, revoke: false })
+  mediaChanged(chatId)
+}
+
+/** Send a text message to a chat */
+export async function sendMessage(chatId: number, textMsg: string) {
+  if (auth.step !== 'ready') throw fail(503, 'Telegram is not connected yet')
+  const content = textMsg.trim()
+  if (!content) throw fail(400, 'Message cannot be empty')
+  await invoke({
+    _: 'sendMessage',
+    chat_id: chatId,
+    input_message_content: {
+      _: 'inputMessageText',
+      text: { _: 'formattedText', text: content, entities: [] },
+      clear_draft: true,
+    },
+  })
 }
 
 /** downloads.add `{ link }`: the linked message, or its whole album when the link points at one. */
@@ -474,11 +529,34 @@ function upkeep(m: Td.message) {
   if (x) mediaChanged(m.chat_id)
 }
 
+const thumbPathCache = new Map<string, string>()
+
+/** Prefetch remote thumbnail files asynchronously in background */
+export function prefetchThumbs(remoteIds: (string | null | undefined)[]) {
+  for (const id of remoteIds) {
+    if (!id || typeof id !== 'string' || thumbPathCache.has(id)) continue
+    void invoke({ _: 'getRemoteFile', remote_file_id: id }).then((f) => {
+      if (!f.local.is_downloading_completed) {
+        return invoke({ _: 'downloadFile', file_id: f.id, priority: 32, offset: 0, limit: 0, synchronous: false })
+      } else if (f.local.path && fs.existsSync(f.local.path)) {
+        thumbPathCache.set(id, f.local.path)
+      }
+    }).catch(() => {})
+  }
+}
+
 /** Local path of a thumbnail or avatar for teleflow://thumb; the size is checked before anything downloads. */
 export async function thumbFile(remoteId: string) {
+  const cached = thumbPathCache.get(remoteId)
+  if (cached && fs.existsSync(cached)) return cached
   let f = await invoke({ _: 'getRemoteFile', remote_file_id: remoteId })
   if ((f.expected_size || f.size) > 2 * 2 ** 20) throw fail(413, 'Thumbnail too large')
-  if (!f.local.is_downloading_completed) f = await invoke({ _: 'downloadFile', file_id: f.id, priority: 32, offset: 0, limit: 0, synchronous: true })
+  if (!f.local.is_downloading_completed) {
+    f = await invoke({ _: 'downloadFile', file_id: f.id, priority: 32, offset: 0, limit: 0, synchronous: true })
+  }
+  if (f.local.path && fs.existsSync(f.local.path)) {
+    thumbPathCache.set(remoteId, f.local.path)
+  }
   return f.local.path
 }
 

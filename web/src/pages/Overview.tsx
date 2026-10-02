@@ -227,9 +227,11 @@ export default function Overview() {
         onClose={() => setPreviewItem(null)}
       />
 
-      <div>
-        <h1 className="text-[28px] font-bold">Welcome to Mediagram</h1>
-        <p className="mt-1 text-[13px] text-text-2">Manage your Telegram video downloads and uploads in one powerful workspace.</p>
+      <div className="flex items-center justify-between pr-40">
+        <div>
+          <h1 className="text-[26px] font-bold text-white tracking-wide">Welcome to Mediagram</h1>
+          <p className="mt-1 text-[13px] text-text-2">Manage your Telegram video downloads and uploads in one powerful workspace.</p>
+        </div>
       </div>
 
       <div className="grid grid-cols-4 gap-4">
@@ -339,7 +341,7 @@ export default function Overview() {
                   <th className="w-10 text-center py-2.5 px-1 font-normal">#</th>
                   <th className="w-[24%] text-left py-2.5 px-2 font-medium">Source</th>
                   <th className="w-[28%] text-left py-2.5 px-2 font-medium">Name</th>
-                  <th className="w-20 text-right py-2.5 px-2 font-medium">Size</th>
+                  <th className="w-20 text-center py-2.5 px-2 font-medium">Size</th>
                   <th className="w-24 text-center py-2.5 px-2 font-medium">Direction</th>
                   <th className="w-44 text-left py-2.5 px-3 font-medium">Progress</th>
                   <th className="w-28 text-center py-2.5 px-2 font-medium">Status</th>
@@ -369,7 +371,7 @@ export default function Overview() {
                         {j.name}
                       </div>
                     </td>
-                    <td className="py-2.5 px-2 text-right tabular-nums text-text-2 font-medium">{fmtBytes(j.size)}</td>
+                    <td className="py-2.5 px-2 text-center tabular-nums text-text-2 font-medium">{fmtBytes(j.size)}</td>
                     <td className="py-2.5 px-2 text-center">
                       <span className={`inline-flex items-center gap-1 text-[11px] font-medium ${j.kind === 'download' ? 'text-cyan' : 'text-upload'}`}>
                         {j.kind === 'download' ? <ArrowDown size={12} /> : <ArrowUp size={12} />}

@@ -14,7 +14,10 @@ async function setupBridge(page: Page) {
       'stats.chats': { top: [{ chatId: 1, title: 'Test Channel', photo: null, count: 25 }] },
       'chats.list': { chats: [{ id: 1, title: 'Test Channel', kind: 'channel', username: 'testchannel', photo: null, unread: 0, lastDate: 1234567890, canPost: true, folders: [] }] },
       'chats.media': { items: [{ chatId: 1, messageId: 1, date: 1234567890, type: 'video', name: 'test.mp4', ext: 'mp4', size: 1048576, duration: 120, caption: '', thumb: null, status: 'none', jobId: null, path: null }], total: 1, exts: ['mp4'], scan: { state: 'done', indexed: 1, total: 1 } },
-      'chats.messages': { messages: [{ id: 1, date: 1234567890, sender: 'Test User', text: 'Hello', media: null }], more: false },
+      'chats.messages': { messages: [
+        { id: 2, date: 1234567990, sender: 'Test Channel', text: 'Here is the video preview', media: { chatId: 1, messageId: 2, date: 1234567990, type: 'video', name: 'demo_video.mp4', ext: 'mp4', size: 15728640, duration: 245, caption: 'Here is the video preview', thumb: null, status: 'none', jobId: null, path: null } },
+        { id: 1, date: 1234567890, sender: 'Test User', text: 'Hello', media: null }
+      ], more: false },
       'jobs.list': { jobs: [{ id: 1, kind: 'download', status: 'active', chatId: 1, chatTitle: 'Test Channel', chatUsername: 'testchannel', chatPhoto: null, messageId: 1, name: 'test.mp4', type: 'video', size: 1048576, done: 524288, thumb: null, path: null, error: null, retryAt: null, finishedAt: null }], total: 1 },
       'library.list': { items: [{ path: 'test.mp4', name: 'test.mp4', type: 'video', size: 1048576, mtime: 1234567890, chat: 'Test Channel', chatId: 1, messageId: 1, historyId: 1, preview: null }], total: 1, stats: { files: 1, size: 1048576, missing: 0 }, chats: ['Test Channel'] },
       'settings.get': { downloadRoot: 'C:\\Downloads\\TeleFlow', maxDownloads: 2, skipExisting: false, datePrefix: false, folderTemplate: '{chat}', defaultUploadChat: null, uploadAlbum: false, keepNames: false, maxUploads: 1, showArchived: false, autoRetry: true, retryAttempts: 3, stallSeconds: 30, clearCompletedDays: 7, notifyComplete: true, notifyFailed: true, closeToTray: false, startWithSystem: false },
@@ -71,6 +74,8 @@ test.describe('TeleFlow UI', () => {
     await page.screenshot({ path: 'tests/screenshots/overview-1440x900.png', fullPage: true })
     await page.setViewportSize({ width: 1280, height: 720 })
     await page.screenshot({ path: 'tests/screenshots/overview-1280x720.png', fullPage: true })
+    await page.setViewportSize({ width: 1024, height: 640 })
+    await page.screenshot({ path: 'tests/screenshots/overview-1024x640.png', fullPage: true })
   })
 
   test('Downloads page renders with all sections', async ({ page }) => {
@@ -88,6 +93,11 @@ test.describe('TeleFlow UI', () => {
     
     await page.setViewportSize({ width: 1440, height: 900 })
     await page.screenshot({ path: 'tests/screenshots/downloads-1440x900.png', fullPage: true })
+
+    // Also test and screenshot Chat View
+    await page.locator('text=Chat View').click()
+    await expect(page.locator('text=Media only')).toBeVisible()
+    await page.screenshot({ path: 'tests/screenshots/chat-view-1440x900.png', fullPage: true })
   })
 
   test('Uploads page renders with all sections', async ({ page }) => {

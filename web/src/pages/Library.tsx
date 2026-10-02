@@ -302,7 +302,7 @@ export default function Library() {
                     </th>
                     <th className="text-left p-2">File Name</th>
                     <th className="text-center p-2 w-16">Type</th>
-                    <th className="text-right p-2 w-20">Size</th>
+                    <th className="text-center p-2 w-20">Size</th>
                     <th className="text-left p-2">Chat</th>
                     <th className="text-left p-2 w-28">Date</th>
                     <th className="text-right p-2 w-28">Actions</th>
@@ -323,7 +323,7 @@ export default function Library() {
                           <span className="truncate font-medium text-text">{item.name}</span>
                         </td>
                         <td className="p-2 text-center"><TypeChip ext={item.name.split('.').pop() || ''} /></td>
-                        <td className="p-2 text-right tabular-nums text-text-2">{fmtBytes(item.size)}</td>
+                        <td className="p-2 text-center tabular-nums text-text-2">{fmtBytes(item.size)}</td>
                         <td className="p-2 text-muted truncate max-w-[150px]">{item.chat || 'Telegram'}</td>
                         <td className="p-2 text-muted text-[12px]">{fmtDate(item.mtime)}</td>
                         <td className="p-2 text-right">

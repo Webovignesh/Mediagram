@@ -1,9 +1,9 @@
 // Phase 5.2: Downloads page per UI.md & Mockup Reference
-import React, { useState } from 'react'
-import { Plus, RotateCcw, Download, Folder, CheckSquare, Square, FolderOpen, Send, ExternalLink, Copy, Filter, FileText } from 'lucide-react'
+import React, { useState, useRef, useEffect } from 'react'
+import { Plus, RotateCcw, Download, Folder, CheckSquare, Square, FolderOpen, Send, ExternalLink, Copy, Filter, FileText, ChevronDown, Play, SlidersHorizontal, ArrowDown, Trash2, Film, LogOut } from 'lucide-react'
 import { call, useCall, useLive, navigate } from '../api.ts'
 import type { LiveStats } from '../../../core/transfers.ts'
-import { Panel, SearchInput, Chip, Select, Button, Avatar, Pill, Thumb, TypeChip, Pagination, Empty, Skeleton, ErrorState, OpenChatDialog, MediaPreviewModal, fmtBytes, fmtAgo, fmtDuration, toast, triggerFlyToQueue } from '../ui.tsx'
+import { Panel, SearchInput, Chip, Select, Button, Avatar, Pill, Thumb, TypeChip, Pagination, Empty, Skeleton, ErrorState, OpenChatDialog, MediaPreviewModal, Dialog, fmtBytes, fmtAgo, fmtDuration, toast, triggerFlyToQueue, confirm } from '../ui.tsx'
 
 function LinkifiedText({
   text,
@@ -42,6 +42,24 @@ function LinkifiedText({
   )
 }
 
+function getDateGroup(timestampSec: number): string {
+  const date = new Date(timestampSec * 1000)
+  const today = new Date()
+  if (date.toDateString() === today.toDateString()) return 'Today'
+  const yesterday = new Date(today)
+  yesterday.setDate(today.getDate() - 1)
+  if (date.toDateString() === yesterday.toDateString()) return 'Yesterday'
+  return date.toLocaleDateString(undefined, {
+    month: 'long',
+    day: 'numeric',
+    year: date.getFullYear() !== today.getFullYear() ? 'numeric' : undefined,
+  })
+}
+
+function getMessageTime(timestampSec: number): string {
+  return new Date(timestampSec * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+}
+
 export default function Downloads() {
   const [openChat, setOpenChat] = useState(false)
   const [previewItem, setPreviewItem] = useState<any>(null)
@@ -62,10 +80,28 @@ export default function Downloads() {
   const [page, setPage] = useState(1)
   const [selectedIds, setSelectedIds] = useState<number[]>([])
 
+  // Custom filter state
+  const [customSizeModalOpen, setCustomSizeModalOpen] = useState(false)
+  const [customSizeMin, setCustomSizeMin] = useState('')
+  const [customSizeMinUnit, setCustomSizeMinUnit] = useState<'KB' | 'MB' | 'GB'>('MB')
+  const [customSizeMax, setCustomSizeMax] = useState('')
+  const [customSizeMaxUnit, setCustomSizeMaxUnit] = useState<'KB' | 'MB' | 'GB'>('MB')
+  const [appliedCustomSize, setAppliedCustomSize] = useState<{ minBytes: number, maxBytes: number, label: string } | null>(null)
+
+  const [customDurationModalOpen, setCustomDurationModalOpen] = useState(false)
+  const [customDurationMin, setCustomDurationMin] = useState('')
+  const [customDurationMinUnit, setCustomDurationMinUnit] = useState<'sec' | 'min' | 'hr'>('min')
+  const [customDurationMax, setCustomDurationMax] = useState('')
+  const [customDurationMaxUnit, setCustomDurationMaxUnit] = useState<'sec' | 'min' | 'hr'>('min')
+  const [appliedCustomDuration, setAppliedCustomDuration] = useState<{ minSec: number, maxSec: number, label: string } | null>(null)
+
   // Chat view state
   const [msgLimit, setMsgLimit] = useState(30)
   const [chatMsgSearch, setChatMsgSearch] = useState('')
   const [mediaOnlyChat, setMediaOnlyChat] = useState(false)
+  const chatScrollRef = useRef<HTMLDivElement>(null)
+  const messagesEndRef = useRef<HTMLDivElement>(null)
+  const [showScrollBottom, setShowScrollBottom] = useState(false)
 
   // Data fetching
   const { data: chatsData, error: chatsErr, reload: chatsReload } = useCall<{ chats: any[], folders: any[] }>('chats.list', {}, ['chats'])
@@ -94,8 +130,19 @@ export default function Downloads() {
     duration === 'longest' ? 'longest' :
     duration === 'shortest' ? 'oldest' : 'newest'
 
-  const resolvedSize = sizeFilter !== 'all' && sizeFilter !== 'largest' && sizeFilter !== 'smallest' ? sizeFilter : undefined
-  const resolvedDuration = duration !== 'all' && duration !== 'longest' && duration !== 'shortest' ? duration : undefined
+  const resolvedSize =
+    sizeFilter === 'custom' && appliedCustomSize
+      ? `custom:${appliedCustomSize.minBytes}:${appliedCustomSize.maxBytes}`
+      : sizeFilter !== 'all' && sizeFilter !== 'largest' && sizeFilter !== 'smallest' && sizeFilter !== 'custom'
+      ? sizeFilter
+      : undefined
+
+  const resolvedDuration =
+    duration === 'custom' && appliedCustomDuration
+      ? `custom:${appliedCustomDuration.minSec}:${appliedCustomDuration.maxSec}`
+      : duration !== 'all' && duration !== 'longest' && duration !== 'shortest' && duration !== 'custom'
+      ? duration
+      : undefined
 
   const mediaFilters = {
     chatId: activeChatId || 0,
@@ -136,8 +183,111 @@ export default function Downloads() {
     setMediaType('all')
     setDuration('all')
     setSizeFilter('all')
+    setAppliedCustomSize(null)
+    setAppliedCustomDuration(null)
     setPage(1)
     setSelectedIds([])
+  }
+
+  const unitToBytes = (u: 'KB' | 'MB' | 'GB') => (u === 'GB' ? 1024 * 1024 * 1024 : u === 'MB' ? 1024 * 1024 : 1024)
+  function applyCustomSize() {
+    const minVal = parseFloat(customSizeMin)
+    const maxVal = parseFloat(customSizeMax)
+    const minBytes = !isNaN(minVal) && minVal >= 0 ? Math.round(minVal * unitToBytes(customSizeMinUnit)) : 0
+    const maxBytes = !isNaN(maxVal) && maxVal > 0 ? Math.round(maxVal * unitToBytes(customSizeMaxUnit)) : Number.MAX_SAFE_INTEGER
+    if (minBytes > maxBytes) {
+      toast('Min size cannot be greater than Max size', 'danger')
+      return
+    }
+    const label = `${!isNaN(minVal) && minVal > 0 ? `${minVal} ${customSizeMinUnit}` : '0'} – ${!isNaN(maxVal) && maxVal > 0 ? `${maxVal} ${customSizeMaxUnit}` : '∞'}`
+    setAppliedCustomSize({ minBytes, maxBytes, label })
+    setSizeFilter('custom')
+    setPage(1)
+    setCustomSizeModalOpen(false)
+  }
+
+  const unitToSec = (u: 'sec' | 'min' | 'hr') => (u === 'hr' ? 3600 : u === 'min' ? 60 : 1)
+  function applyCustomDuration() {
+    const minVal = parseFloat(customDurationMin)
+    const maxVal = parseFloat(customDurationMax)
+    const minSec = !isNaN(minVal) && minVal >= 0 ? Math.round(minVal * unitToSec(customDurationMinUnit)) : 0
+    const maxSec = !isNaN(maxVal) && maxVal > 0 ? Math.round(maxVal * unitToSec(customDurationMaxUnit)) : Number.MAX_SAFE_INTEGER
+    if (minSec > maxSec) {
+      toast('Min duration cannot be greater than Max duration', 'danger')
+      return
+    }
+    const label = `${!isNaN(minVal) && minVal > 0 ? `${minVal} ${customDurationMinUnit}` : '0s'} – ${!isNaN(maxVal) && maxVal > 0 ? `${maxVal} ${customDurationMaxUnit}` : '∞'}`
+    setAppliedCustomDuration({ minSec, maxSec, label })
+    setDuration('custom')
+    setPage(1)
+    setCustomDurationModalOpen(false)
+  }
+
+  const scrollToBottom = (behavior: ScrollBehavior = 'smooth') => {
+    messagesEndRef.current?.scrollIntoView({ behavior })
+  }
+
+  // Only scroll to bottom when switching chats or entering chat view
+  useEffect(() => {
+    if (view === 'chat' && activeChatId) {
+      setTimeout(() => scrollToBottom('auto'), 100)
+    }
+  }, [view, activeChatId])
+
+  const handleLoadOlder = () => {
+    if (chatScrollRef.current) {
+      const scrollContainer = chatScrollRef.current
+      const prevScrollHeight = scrollContainer.scrollHeight
+      const prevScrollTop = scrollContainer.scrollTop
+      setMsgLimit((l) => Math.min(l + 30, 1000))
+      // Preserve scroll position so it doesn't jump to bottom
+      setTimeout(() => {
+        if (chatScrollRef.current) {
+          const newScrollHeight = chatScrollRef.current.scrollHeight
+          chatScrollRef.current.scrollTop = newScrollHeight - prevScrollHeight + prevScrollTop
+        }
+      }, 250)
+    } else {
+      setMsgLimit((l) => Math.min(l + 30, 1000))
+    }
+  }
+
+  const [newMsgText, setNewMsgText] = useState('')
+  const [sendingMsg, setSendingMsg] = useState(false)
+
+  async function handleSendChatMessage() {
+    if (!activeChatId || !newMsgText.trim() || sendingMsg) return
+    const txt = newMsgText.trim()
+    setSendingMsg(true)
+    try {
+      await call('chats.send', { chatId: activeChatId, text: txt })
+      setNewMsgText('')
+      toast('Message sent')
+      msgReload()
+      setTimeout(() => scrollToBottom('smooth'), 200)
+    } catch (e) {
+      toast((e as Error).message, 'danger')
+    } finally {
+      setSendingMsg(false)
+    }
+  }
+
+  async function clearChatHistory(id: number, title: string) {
+    if (await confirm({
+      title: 'Clear Chat History',
+      message: `Delete all messages in "${title}"? This cannot be undone.`,
+      confirm: 'Clear History',
+      danger: true,
+    })) {
+      try {
+        await call('chats.clear', { chatId: id })
+        toast(`Cleared chat history in ${title}`)
+        msgReload()
+        mediaReload()
+      } catch (e) {
+        toast((e as Error).message, 'danger')
+      }
+    }
   }
 
   const toggleSelect = (id: number) => {
@@ -184,6 +334,23 @@ export default function Downloads() {
     }
   }
 
+  async function downloadAllFolderMedia() {
+    if (!filteredChats.length) return
+    try {
+      let totalAdded = 0
+      for (const c of filteredChats) {
+        const res = await call<{ added: number, skipped: number }>('downloads.add', {
+          chatId: c.id,
+          filters: mediaFilters,
+        }).catch(() => ({ added: 0, skipped: 0 }))
+        totalAdded += res.added
+      }
+      toast(`Added ${totalAdded} files from folder channels to download queue`)
+    } catch (e) {
+      toast((e as Error).message, 'danger')
+    }
+  }
+
   async function revealFile(filePath: string) {
     try {
       await call('library.reveal', { path: filePath })
@@ -214,6 +381,33 @@ export default function Downloads() {
     toast('Copied to clipboard')
   }
 
+  async function confirmLeaveChat(id: number, title: string) {
+    if (await confirm({
+      title: 'Leave or Delete Channel',
+      message: `Are you sure you want to leave or remove "${title}"? You will stop receiving updates and files from it.`,
+      confirm: 'Leave Channel',
+      danger: true,
+    })) {
+      try {
+        await call('chats.leave', { chatId: id })
+        toast(`Left ${title}`)
+        if (chatId === id) {
+          setChatId(null)
+        }
+        chatsReload()
+      } catch (e) {
+        toast((e as Error).message, 'danger')
+      }
+    }
+  }
+
+  function copyChatLink(username?: string) {
+    if (!username) return
+    const link = `https://t.me/${username.replace(/^@/, '')}`
+    navigator.clipboard?.writeText(link)
+    toast('Link copied to clipboard')
+  }
+
   return (
     <div className="flex h-full overflow-hidden">
       <OpenChatDialog
@@ -229,10 +423,140 @@ export default function Downloads() {
         onDownload={previewItem?.messageId && activeChatId ? () => downloadItems([{ chatId: activeChatId, messageId: previewItem.messageId }], true) : undefined}
       />
 
-      {/* Column 1: Chats & Channels (~240px) */}
-      <div className="flex w-[240px] shrink-0 flex-col border-r border-border bg-panel/40">
+      {/* Custom Size Dialog */}
+      <Dialog
+        open={customSizeModalOpen}
+        onClose={() => setCustomSizeModalOpen(false)}
+        title="Custom Size Filter"
+      >
+        <div className="space-y-4">
+          <p className="text-[12.5px] text-muted leading-relaxed">
+            Specify a custom file size range to filter your channel media.
+          </p>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-[12px] font-medium text-text-2 mb-1.5">Min Size</label>
+              <div className="flex gap-1.5">
+                <input
+                  type="number"
+                  min="0"
+                  step="any"
+                  placeholder="0"
+                  value={customSizeMin}
+                  onChange={(e) => setCustomSizeMin(e.target.value)}
+                  className="w-full rounded-md border border-border bg-tile px-2.5 py-1.5 text-[13px] text-text outline-none focus:border-primary"
+                />
+                <select
+                  value={customSizeMinUnit}
+                  onChange={(e) => setCustomSizeMinUnit(e.target.value as any)}
+                  className="rounded-md border border-border bg-tile px-2 py-1.5 text-[12px] text-text cursor-pointer"
+                >
+                  <option value="KB">KB</option>
+                  <option value="MB">MB</option>
+                  <option value="GB">GB</option>
+                </select>
+              </div>
+            </div>
+            <div>
+              <label className="block text-[12px] font-medium text-text-2 mb-1.5">Max Size</label>
+              <div className="flex gap-1.5">
+                <input
+                  type="number"
+                  min="0"
+                  step="any"
+                  placeholder="No limit"
+                  value={customSizeMax}
+                  onChange={(e) => setCustomSizeMax(e.target.value)}
+                  className="w-full rounded-md border border-border bg-tile px-2.5 py-1.5 text-[13px] text-text outline-none focus:border-primary"
+                />
+                <select
+                  value={customSizeMaxUnit}
+                  onChange={(e) => setCustomSizeMaxUnit(e.target.value as any)}
+                  className="rounded-md border border-border bg-tile px-2 py-1.5 text-[12px] text-text cursor-pointer"
+                >
+                  <option value="KB">KB</option>
+                  <option value="MB">MB</option>
+                  <option value="GB">GB</option>
+                </select>
+              </div>
+            </div>
+          </div>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="secondary" onClick={() => setCustomSizeModalOpen(false)}>Cancel</Button>
+            <Button variant="primary" onClick={applyCustomSize}>Apply Filter</Button>
+          </div>
+        </div>
+      </Dialog>
+
+      {/* Custom Duration Dialog */}
+      <Dialog
+        open={customDurationModalOpen}
+        onClose={() => setCustomDurationModalOpen(false)}
+        title="Custom Duration Filter"
+      >
+        <div className="space-y-4">
+          <p className="text-[12.5px] text-muted leading-relaxed">
+            Specify a custom video/audio length range to filter media.
+          </p>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-[12px] font-medium text-text-2 mb-1.5">Min Duration</label>
+              <div className="flex gap-1.5">
+                <input
+                  type="number"
+                  min="0"
+                  step="any"
+                  placeholder="0"
+                  value={customDurationMin}
+                  onChange={(e) => setCustomDurationMin(e.target.value)}
+                  className="w-full rounded-md border border-border bg-tile px-2.5 py-1.5 text-[13px] text-text outline-none focus:border-primary"
+                />
+                <select
+                  value={customDurationMinUnit}
+                  onChange={(e) => setCustomDurationMinUnit(e.target.value as any)}
+                  className="rounded-md border border-border bg-tile px-2 py-1.5 text-[12px] text-text cursor-pointer"
+                >
+                  <option value="sec">Sec</option>
+                  <option value="min">Min</option>
+                  <option value="hr">Hours</option>
+                </select>
+              </div>
+            </div>
+            <div>
+              <label className="block text-[12px] font-medium text-text-2 mb-1.5">Max Duration</label>
+              <div className="flex gap-1.5">
+                <input
+                  type="number"
+                  min="0"
+                  step="any"
+                  placeholder="No limit"
+                  value={customDurationMax}
+                  onChange={(e) => setCustomDurationMax(e.target.value)}
+                  className="w-full rounded-md border border-border bg-tile px-2.5 py-1.5 text-[13px] text-text outline-none focus:border-primary"
+                />
+                <select
+                  value={customDurationMaxUnit}
+                  onChange={(e) => setCustomDurationMaxUnit(e.target.value as any)}
+                  className="rounded-md border border-border bg-tile px-2 py-1.5 text-[12px] text-text cursor-pointer"
+                >
+                  <option value="sec">Sec</option>
+                  <option value="min">Min</option>
+                  <option value="hr">Hours</option>
+                </select>
+              </div>
+            </div>
+          </div>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="secondary" onClick={() => setCustomDurationModalOpen(false)}>Cancel</Button>
+            <Button variant="primary" onClick={applyCustomDuration}>Apply Filter</Button>
+          </div>
+        </div>
+      </Dialog>
+
+      {/* Column 1: Chats & Channels (~300px) */}
+      <div className="flex w-[300px] shrink-0 flex-col border-r border-border bg-panel/40">
         <div className="flex items-center justify-between border-b border-border p-3.5">
-          <div className="text-[14px] font-semibold text-text">Chats &amp; Channels</div>
+          <div className="text-[14px] font-semibold text-text tracking-wide">Chats &amp; Channels</div>
           <button
             onClick={() => setOpenChat(true)}
             className="flex size-7 items-center justify-center rounded-lg border border-border bg-tile hover:border-primary text-text transition-colors"
@@ -290,10 +614,10 @@ export default function Downloads() {
             filteredChats.map((c: any) => {
               const active = activeChatId === c.id
               return (
-                <button
+                <div
                   key={c.id}
                   onClick={() => { setChatId(c.id); setPage(1); setSelectedIds([]) }}
-                  className={`flex w-full items-center gap-2.5 rounded-lg p-2 text-left transition-colors ${
+                  className={`group relative flex w-full items-center gap-2.5 rounded-lg p-2 text-left transition-colors cursor-pointer ${
                     active ? 'bg-primary/20 border border-primary/30 text-text' : 'hover:bg-tile text-text-2 hover:text-text'
                   }`}
                 >
@@ -305,12 +629,22 @@ export default function Downloads() {
                       {c.lastDate ? <span>{fmtAgo(c.lastDate)}</span> : null}
                     </div>
                   </div>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      confirmLeaveChat(c.id, c.title)
+                    }}
+                    className="opacity-0 group-hover:opacity-100 transition-opacity rounded p-1 text-muted hover:text-danger hover:bg-danger/15 shrink-0"
+                    title="Leave / Delete Channel"
+                  >
+                    <Trash2 size={13} />
+                  </button>
                   {c.unread > 0 && (
-                    <span className="rounded-full bg-primary px-1.5 py-0.5 text-[10px] font-bold text-white">
+                    <span className="rounded-full bg-primary px-1.5 py-0.5 text-[10px] font-bold text-white shrink-0">
                       {c.unread}
                     </span>
                   )}
-                </button>
+                </div>
               )
             })
           )}
@@ -320,7 +654,7 @@ export default function Downloads() {
       {/* Column 2: Files View / Chat View (Center flexible) */}
       <div className="flex flex-1 flex-col overflow-y-auto p-5 space-y-4">
         {/* View bar & channel search */}
-        <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="flex items-center justify-between gap-3 flex-wrap pr-40">
           <div className="flex items-center gap-2">
             <Button
               variant={view === 'files' ? 'primary' : 'secondary'}
@@ -340,8 +674,35 @@ export default function Downloads() {
           </div>
 
           {activeChat && (
-            <div className="text-[13px] text-text font-medium truncate max-w-xs">
-              {activeChat.title} {activeChat.username && <span className="text-muted text-[11px]">(@{activeChat.username})</span>}
+            <div className="flex items-center gap-2 max-w-sm min-w-0">
+              <span className="text-[13px] text-text font-medium truncate">
+                {activeChat.title} {activeChat.username && <span className="text-muted text-[11px]">(@{activeChat.username})</span>}
+              </span>
+              <div className="flex items-center gap-1 shrink-0">
+                {activeChat.username && (
+                  <button
+                    onClick={() => copyChatLink(activeChat.username)}
+                    className="rounded p-1.5 text-muted hover:text-white hover:bg-white/10 transition-colors"
+                    title="Copy Telegram Link"
+                  >
+                    <Copy size={13} />
+                  </button>
+                )}
+                <button
+                  onClick={() => clearChatHistory(activeChat.id, activeChat.title)}
+                  className="rounded p-1.5 text-muted hover:text-white hover:bg-white/10 transition-colors"
+                  title="Clear Chat History"
+                >
+                  <RotateCcw size={13} />
+                </button>
+                <button
+                  onClick={() => confirmLeaveChat(activeChat.id, activeChat.title)}
+                  className="rounded p-1.5 text-danger/80 hover:text-danger hover:bg-danger/15 transition-colors"
+                  title="Leave / Delete Channel"
+                >
+                  <Trash2 size={13} />
+                </button>
+              </div>
             </div>
           )}
 
@@ -353,6 +714,34 @@ export default function Downloads() {
             />
           </div>
         </div>
+
+        {/* Telegram Folder banner if viewing a folder */}
+        {chatKind === 'folders' && selectedFolderId !== null && (
+          <div className="flex items-center justify-between rounded-xl border border-primary/30 bg-primary/10 px-4 py-3 text-[13px] text-text">
+            <div className="flex items-center gap-2.5">
+              <div className="grid size-8 place-items-center rounded-lg bg-primary/20 text-primary">
+                <Folder size={18} />
+              </div>
+              <div>
+                <div className="font-semibold text-text">
+                  Folder: {allFolders.find((f: any) => f.id === selectedFolderId)?.title || allFolders.find((f: any) => f.id === selectedFolderId)?.name || 'Custom Folder'}
+                </div>
+                <div className="text-[11.5px] text-muted">
+                  {filteredChats.length} channels / groups in this folder
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="primary"
+                onClick={downloadAllFolderMedia}
+                className="py-1.5 px-3.5 text-[12px] flex items-center gap-1.5"
+              >
+                <Download size={14} /> Download all media in folder
+              </Button>
+            </div>
+          </div>
+        )}
 
         {/* Index bar while scanning */}
         {scan && scan.state === 'scanning' && (
@@ -372,7 +761,7 @@ export default function Downloads() {
         {/* Main area depending on Files View vs Chat View */}
         {view === 'files' ? (
           <div className="space-y-3 flex-1 flex flex-col">
-            {/* Filter toolbar: Clean 3 selects + Reset */}
+            {/* Filter toolbar: Clean 3 selects + Custom + Reset */}
             <div className="flex items-center gap-2 flex-wrap">
               <Select
                 value={mediaType}
@@ -388,30 +777,68 @@ export default function Downloads() {
               />
               <Select
                 value={sizeFilter}
-                onChange={(v) => { setSizeFilter(String(v)); setPage(1) }}
+                onChange={(v) => {
+                  if (v === 'custom') {
+                    setCustomSizeModalOpen(true)
+                  } else {
+                    setSizeFilter(String(v))
+                    setAppliedCustomSize(null)
+                    setPage(1)
+                  }
+                }}
                 options={[
                   { value: 'all', label: 'Size: Any' },
                   { value: 'small', label: '< 10 MB' },
                   { value: 'medium', label: '10–100 MB' },
                   { value: 'large', label: '100 MB–1 GB' },
                   { value: 'xlarge', label: '> 1 GB' },
+                  { value: 'custom', label: appliedCustomSize ? `Size: ${appliedCustomSize.label}` : 'Custom Size…' },
                   { value: 'largest', label: 'Sort: Largest first' },
                   { value: 'smallest', label: 'Sort: Smallest first' },
                 ]}
               />
+              {sizeFilter === 'custom' && (
+                <button
+                  type="button"
+                  onClick={() => setCustomSizeModalOpen(true)}
+                  className="rounded-md border border-primary/40 bg-primary/20 px-2 py-1.5 text-[11px] text-cyan hover:bg-primary/30 transition-colors"
+                  title="Edit custom size range"
+                >
+                  Edit Size
+                </button>
+              )}
               <Select
                 value={duration}
-                onChange={(v) => { setDuration(String(v)); setPage(1) }}
+                onChange={(v) => {
+                  if (v === 'custom') {
+                    setCustomDurationModalOpen(true)
+                  } else {
+                    setDuration(String(v))
+                    setAppliedCustomDuration(null)
+                    setPage(1)
+                  }
+                }}
                 options={[
                   { value: 'all', label: 'Duration: Any' },
                   { value: 'short', label: '< 1 min' },
                   { value: 'medium', label: '1–10 min' },
                   { value: 'long', label: '10–30 min' },
                   { value: 'xlong', label: '> 30 min' },
+                  { value: 'custom', label: appliedCustomDuration ? `Duration: ${appliedCustomDuration.label}` : 'Custom Duration…' },
                   { value: 'longest', label: 'Sort: Longest first' },
                   { value: 'shortest', label: 'Sort: Shortest first' },
                 ]}
               />
+              {duration === 'custom' && (
+                <button
+                  type="button"
+                  onClick={() => setCustomDurationModalOpen(true)}
+                  className="rounded-md border border-primary/40 bg-primary/20 px-2 py-1.5 text-[11px] text-cyan hover:bg-primary/30 transition-colors"
+                  title="Edit custom duration range"
+                >
+                  Edit Duration
+                </button>
+              )}
               <button
                 onClick={resetFilters}
                 className="flex items-center gap-1 rounded-md border border-border bg-tile px-2.5 py-1.5 text-[12px] text-text-2 hover:border-primary hover:text-text transition-colors"
@@ -481,7 +908,7 @@ export default function Downloads() {
                         <th className="py-2.5 px-2 text-center w-16 font-medium">Preview</th>
                         <th className="py-2.5 px-3 text-left w-[36%] font-medium">File Name</th>
                         <th className="py-2.5 px-2 text-center w-20 font-medium">Type</th>
-                        <th className="py-2.5 px-2 text-right w-24 font-medium">Size</th>
+                        <th className="py-2.5 px-2 text-center w-24 font-medium">Size</th>
                         <th className="py-2.5 px-2 text-center w-24 font-medium">Duration</th>
                         <th className="py-2.5 px-2 text-center w-32 font-medium">Status</th>
                         <th className="py-2.5 px-3 text-right w-24 font-medium">Action</th>
@@ -519,7 +946,7 @@ export default function Downloads() {
                             <td className="py-2.5 px-2 text-center">
                               <TypeChip ext={m.ext} />
                             </td>
-                            <td className="py-2.5 px-2 text-right tabular-nums text-text-2 font-medium">
+                            <td className="py-2.5 px-2 text-center tabular-nums text-text-2 font-medium">
                               {fmtBytes(m.size)}
                             </td>
                             <td className="py-2.5 px-2 text-center tabular-nums text-muted text-[12px]">
@@ -581,22 +1008,51 @@ export default function Downloads() {
           </div>
         ) : (
           /* Real Telegram Clone Chat View */
-          <div className="flex-1 rounded-xl border border-white/[0.08] bg-[#0c1530]/85 backdrop-blur-md p-4 flex flex-col justify-between overflow-hidden shadow-sm">
+          <div className="relative flex-1 rounded-2xl border border-white/[0.08] bg-[#0c1424] backdrop-blur-md p-4 flex flex-col justify-between overflow-hidden shadow-md">
             {/* Chat View Header Toolbar */}
-            <div className="flex items-center justify-between gap-3 pb-3 border-b border-white/[0.08] mb-3 flex-wrap">
-              <div className="flex items-center gap-2.5 min-w-0">
-                <Avatar src={activeChat?.photo} name={activeChat?.title || 'Chat'} size={32} />
+            <div className="flex items-center justify-between gap-3 pb-3 border-b border-white/[0.08] mb-3 flex-wrap bg-[#0c1424]/90 z-20 pr-40">
+              <div className="flex items-center gap-3 min-w-0">
+                <Avatar src={activeChat?.photo} name={activeChat?.title || 'Chat'} size={36} />
                 <div className="min-w-0">
-                  <div className="text-[13px] font-bold text-text truncate leading-tight">
-                    {activeChat?.title || 'Messages'}
+                  <div className="flex items-center gap-2">
+                    <span className="text-[14px] font-bold text-text truncate leading-tight tracking-wide">
+                      {activeChat?.title || 'Messages'}
+                    </span>
+                    {activeChat && (
+                      <div className="flex items-center gap-1 shrink-0">
+                        {activeChat.username && (
+                          <button
+                            onClick={() => copyChatLink(activeChat.username)}
+                            className="rounded p-1 text-muted hover:text-white hover:bg-white/10 transition-colors"
+                            title="Copy Telegram Link"
+                          >
+                            <Copy size={12} />
+                          </button>
+                        )}
+                        <button
+                          onClick={() => clearChatHistory(activeChat.id, activeChat.title)}
+                          className="rounded p-1 text-muted hover:text-white hover:bg-white/10 transition-colors"
+                          title="Clear Chat History"
+                        >
+                          <RotateCcw size={12} />
+                        </button>
+                        <button
+                          onClick={() => confirmLeaveChat(activeChat.id, activeChat.title)}
+                          className="rounded p-1 text-danger/80 hover:text-danger hover:bg-danger/15 transition-colors"
+                          title="Leave / Delete Channel"
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                      </div>
+                    )}
                   </div>
-                  <div className="text-[11px] text-muted truncate leading-tight mt-0.5">
+                  <div className="text-[11.5px] text-muted truncate leading-tight mt-0.5">
                     {activeChat?.username ? `@${activeChat.username}` : activeChat?.kind || 'Channel'} • {filteredMessages.length} messages
                   </div>
                 </div>
               </div>
               <div className="flex items-center gap-2">
-                <div className="w-48">
+                <div className="w-52">
                   <SearchInput
                     placeholder="Search in chat…"
                     value={chatMsgSearch}
@@ -606,7 +1062,7 @@ export default function Downloads() {
                 <button
                   type="button"
                   onClick={() => setMediaOnlyChat(!mediaOnlyChat)}
-                  className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[12px] font-medium border transition-colors ${
+                  className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[12px] font-medium border transition-colors ${
                     mediaOnlyChat
                       ? 'bg-primary text-white border-primary shadow-sm'
                       : 'bg-white/5 border-white/10 text-muted hover:text-white hover:bg-white/10'
@@ -620,7 +1076,15 @@ export default function Downloads() {
             </div>
 
             {/* Message Stream */}
-            <div className="flex-1 overflow-y-auto space-y-3 pr-1">
+            <div
+              ref={chatScrollRef}
+              onScroll={(e) => {
+                const target = e.currentTarget
+                const isNearBottom = target.scrollHeight - target.scrollTop - target.clientHeight < 120
+                setShowScrollBottom(!isNearBottom)
+              }}
+              className="flex-1 overflow-y-auto space-y-3.5 pr-2 scroll-smooth"
+            >
               {msgErr ? (
                 <ErrorState error={msgErr} onRetry={msgReload} />
               ) : !msgData ? (
@@ -628,103 +1092,209 @@ export default function Downloads() {
                   {[...Array(5)].map((_, i) => <Skeleton key={i} className="h-20 w-3/4 rounded-2xl" />)}
                 </div>
               ) : filteredMessages.length === 0 ? (
-                <div className="py-16 text-center text-muted">
+                <div className="py-20 text-center text-muted">
                   <p>No messages found matching criteria</p>
                 </div>
               ) : (
-                <div className="space-y-3">
+                <div className="space-y-3 pb-2">
+                  {/* Load older messages at the TOP */}
                   {msgData.more && (
-                    <div className="text-center py-2">
-                      <Button variant="secondary" onClick={() => setMsgLimit((l) => Math.min(l + 30, 1000))} className="text-[12px]">
+                    <div className="flex justify-center py-2">
+                      <Button
+                        variant="secondary"
+                        onClick={handleLoadOlder}
+                        className="text-[12px] rounded-full px-4 py-1.5 shadow-sm border border-white/10 bg-white/5 hover:bg-white/10"
+                      >
                         Load older messages
                       </Button>
                     </div>
                   )}
-                  {filteredMessages.map((m: any) => (
-                    <div
-                      key={m.id}
-                      className="rounded-2xl border border-white/[0.08] bg-[#1e293b]/90 p-4 shadow-sm hover:border-white/20 transition-all max-w-3xl"
-                    >
-                      {/* Message header */}
-                      <div className="flex items-center justify-between text-[11px] text-muted mb-2">
-                        <div className="flex items-center gap-2">
-                          <span className="font-semibold text-primary text-[13px]">{m.sender || activeChat?.title || 'Unknown'}</span>
-                          <span className="text-white/20">•</span>
-                          <span>{fmtAgo(m.date)}</span>
-                        </div>
-                        <div className="flex items-center gap-1">
-                          {m.text && (
-                            <button
-                              onClick={() => copyText(m.text)}
-                              className="rounded p-1 hover:bg-white/10 text-muted hover:text-white transition-colors"
-                              title="Copy message text"
-                            >
-                              <Copy size={13} />
-                            </button>
-                          )}
-                        </div>
-                      </div>
 
-                      {/* Text content with clickable links */}
-                      {m.text && (
-                        <div className="mb-2">
-                          <LinkifiedText text={m.text} onOpenLink={handleTelegramLink} />
-                        </div>
-                      )}
+                  {/* Chronological order: oldest to newest */}
+                  {[...filteredMessages].reverse().map((m: any, idx: number, arr: any[]) => {
+                    const currentDateGroup = getDateGroup(m.date)
+                    const prevDateGroup = idx > 0 ? getDateGroup(arr[idx - 1].date) : null
+                    const showDateDivider = currentDateGroup !== prevDateGroup
 
-                      {/* Media Card */}
-                      {m.media && (
-                        <div className="flex items-center justify-between rounded-xl border border-white/[0.08] bg-[#0f172a]/70 p-3 mt-2 shadow-inner">
-                          <div
-                            className="flex items-center gap-3 overflow-hidden cursor-pointer group flex-1 min-w-0 pr-3"
-                            title="Click for preview"
-                            onClick={() => setPreviewItem({ name: m.media.name, path: m.media.path, thumb: m.media.thumb, type: m.media.type, size: m.media.size, duration: m.media.duration, messageId: m.id })}
-                          >
-                            <Thumb src={m.media.thumb ? `teleflow://thumb/${m.media.thumb}` : null} name={m.media.name} />
-                            <div className="truncate min-w-0 flex-1">
-                              <div className="text-[13px] font-medium text-text truncate group-hover:text-primary transition-colors">
-                                {m.media.name}
+                    return (
+                      <React.Fragment key={m.id}>
+                        {showDateDivider && (
+                          <div className="flex justify-center my-4 select-none">
+                            <span className="rounded-full bg-[#182533] px-3.5 py-1 text-[11px] font-semibold text-slate-300 shadow border border-white/10">
+                              {currentDateGroup}
+                            </span>
+                          </div>
+                        )}
+
+                        <div className={`flex flex-col items-start ${m.media ? 'max-w-[480px] w-full' : 'max-w-[85%] w-fit'} group/msg`}>
+                          <div className="relative rounded-2xl rounded-tl-sm border border-white/[0.08] bg-[#182533] p-3 shadow-md hover:border-white/20 transition-all text-text w-full">
+                            {/* Sender line */}
+                            <div className="flex items-center justify-between text-[11.5px] mb-1">
+                              <span className="font-semibold text-cyan tracking-wide">
+                                {m.sender || activeChat?.title || 'Unknown'}
+                              </span>
+                              <button
+                                onClick={() => copyText(m.text || m.media?.name || '')}
+                                className="opacity-0 group-hover/msg:opacity-100 transition-opacity p-1 text-muted hover:text-white rounded"
+                                title="Copy text"
+                              >
+                                <Copy size={13} />
+                              </button>
+                            </div>
+
+                            {/* Media card */}
+                            {m.media && (
+                              <div className="rounded-xl overflow-hidden border border-white/[0.08] bg-[#0c1322] my-1.5 shadow-inner">
+                                {m.media.type === 'video' || m.media.type === 'photo' || m.media.type === 'animation' ? (
+                                  <div
+                                    className="relative w-full max-h-[380px] overflow-hidden bg-black/60 cursor-pointer group/media flex items-center justify-center"
+                                    onClick={() => setPreviewItem({ name: m.media.name, path: m.media.path, thumb: m.media.thumb, type: m.media.type, size: m.media.size, duration: m.media.duration, messageId: m.id })}
+                                  >
+                                    {m.media.thumb ? (
+                                      <img
+                                        src={`teleflow://thumb/${m.media.thumb}`}
+                                        alt={m.media.name}
+                                        className="w-full max-h-[380px] object-cover transition-transform duration-200 group-hover/media:scale-[1.01]"
+                                        loading="eager"
+                                      />
+                                    ) : (
+                                      <div className="flex h-52 w-full items-center justify-center bg-slate-900/80 text-muted">
+                                        <Film size={36} />
+                                      </div>
+                                    )}
+
+                                    {(m.media.type === 'video' || m.media.type === 'animation') && (
+                                      <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                                        <div className="size-13 rounded-full bg-black/60 backdrop-blur-md text-white flex items-center justify-center group-hover/media:scale-110 group-hover/media:bg-primary transition-all shadow-2xl border border-white/20">
+                                          <Play size={22} className="ml-1 fill-white text-white" />
+                                        </div>
+                                      </div>
+                                    )}
+
+                                    <div className="absolute bottom-2 left-2 flex items-center gap-1.5 pointer-events-none">
+                                      <span className="rounded-md bg-black/75 backdrop-blur-md px-2 py-0.5 text-[11px] font-semibold text-white tabular-nums border border-white/10 shadow">
+                                        {fmtBytes(m.media.size)}
+                                      </span>
+                                      {m.media.duration ? (
+                                        <span className="rounded-md bg-black/75 backdrop-blur-md px-2 py-0.5 text-[11px] font-semibold text-white tabular-nums border border-white/10 shadow">
+                                          {fmtDuration(m.media.duration)}
+                                        </span>
+                                      ) : null}
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <div className="flex items-center gap-3 p-3">
+                                    <div className="grid size-11 place-items-center rounded-xl bg-primary/20 text-primary shrink-0">
+                                      <FileText size={20} />
+                                    </div>
+                                    <div className="min-w-0 flex-1">
+                                      <div className="text-[13px] font-medium text-white truncate" title={m.media.name}>{m.media.name}</div>
+                                      <div className="text-[11.5px] text-muted mt-0.5 tabular-nums">{fmtBytes(m.media.size)}</div>
+                                    </div>
+                                  </div>
+                                )}
+
+                                {/* Action footer inside media */}
+                                <div className="flex items-center justify-between p-2.5 bg-black/25 border-t border-white/[0.05]">
+                                  <span className="text-[12px] font-medium text-text-2 truncate max-w-[280px]" title={m.media.name}>
+                                    {m.media.name}
+                                  </span>
+                                  <div className="flex items-center gap-2 shrink-0">
+                                    {m.media.status === 'downloaded' ? (
+                                      <>
+                                        {m.media.path && (
+                                          <button
+                                            onClick={() => revealFile(m.media.path)}
+                                            className="inline-flex items-center gap-1 text-[11.5px] text-cyan hover:text-cyan/80 bg-cyan/10 hover:bg-cyan/20 px-2.5 py-1 rounded-md transition-colors"
+                                            title="Show in folder"
+                                          >
+                                            <FolderOpen size={13} />
+                                            <span>Folder</span>
+                                          </button>
+                                        )}
+                                        <button
+                                          onClick={() => downloadItems([{ chatId: activeChatId!, messageId: m.id }], true)}
+                                          className="inline-flex items-center gap-1 text-[11.5px] text-muted hover:text-white bg-white/5 hover:bg-white/10 px-2 py-1 rounded-md transition-colors"
+                                          title="Download again"
+                                        >
+                                          <RotateCcw size={13} />
+                                        </button>
+                                      </>
+                                    ) : (
+                                      <Button
+                                        variant="primary"
+                                        onClick={() => downloadItems([{ chatId: activeChatId!, messageId: m.id }], true)}
+                                        className="text-[11.5px] py-1 px-3 flex items-center gap-1 font-medium shadow-sm"
+                                      >
+                                        <Download size={13} /> Download
+                                      </Button>
+                                    )}
+                                  </div>
+                                </div>
                               </div>
-                              <div className="flex items-center gap-2 text-[11px] text-muted mt-0.5">
-                                <span>{fmtBytes(m.media.size)}</span>
-                                {m.media.duration ? <span>• {fmtDuration(m.media.duration)}</span> : null}
+                            )}
+
+                            {/* Message text / caption */}
+                            {m.text && (
+                              <div className="mt-1 text-[13.5px] leading-relaxed">
+                                <LinkifiedText text={m.text} onOpenLink={handleTelegramLink} />
                               </div>
+                            )}
+
+                            {/* Message footer timestamp + double checkmark */}
+                            <div className="flex items-center justify-end gap-1 mt-1 text-[10.5px] text-muted/70 tabular-nums">
+                              <span>{getMessageTime(m.date)}</span>
+                              <span className="text-cyan font-bold text-[11px] leading-none">✓✓</span>
                             </div>
                           </div>
-
-                          <div className="shrink-0 flex items-center gap-1.5">
-                            {m.media.status === 'downloaded' ? (
-                              <>
-                                {m.media.path && (
-                                  <Button variant="secondary" onClick={() => revealFile(m.media.path)} className="text-[11px] py-1 px-2.5">
-                                    Show in folder
-                                  </Button>
-                                )}
-                                <Button
-                                  variant="primary"
-                                  onClick={() => downloadItems([{ chatId: activeChatId!, messageId: m.id }], true)}
-                                  className="text-[11px] py-1 px-2.5 flex items-center gap-1"
-                                >
-                                  <RotateCcw size={12} /> Re-download
-                                </Button>
-                              </>
-                            ) : (
-                              <Button
-                                variant="primary"
-                                onClick={() => downloadItems([{ chatId: activeChatId!, messageId: m.id }], true)}
-                                className="text-[11px] py-1.5 px-3 flex items-center gap-1 font-medium"
-                              >
-                                <Download size={13} /> Download
-                              </Button>
-                            )}
-                          </div>
                         </div>
-                      )}
-                    </div>
-                  ))}
+                      </React.Fragment>
+                    )
+                  })}
+                  <div ref={messagesEndRef} />
                 </div>
               )}
             </div>
+
+            {/* Floating scroll to bottom button */}
+            {showScrollBottom && (
+              <button
+                onClick={() => scrollToBottom('smooth')}
+                className="absolute bottom-16 right-6 z-20 flex size-9 items-center justify-center rounded-full bg-primary text-white shadow-xl hover:bg-primary-hover transition-all"
+                title="Scroll to latest"
+              >
+                <ChevronDown size={18} />
+              </button>
+            )}
+
+            {/* Chat message typing/input bar */}
+            {activeChat && (
+              <div className="mt-3 pt-3 border-t border-white/[0.08] flex items-center gap-2">
+                <input
+                  type="text"
+                  placeholder={activeChat.canPost !== false ? `Write a message in ${activeChat.title}…` : 'Posting not permitted in this channel'}
+                  disabled={activeChat.canPost === false || sendingMsg}
+                  value={newMsgText}
+                  onChange={(e) => setNewMsgText(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault()
+                      handleSendChatMessage()
+                    }
+                  }}
+                  className="flex-1 rounded-xl border border-white/10 bg-[#111b2b] px-4 py-2.5 text-[13px] text-text placeholder:text-muted focus:border-primary outline-none transition-colors"
+                />
+                <button
+                  type="button"
+                  onClick={handleSendChatMessage}
+                  disabled={!newMsgText.trim() || sendingMsg || activeChat.canPost === false}
+                  className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-primary text-white shadow-glow hover:bg-primary-hover disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+                  title="Send message"
+                >
+                  <Send size={16} />
+                </button>
+              </div>
+            )}
           </div>
         )}
       </div>

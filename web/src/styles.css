@@ -19,7 +19,7 @@
   --color-cyan: #38bdf8;
   --color-pink: #f472b6;
   --shadow-glow: 0 0 0 1px #3b82f6, 0 0 16px rgb(59 130 246 / 0.35);
-  --font-sans: Inter, "Segoe UI Variable", system-ui, sans-serif;
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 }
 
 @layer base {
@@ -30,10 +30,12 @@
     color: var(--color-text);
     font-family: var(--font-sans);
     font-size: 13px;
-    font-feature-settings: "calt", "kern", "liga", "cv02", "cv03", "cv04", "cv11", "tnum";
+    line-height: 1.5;
+    letter-spacing: 0.015em;
+    word-spacing: 0.03em;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
-    text-rendering: optimizeLegibility;
+    text-rendering: geometricPrecision;
   }
   :focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
 }
@@ -71,13 +73,14 @@
   animation: flyToQueue 0.65s cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
 }
 
-/* Window drag region; the right padding keeps clear of the native window buttons (titleBarOverlay). */
+/* Window drag region */
 .drag {
+  -webkit-app-region: drag;
   app-region: drag;
-  padding-right: calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw));
 }
 
 .no-drag {
+  -webkit-app-region: no-drag;
   app-region: no-drag;
 }
 

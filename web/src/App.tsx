@@ -10,12 +10,12 @@ import Uploads from './pages/Uploads.tsx'
 import Queue from './pages/Queue.tsx'
 import Settings from './pages/Settings.tsx'
 
-// Clean, native window drag titlebar (no text, seamless color match with native controls)
-function TitleBar() {
+// Native window drag bar for seamless color match with native controls without creating layout gap
+function WindowDragBar() {
   return (
     <div
-      className="drag flex h-9 shrink-0 items-center justify-between bg-[#0f172a] px-4 select-none z-30"
-      style={{ paddingRight: 'calc(1rem + env(titlebar-area-width, 0px))' }}
+      className="drag absolute top-0 right-0 h-9 z-30 select-none pointer-events-none"
+      style={{ width: 'calc(env(titlebar-area-width, 140px) + 8px)' }}
     />
   )
 }
@@ -88,8 +88,8 @@ function Sidebar({
           </div>
           {!collapsed && (
             <div className="overflow-hidden">
-              <div className="font-bold text-[14px] text-text leading-tight truncate">Mediagram</div>
-              <div className="text-[10px] text-muted leading-tight truncate">Telegram Media Manager</div>
+              <div className="font-bold text-[14px] text-text leading-tight truncate tracking-wide">Mediagram</div>
+              <div className="text-[10.5px] text-muted leading-tight truncate mt-0.5">Telegram Media Manager</div>
             </div>
           )}
         </div>
@@ -181,8 +181,8 @@ export default function App() {
       />
 
       {/* Main Container */}
-      <div className="flex flex-1 flex-col overflow-hidden min-w-0">
-        <TitleBar />
+      <div className="relative flex flex-1 flex-col overflow-hidden min-w-0">
+        <WindowDragBar />
         <main className="flex-1 overflow-auto">
           {page === '/overview' && <Overview />}
           {page === '/downloads' && <Downloads />}

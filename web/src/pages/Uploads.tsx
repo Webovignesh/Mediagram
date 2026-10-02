@@ -85,10 +85,10 @@ export default function Uploads() {
 
   return (
     <div className="flex h-full overflow-hidden">
-      {/* Column 1: Destinations (~240px) */}
-      <div className="flex w-[240px] shrink-0 flex-col border-r border-border bg-panel/40">
+      {/* Column 1: Destinations (~300px) */}
+      <div className="flex w-[300px] shrink-0 flex-col border-r border-border bg-panel/40">
         <div className="border-b border-border p-3.5">
-          <div className="text-[14px] font-semibold text-text">Destinations</div>
+          <div className="text-[14px] font-semibold text-text tracking-wide">Destinations</div>
           <div className="text-[11px] text-muted">Chats where you can post</div>
         </div>
 
@@ -142,11 +142,13 @@ export default function Uploads() {
 
       {/* Column 2: New Upload (~flexible center) */}
       <div className="flex flex-1 flex-col overflow-y-auto p-6 space-y-4">
-        <div>
-          <h1 className="text-[28px] font-bold">Uploads</h1>
-          <p className="mt-1 text-[13px] text-text-2">
-            Send media files directly to your Telegram channels, groups, and Saved Messages.
-          </p>
+        <div className="flex items-center justify-between pr-40">
+          <div>
+            <h1 className="text-[26px] font-bold text-white tracking-wide">Uploads</h1>
+            <p className="mt-1 text-[13px] text-text-2">
+              Send media files directly to your Telegram channels, groups, and Saved Messages.
+            </p>
+          </div>
         </div>
 
         <Panel title="New Upload">

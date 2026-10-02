@@ -120,9 +120,9 @@ export default function Queue() {
       />
       {/* Left/Center main table */}
       <div className="flex-1 p-6 space-y-4 overflow-y-auto">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between pr-40">
           <div>
-            <h1 className="text-[26px] font-bold tracking-tight text-white">Queue</h1>
+            <h1 className="text-[26px] font-bold text-white tracking-wide">Queue</h1>
             <p className="mt-0.5 text-[13px] text-text-2">Manage your active and pending downloads and uploads</p>
           </div>
         </div>
@@ -219,7 +219,7 @@ export default function Queue() {
                     </th>
                     <th className="py-2.5 px-1 text-center w-10 text-muted font-normal">#</th>
                     <th className="py-2.5 px-3 text-left w-[36%]">Name</th>
-                    <th className="py-2.5 px-2 text-right w-24">Size</th>
+                    <th className="py-2.5 px-2 text-center w-24">Size</th>
                     <th className="py-2.5 px-4 text-left w-56">Progress</th>
                     <th className="py-2.5 px-2 text-center w-32">Status</th>
                     <th className="py-2.5 px-2 text-right w-24">ETA</th>
@@ -252,7 +252,7 @@ export default function Queue() {
                             </div>
                           </div>
                         </td>
-                        <td className="py-2.5 px-2 text-right tabular-nums text-text-2 font-medium">{fmtBytes(j.size)}</td>
+                        <td className="py-2.5 px-2 text-center tabular-nums text-text-2 font-medium">{fmtBytes(j.size)}</td>
                         <td className="py-2.5 px-4">
                           <Progress done={j.done || 0} size={j.size || 0} tone={j.kind === 'upload' ? 'warning' : 'primary'} />
                         </td>

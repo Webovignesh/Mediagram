@@ -396,7 +396,8 @@ export const addHistory = (db: DB, h: NewHistory) => Number(db.prepare(`
 
 export type MediaRow = Omit<MediaItem, keyof DownloadState>
 export type MediaFilters = { type?: 'video' | 'photo' | 'document' | 'audio' | 'animation', ext?: string,
-  duration?: 'short' | 'medium' | 'long' | 'xlong', size?: 'small' | 'medium' | 'large' | 'xlarge',
+  duration?: 'short' | 'medium' | 'long' | 'xlong' | string,
+  size?: 'small' | 'medium' | 'large' | 'xlarge' | string,
   status?: DownloadState['status'], q?: string, sort?: 'newest' | 'oldest' | 'largest' | 'smallest' | 'name' | 'longest' }
 export type ScanRow = { chat_id: number, newest_id: number, oldest_id: number, complete: number, total: number | null }
 
@@ -438,8 +439,26 @@ export function mediaQuery(db: DB, chatId: number, f: MediaFilters, page?: { pag
   if (f.type === 'video' || f.type === 'audio') add('type IN (?, ?)', f.type, f.type === 'video' ? 'video_note' : 'voice')
   else if (f.type) add('type = ?', f.type)
   if (f.ext) add('ext = ?', f.ext)
-  if (f.duration) add('duration > 0 AND duration >= ? AND duration < ?', ...durations[f.duration]) // photos and documents never match
-  if (f.size) add('size >= ? AND size < ?', ...sizes[f.size])
+  if (f.duration) {
+    if (f.duration.startsWith('custom:')) {
+      const [, minStr, maxStr] = f.duration.split(':')
+      const min = Number(minStr) || 0
+      const max = Number(maxStr) || MAX
+      add('duration > 0 AND duration >= ? AND duration <= ?', min, max)
+    } else if (f.duration in durations) {
+      add('duration > 0 AND duration >= ? AND duration < ?', ...durations[f.duration as keyof typeof durations])
+    }
+  }
+  if (f.size) {
+    if (f.size.startsWith('custom:')) {
+      const [, minStr, maxStr] = f.size.split(':')
+      const min = Number(minStr) || 0
+      const max = Number(maxStr) || MAX
+      add('size >= ? AND size <= ?', min, max)
+    } else if (f.size in sizes) {
+      add('size >= ? AND size < ?', ...sizes[f.size as keyof typeof sizes])
+    }
+  }
   if (f.status) add('status = ?', f.status)
   if (f.q) add(`(name LIKE ? ESCAPE '\\' OR caption LIKE ? ESCAPE '\\')`, like(f.q), like(f.q))
   const base = `FROM (${stated('SELECT * FROM media WHERE chat_id = ?')}) ${cond.length ? `WHERE ${cond.join(' AND ')}` : ''}`
