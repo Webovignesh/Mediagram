@@ -160,6 +160,8 @@ export default function Downloads() {
     page,
     pageSize: 20,
   }
+  // downloads.checkDuplicates takes the same filters as chats.media, minus the fields that call carries itself.
+  const { chatId: _chatId, page: _page, pageSize: _pageSize, ...dupFilters } = mediaFilters
 
   const { data: mediaData, error: mediaErr, reload: mediaReload } = useCall<{ items: any[], total: number, exts: string[], scan: { state: 'scanning' | 'failed' | 'paused' | 'done' | 'idle', indexed: number, total: number | null, error?: string } }>(
     'chats.media', activeChatId ? mediaFilters : null, activeChatId ? [`media:${activeChatId}`] : []
@@ -173,20 +175,32 @@ export default function Downloads() {
   const availableExts = mediaData?.exts ?? []
   const scan = mediaData?.scan
 
-  // The scan reports a new `indexed` count at most once a second; the samples are smoothed so the rate and the ETA do
-  // not jump with every page.
-  const scanSample = useRef<{ at: number, indexed: number } | null>(null)
-  const [scanRate, setScanRate] = useState(0)
+  // The scan reports `indexed` at most once a second, and it can go quiet for a while (a flood wait, or a page that
+  // held no media). The ETA is therefore a ticker of its own: one sample a second into a 20 s window, the rate is the
+  // slope across that window, and the seconds are counted down from the wall clock rather than waiting for the next
+  // report - so a break makes the ETA grow instead of freezing on a time that is no longer true.
+  const scanRef = useRef(scan)
+  scanRef.current = scan
+  const scanWindow = useRef<{ t: number, n: number }[]>([])
+  const [scanEta, setScanEta] = useState<number | null>(null)
   useEffect(() => {
-    if (scan?.state !== 'scanning') { scanSample.current = null; return }
-    const now = Date.now(), prev = scanSample.current
-    scanSample.current = { at: now, indexed: scan.indexed }
-    if (!prev || now - prev.at < 400) return
-    const rate = ((scan.indexed - prev.indexed) * 1000) / (now - prev.at)
-    if (Number.isFinite(rate) && rate > 0) setScanRate((old) => (old ? (old * 2 + rate) / 3 : rate))
-  }, [scan?.state, scan?.indexed])
-  const remaining = scan && scan.total ? Math.max(0, scan.total - scan.indexed) : 0
-  const eta = scanRate > 0 && remaining > 0 ? remaining / scanRate : 0
+    const idle = () => { scanWindow.current = []; setScanEta(null) }
+    if (scan?.state !== 'scanning') { idle(); return }
+    const tick = () => {
+      const now = Date.now(), live = scanRef.current
+      if (live?.state !== 'scanning') { idle(); return }
+      const w = scanWindow.current
+      w.push({ t: now, n: live.indexed })
+      while (w.length > 2 && now - w[0]!.t > 20_000) w.shift()
+      const first = w[0]!, span = (now - first.t) / 1000
+      const rate = w.length > 2 && span >= 4 ? (live.indexed - first.n) / span : 0
+      const left = live.total ? Math.max(0, live.total - live.indexed) : 0
+      setScanEta(rate > 0 && left > 0 ? left / rate : null)
+    }
+    tick()
+    const id = setInterval(tick, 1000)
+    return () => clearInterval(id)
+  }, [scan?.state])
   const fmtLeft = (s: number) =>
     s < 60 ? `${Math.max(1, Math.round(s))}s` : s < 3600 ? `${Math.round(s / 60)}m` : `${Math.floor(s / 3600)}h ${Math.round((s % 3600) / 60)}m`
   const scanPct = scan?.total ? Math.min(100, Math.round((scan.indexed / scan.total) * 100)) : 0
@@ -399,7 +413,7 @@ export default function Downloads() {
     try {
       const res = await call<DuplicateCheckResult>('downloads.checkDuplicates', {
         chatId: activeChatId,
-        filters: mediaFilters,
+        filters: dupFilters,
       })
       setDedupeResult(res)
       setDedupeLoading(false)
@@ -420,7 +434,7 @@ export default function Downloads() {
         filteredChats.map((c) =>
           call<DuplicateCheckResult>('downloads.checkDuplicates', {
             chatId: c.id,
-            filters: mediaFilters,
+            filters: dupFilters,
           }).catch(() => null)
         )
       )
@@ -860,8 +874,7 @@ export default function Downloads() {
                   <>
                     Indexing media… {scan.indexed.toLocaleString()}
                     {scan.total ? ` of about ${scan.total.toLocaleString()}` : ''}
-                    {eta > 0 ? ` · ${fmtLeft(eta)} left` : ''}
-                    {scanRate > 0 ? ` · ${Math.round(scanRate).toLocaleString()}/s` : ''}
+                    {scanEta !== null ? ` · ${fmtLeft(scanEta)} left` : ''}
                   </>
                 )}
                 {scan.state === 'failed' && <>Indexing stopped: {scan.error || 'Telegram refused the request'}</>}
