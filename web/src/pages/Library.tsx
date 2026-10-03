@@ -1,5 +1,5 @@
 // Phase 5.5: Media Library page per UI.md & Reference Mockup
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { FolderOpen, Grid, List, AlertTriangle, CheckSquare, Square, Trash2, RotateCcw, Eye, Download } from 'lucide-react'
 import { call, useCall, navigate } from '../api.ts'
 import { Panel, SearchInput, Chip, Select, Segmented, Button, Stat, Empty, ErrorState, Skeleton, Pagination, Thumb, TypeChip, Dialog, fmtBytes, fmtDate, confirm, toast } from '../ui.tsx'
@@ -19,7 +19,7 @@ export default function Library() {
   const [selectedMissing, setSelectedMissing] = useState<any[]>([])
   const [loadingMissing, setLoadingMissing] = useState(false)
 
-  const { data: lib, reload, error: libErr } = useCall<{ items: any[], total: number, stats: { files: number, size: number, missing: number }, chats: string[] }>(
+  const { data: lib, reload, error: libErr, loading } = useCall<{ items: any[], total: number, stats: { files: number, size: number, missing: number }, chats: string[] }>(
     'library.list', {
       q: search || undefined,
       type: type === 'all' ? undefined : type,
@@ -29,6 +29,15 @@ export default function Library() {
       pageSize: 24,
     }, ['library']
   )
+
+  // library.list answers a cached scan in milliseconds and only waits when it really has to walk the folder, so the
+  // strip appears after the moment a cache hit would already have answered.
+  const [scanning, setScanning] = useState(false)
+  useEffect(() => {
+    if (!loading) { setScanning(false); return }
+    const t = setTimeout(() => setScanning(true), 150)
+    return () => clearTimeout(t)
+  }, [loading])
 
   const items = lib?.items ?? []
   const chatsList = lib?.chats ?? []
@@ -183,6 +192,18 @@ export default function Library() {
           <Button variant="tint" tone="warning" onClick={startVerify}>Verify</Button>
         )}
       </div>
+
+      {/* Scan strip: only once a cache hit would already have answered */}
+      {scanning && (
+        <div role="status" aria-live="polite" className="rounded-lg border border-primary/30 bg-primary/10 px-4 py-2 text-[12px] text-text">
+          <span className="block truncate">
+            Scanning the download folder…{lib ? ` ${lib.stats.files.toLocaleString()} files indexed so far` : ''}
+          </span>
+          <div className="mt-1.5 h-1.5 w-full rounded-full bg-[#1e2a47] overflow-hidden">
+            <div className="h-full w-1/2 animate-pulse rounded-full bg-primary/70" />
+          </div>
+        </div>
+      )}
 
       {/* Toolbar */}
       <div className="flex items-center gap-2.5 flex-wrap">

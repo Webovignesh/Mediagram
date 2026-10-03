@@ -50,9 +50,24 @@ const chatsChanged = () => deps.emit({ type: 'invalidate', topics: ['chats'] })
 /** Entering `ready` gives failed media scans one new try; leaving it means TDLib may skip updates for a gap, so no
  *  chat's top-up counts as current any more (ARCHITECTURE > Media index scan). */
 function setConnection(c: AuthState['connection']) {
-  if (c === 'ready' && connection !== 'ready') failedScans.clear()
+  if (c === 'ready' && connection !== 'ready') {
+    failedScans.clear()
+    if (client) void client.invoke({ _: 'setNetworkType', type: { _: 'networkTypeWiFi' } }).catch(() => {})
+    if (wanted !== null) mediaChanged(wanted, true) // the refetch re-asks chats.media, which restarts the scan
+  }
   if (c !== 'ready' && connection === 'ready') current.clear()
   connection = c
+}
+
+/** The renderer saw the OS network come and go. TDLib can sit on dead sockets long after the OS notices, so a
+ *  recovered network clears the failed-scan hold and pings the chat's scan and the chat lists to ask again. */
+export function networkChanged(online: boolean) {
+  if (!online) return
+  failedScans.clear()
+  if (client) void client.invoke({ _: 'setNetworkType', type: { _: 'networkTypeWiFi' } }).catch(() => {})
+  if (auth.step !== 'ready') return
+  if (wanted !== null) mediaChanged(wanted, true)
+  chatsChanged()
 }
 
 /** Any TDLib call; auth calls use it directly, everything else goes through `invoke`. */
@@ -79,6 +94,22 @@ export function start(c: Creds) {
   return run
 }
 
+async function applySpeedOptimizations(cl: Client) {
+  // Inform TDLib of unmetered high-speed WiFi/LAN connection to open multi-connection socket pool
+  await cl.invoke({ _: 'setNetworkType', type: { _: 'networkTypeWiFi' } }).catch(() => {})
+  // Enable Quick ACK for low-latency outgoing message & packet acknowledgments (accelerates upload window scaling)
+  await cl.invoke({ _: 'setOption', name: 'use_quick_ack', value: { _: 'optionValueBoolean', value: true } }).catch(() => {})
+  // Enable Perfect Forward Secrecy for faster and robust session crypto
+  await cl.invoke({ _: 'setOption', name: 'use_pfs', value: { _: 'optionValueBoolean', value: true } }).catch(() => {})
+  // Disable persistent network statistics tracking to save disk I/O and avoid SQLite locking
+  await cl.invoke({ _: 'setOption', name: 'disable_persistent_network_statistics', value: { _: 'optionValueBoolean', value: true } }).catch(() => {})
+  await cl.invoke({ _: 'setOption', name: 'disable_network_statistics', value: { _: 'optionValueBoolean', value: true } }).catch(() => {})
+  // Disable time adjustment protection to prevent transfer throttling caused by minor clock drifts
+  await cl.invoke({ _: 'setOption', name: 'disable_time_adjustment_protection', value: { _: 'optionValueBoolean', value: true } }).catch(() => {})
+  // Enable background storage optimizer
+  await cl.invoke({ _: 'setOption', name: 'use_storage_optimizer', value: { _: 'optionValueBoolean', value: true } }).catch(() => {})
+}
+
 // tdl answers WaitTdlibParameters with these options.
 async function launch(c: Creds) {
   await close()
@@ -93,9 +124,10 @@ async function launch(c: Creds) {
     apiId: c.apiId, apiHash: c.apiHash,
     databaseDirectory: path.join(deps.dir, 'db'), filesDirectory: path.join(deps.dir, 'files'),
     tdlibParameters: { use_message_database: true, use_chat_info_database: true, use_file_database: true, use_secret_chats: false, system_language_code: 'en',
-      device_model: 'TeleFlow', system_version: 'Windows', application_version: deps.version },
+      device_model: 'Mediagram', system_version: 'Windows', application_version: deps.version },
   })
   client = cl
+  void applySpeedOptimizations(cl)
   cl.on('update', (u) => { if (client === cl) onTdUpdate(cl, u) })
   cl.on('error', (e) => {
     if (client !== cl) return
@@ -435,14 +467,20 @@ export async function linkMessages(link: string) {
 
 // ---- Media index scan (ARCHITECTURE > Media index scan) ----
 
-const failedScans = new Set<number>() // a page failed: no new scan until the connection next enters ready
+const failedScans = new Map<number, string>() // a page failed: no new scan until the connection next enters ready
+const held = new Set<number>() // the user stopped this one: nothing restarts it until they ask again
+let wanted: number | null = null // the chat the renderer most recently asked to scan: retried after an outage
 const current = new Set<number>() // top-up finished since the connection was last ready: live upkeep may move newest_id
 let scan: { chatId: number, stop: boolean } | null = null
 let scans = Promise.resolve()
 const throttle = new Map<number, { dirty: boolean }>()
+/** The seven media types as TDLib search filters (searchMessagesFilterEmpty is rejected here). Their union is exactly
+ *  what extractMedia indexes, so walking them walks the media alone instead of every message in the chat. */
 const counted = [{ _: 'searchMessagesFilterPhoto' }, { _: 'searchMessagesFilterVideo' }, { _: 'searchMessagesFilterDocument' },
   { _: 'searchMessagesFilterAudio' }, { _: 'searchMessagesFilterAnimation' }, { _: 'searchMessagesFilterVoiceNote' },
-  { _: 'searchMessagesFilterVideoNote' }] as const // TDLib rejects searchMessagesFilterEmpty here
+  { _: 'searchMessagesFilterVideoNote' }] as const
+/** Filter streams reading TDLib at once: enough to keep the link busy without provoking a flood wait. */
+const PARALLEL = 3
 
 /** Whether chats.media starts a scan: no row yet, backfill unfinished, or a newer last message than the walk has seen. */
 export const scanNeeded = (row: ScanRow | undefined, lastId: number | null, failed: boolean) =>
@@ -461,48 +499,98 @@ function mediaChanged(chatId: number, now = false) {
   }, 1000)
 }
 
-/** chats.media's index bar; `indexed` is clamped to the approximate total. */
+/** chats.media's index bar; `indexed` is clamped to the approximate total. `state` is `failed` (with the reason)
+ *  for a chat whose last scan stopped on an error until the connection next goes ready or the user retries, and
+ *  `paused` for one the user stopped themselves. */
 export function scanInfo(chatId: number) {
   const row = getScan(deps.db, chatId)
   const indexed = mediaCount(deps.db, chatId)
+  const error = failedScans.get(chatId)
   const state = scan?.chatId === chatId ? 'scanning' as const
+    : held.has(chatId) ? 'paused' as const
+    : error !== undefined ? 'failed' as const
     : row?.complete && row.newest_id >= (chats.get(chatId)?.last_message?.id ?? 0) ? 'done' as const : 'idle' as const
-  return { state, indexed: row?.total != null ? Math.min(indexed, row.total) : indexed, total: row?.total ?? null }
+  return { state, indexed: row?.total != null ? Math.min(indexed, row.total) : indexed, total: row?.total ?? null,
+    ...(error !== undefined && state === 'failed' && { error }) }
 }
 
 /** Starts this chat's scan when it needs one; asking for another chat stops the current one after its page. */
 export function ensureScan(chatId: number) {
-  if (auth.step !== 'ready' || scan?.chatId === chatId) return
+  wanted = chatId
+  if (auth.step !== 'ready' || scan?.chatId === chatId || held.has(chatId)) return
   if (!scanNeeded(getScan(deps.db, chatId), chats.get(chatId)?.last_message?.id ?? null, failedScans.has(chatId))) return
   if (scan) scan.stop = true
   const s = { chatId, stop: false }
   scan = s
   scans = scans.then(() => runScan(s))
 }
-/** Clear app data: the running scan stops after its page. */
-export const stopScan = () => { if (scan) scan.stop = true; scan = null }
+/** The index bar's Stop: the scan ends after its page and the saved cursors keep what it already indexed. */
+export function holdScan(chatId: number) {
+  held.add(chatId)
+  failedScans.delete(chatId)
+  if (scan?.chatId === chatId) { scan.stop = true; scan = null }
+  if (wanted === chatId) wanted = null
+  mediaChanged(chatId, true)
+  return scanInfo(chatId)
+}
+/** The index bar's Retry and Resume: forget why this chat stopped or failed and ask for the scan again. */
+export function retryScan(chatId: number) {
+  held.delete(chatId)
+  failedScans.delete(chatId)
+  ensureScan(chatId)
+}
+/** Clear app data: the running scan stops after its page and no chat stays held back. */
+export const stopScan = () => { if (scan) scan.stop = true; scan = null; wanted = null; held.clear() }
 
-async function historyPage(chatId: number, from: number, s: { stop: boolean }) {
+/** One scan request: flood waits sleep for as long as TDLib asks (bounded by `s.stop`), transient server errors
+ *  retry three times with a backoff, and anything else fails the scan instead of hanging it. */
+async function request<T>(send: () => Promise<T>, s: { stop: boolean }, what: string): Promise<T> {
+  let server = 0
   for (;;) {
-    try {
-      const r = await invoke({ _: 'getChatHistory', chat_id: chatId, from_message_id: from, offset: 0, limit: 100, only_local: false })
-      return r.messages.filter((m): m is Td.message => m !== null)
-    } catch (e) {
+    try { return await send() } catch (e) {
       const err = e as AppError
-      if (err.status !== 429 || !err.retryAfter || s.stop) throw e
-      log('warn', `Media scan waits ${err.retryAfter} s (flood wait)`)
-      await sleep(err.retryAfter * 1000) // flood waits sleep and continue
+      const alive = !s.stop && auth.step === 'ready'
+      if (alive && err.status === 429 && err.retryAfter) {
+        log('warn', `Media scan waits ${err.retryAfter} s (${what}: flood wait)`)
+        await sleep(err.retryAfter * 1000)
+        continue
+      }
+      if (alive && err.status >= 500 && server < 3) { await sleep(1000 * ++server); continue }
+      throw e
     }
   }
 }
 
+async function historyPage(chatId: number, from: number, s: { stop: boolean }) {
+  const r = await request(() => invoke({ _: 'getChatHistory', chat_id: chatId, from_message_id: from, offset: 0, limit: 100, only_local: false }), s, 'history')
+  return r.messages.filter((m): m is Td.message => m !== null)
+}
+
+/** searchChatMessages returns messages in decreasing id order and always includes `from` itself, so the caller drops
+ *  every id it has already indexed. `next` is 0 when there is nothing older left. */
+async function searchPage(chatId: number, filter: Td.SearchMessagesFilter$Input, from: number, s: { stop: boolean }) {
+  const r = await request(() => invoke({ _: 'searchChatMessages', chat_id: chatId, query: '', sender_id: null as never,
+    topic_id: null as never, from_message_id: from, offset: 0, limit: 100, filter }), s, 'search')
+  return { messages: r.messages.filter((m): m is Td.message => m !== null), next: r.next_from_message_id }
+}
+
 function index(chatId: number, messages: Td.message[]) {
-  putMedia(deps.db, messages.flatMap((m) => { const x = extractMedia(m); return x ? [mediaRow(chatId, m, x)] : [] })) // INSERT OR REPLACE: overlaps are harmless
+  putMedia(deps.db, messages.flatMap((m) => { const x = extractMedia(m); return x ? [mediaRow(chatId, m, x)] : [] })) // OR IGNORE: an overlap is already indexed
   mediaChanged(chatId)
 }
 
+/** One `from_message_id` per filter, in `counted` order; a corrupt or pre-v2 value restarts that filter. */
+const parseCursors = (raw: string | null): number[] => {
+  let saved: unknown = null
+  try { saved = raw ? JSON.parse(raw) : null } catch { saved = null }
+  return Array.from({ length: counted.length }, (_, i) => {
+    const at = Array.isArray(saved) ? saved[i] : undefined
+    return typeof at === 'number' && Number.isSafeInteger(at) && at >= 0 ? at : 0
+  })
+}
+
 /** Top-up from the newest message down to newest_id (the first walk creates the row with its first page), then
- *  backfill from oldest_id until an empty page. Progress is persisted per page, so a stopped scan resumes later. */
+ *  backfill the whole chat. Progress is persisted per page, so a stopped scan resumes later. */
 async function runScan(s: { chatId: number, stop: boolean }) {
   const { chatId } = s, { db } = deps
   const stopped = () => s.stop || auth.step !== 'ready'
@@ -522,29 +610,101 @@ async function runScan(s: { chatId: number, stop: boolean }) {
         newest ||= page[0].id
         index(chatId, page)
         const oldest = page[page.length - 1].id
-        if (!row) { putScan(db, { chat_id: chatId, newest_id: newest, oldest_id: oldest, complete: 0, total }); break }
+        if (!row) { putScan(db, { chat_id: chatId, newest_id: newest, oldest_id: oldest, complete: 0, total, cursors: null }); break }
         if (oldest <= row.newest_id) break
         from = oldest
       }
       if (row) putScan(db, { ...row, newest_id: Math.max(row.newest_id, newest), total })
-      else if (!newest) putScan(db, { chat_id: chatId, newest_id: 0, oldest_id: 0, complete: 1, total }) // an empty chat
+      else if (!newest) putScan(db, { chat_id: chatId, newest_id: 0, oldest_id: 0, complete: 1, total, cursors: null }) // an empty chat
       current.add(chatId)
     } else putScan(db, { ...row, total })
-    let walk: ScanRow = getScan(db, chatId)!
-    while (!walk.complete) {
-      if (stopped()) return
-      const oldest = walk.oldest_id
-      const page = (await historyPage(chatId, oldest, s)).filter((m) => m.id < oldest)
-      index(chatId, page)
-      walk = { ...walk, oldest_id: page.length ? page[page.length - 1].id : oldest, complete: page.length ? 0 : 1 }
-      putScan(db, walk)
-    }
+    await backfill()
   } catch (e) {
-    // ponytail: a failed scan shows as idle with no reason in the UI; upgrade: scan.state 'failed' with the error text.
-    if (!stopped()) { failedScans.add(chatId); log('warn', `Media scan of chat ${chatId} stopped: ${(e as Error).message}`) }
+    if (!stopped()) {
+      failedScans.set(chatId, (e as Error).message)
+      log('warn', `Media scan of chat ${chatId} stopped: ${(e as Error).message}`)
+    }
   } finally {
     if (scan === s) scan = null
     mediaChanged(chatId, true) // the index bar hides
+  }
+
+  /** One search stream per media filter, PARALLEL at a time, each resuming from its own cursor. A TDLib that cannot
+   *  answer the search falls back to the unfiltered history walk from the same oldest_id. */
+  async function backfill() {
+    const start = getScan(db, chatId)
+    if (!start || start.complete) return
+    const cursors = parseCursors(start.cursors)
+    let oldest = start.oldest_id
+    let fall: unknown = null // the search is unusable here: take the history path
+    let failure: unknown = null // a flood wait or server error that outlived its retries: fail the scan
+    const done = new Array<boolean>(counted.length).fill(false)
+    const save = () => { // only this scan's own fields: `upkeep` may have moved newest_id while a page was in flight
+      const cur = getScan(db, chatId)
+      if (cur) putScan(db, { ...cur, oldest_id: Math.min(cur.oldest_id, oldest), complete: 0, cursors: JSON.stringify(cursors) })
+    }
+    const walkOne = async (i: number): Promise<boolean> => {
+      let from = cursors[i]
+      for (;;) {
+        if (stopped() || fall || failure) return false
+        let page: Awaited<ReturnType<typeof searchPage>>
+        try { page = await searchPage(chatId, counted[i], from, s) }
+        catch (e) {
+          const err = e as AppError
+          if (err.status === 429 || err.status >= 500) throw e // an outage, not a method this TDLib cannot answer
+          fall = e
+          return false
+        }
+        const fresh = page.messages.filter((m) => from === 0 || m.id < from)
+        const noMore = page.next === 0
+        if (fresh.length) {
+          index(chatId, fresh)
+          from = fresh[fresh.length - 1].id
+          oldest = Math.min(oldest, from)
+        } else if (!noMore) { // TDLib may answer a short page: step the cursor below what it just handed back
+          const next = page.next > 0 && (from === 0 || page.next < from) ? page.next : from > 1 ? from - 1 : from
+          if (next === from) { save(); return true } // nowhere older to go
+          from = next
+        }
+        cursors[i] = from
+        save()
+        if (noMore) return true
+      }
+    }
+    let pull = 0
+    const worker = async () => {
+      for (;;) {
+        const i = pull++
+        if (i >= counted.length || fall || failure) return
+        try { done[i] = await walkOne(i) } catch (e) { failure ??= e; return }
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(PARALLEL, counted.length) }, worker))
+    if (failure) throw failure
+    if (fall) {
+      log('info', `Media scan of chat ${chatId}: falling back to the history walk (${String((fall as Error).message ?? fall)})`)
+      await walkHistory()
+      return
+    }
+    if (stopped()) return
+    if (done.every(Boolean)) {
+      const cur = getScan(db, chatId)
+      if (cur) putScan(db, { ...cur, oldest_id: Math.min(cur.oldest_id, oldest), complete: 1, cursors: JSON.stringify(cursors) })
+    }
+
+    /** The unfiltered backfill from oldest_id until an empty page (the path a search-less TDLib takes). */
+    async function walkHistory() {
+      let walk = getScan(db, chatId)!
+      while (!walk.complete) {
+        if (stopped()) return
+        const floor = walk.oldest_id
+        const page = (await historyPage(chatId, floor, s)).filter((m) => m.id < floor)
+        index(chatId, page)
+        oldest = Math.min(oldest, page.length ? page[page.length - 1].id : floor)
+        walk = { ...walk, oldest_id: page.length ? page[page.length - 1].id : floor, complete: page.length ? 0 : 1 }
+        putScan(db, walk)
+      }
+    }
   }
 }
 
@@ -564,13 +724,13 @@ function upkeep(m: Td.message) {
 
 const thumbPathCache = new Map<string, string>()
 
-/** Prefetch remote thumbnail files asynchronously in background */
+/** Prefetch remote thumbnail files asynchronously in background with low priority so active downloads get maximum bandwidth */
 export function prefetchThumbs(remoteIds: (string | null | undefined)[]) {
   for (const id of remoteIds) {
     if (!id || typeof id !== 'string' || thumbPathCache.has(id)) continue
     void invoke({ _: 'getRemoteFile', remote_file_id: id }).then((f) => {
       if (!f.local.is_downloading_completed) {
-        return invoke({ _: 'downloadFile', file_id: f.id, priority: 32, offset: 0, limit: 0, synchronous: false })
+        return invoke({ _: 'downloadFile', file_id: f.id, priority: 1, offset: 0, limit: 0, synchronous: false })
       } else if (f.local.path && fs.existsSync(f.local.path)) {
         thumbPathCache.set(id, f.local.path)
       }

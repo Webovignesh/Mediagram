@@ -1,9 +1,9 @@
 // Phase 5: Complete UI primitives per UI.md
 import { type ReactNode, type LegacyRef, useState, useEffect, useRef, createContext, useContext } from 'react'
-import { Loader2, ChevronDown, X, Search, Check, Pause, Play, Download } from 'lucide-react'
+import { Loader2, ChevronDown, X, Search, Check, Pause, Play, Download, CheckCircle2, AlertCircle, AlertTriangle, Info } from 'lucide-react'
 import { call } from './api.ts'
 
-type Tone = 'primary' | 'success' | 'warning' | 'danger' | 'neutral'
+export type Tone = 'primary' | 'info' | 'success' | 'warning' | 'danger' | 'neutral'
 type Status = 'queued' | 'active' | 'paused' | 'completed' | 'failed'
 type Kind = 'download' | 'upload'
 
@@ -128,8 +128,8 @@ export function Panel({ title, icon, subtitle, action, children }: {
 }
 
 export function IconTile({ icon, tone = 'primary' }: { icon: ReactNode, tone?: Tone }) {
-  const tones = {
-    primary: 'bg-primary/15 border-primary/30', success: 'bg-success/15 border-success/30',
+  const tones: Record<Tone, string> = {
+    primary: 'bg-primary/15 border-primary/30', info: 'bg-cyan/15 border-cyan/30', success: 'bg-success/15 border-success/30',
     warning: 'bg-warning/15 border-warning/30', danger: 'bg-danger/15 border-danger/30',
     neutral: 'bg-tile border-border',
   }
@@ -235,8 +235,9 @@ export function Pill({
 
 export function Progress({ done, size, tone = 'primary' }: { done: number, size: number, tone?: Tone }) {
   const percent = size > 0 ? (done / size) * 100 : 0
-  const tones = {
+  const tones: Record<Tone, string> = {
     primary: 'bg-cyan',
+    info: 'bg-cyan',
     success: 'bg-success',
     warning: 'bg-upload',
     danger: 'bg-danger',
@@ -586,19 +587,74 @@ export function ConfirmHost({ children }: { children: ReactNode }) {
   )
 }
 
-const toasts: { id: number, message: string, tone?: Tone }[] = []
+export type ToastOptions = {
+  tone?: Tone
+  title?: string
+  description?: string
+  duration?: number
+  action?: {
+    label: string
+    onClick: () => void
+  }
+}
+
+export type ToastItem = {
+  id: number
+  message: string
+  title?: string
+  description?: string
+  tone: Tone
+  duration: number
+  action?: { label: string, onClick: () => void }
+  createdAt: number
+}
+
+const toasts: ToastItem[] = []
 const toastListeners = new Set<() => void>()
 let toastId = 0
-export function toast(message: string, tone?: Tone) {
-  const id = toastId++
-  toasts.push({ id, message, tone })
-  toastListeners.forEach((l) => l())
-  setTimeout(() => {
-    const i = toasts.findIndex((t) => t.id === id)
-    if (i >= 0) toasts.splice(i, 1)
+
+export function dismissToast(id: number) {
+  const i = toasts.findIndex((t) => t.id === id)
+  if (i >= 0) {
+    toasts.splice(i, 1)
     toastListeners.forEach((l) => l())
-  }, tone === 'danger' ? 8000 : 4000)
+  }
 }
+
+export function toast(message: string, optionsOrTone?: ToastOptions | Tone) {
+  const opts: ToastOptions = typeof optionsOrTone === 'string'
+    ? { tone: optionsOrTone }
+    : (optionsOrTone || {})
+  const tone = opts.tone || 'neutral'
+  const duration = opts.duration ?? (tone === 'danger' ? 8000 : 4500)
+  const id = toastId++
+  const item: ToastItem = {
+    id,
+    message,
+    title: opts.title,
+    description: opts.description,
+    tone,
+    duration,
+    action: opts.action,
+    createdAt: Date.now(),
+  }
+  toasts.push(item)
+  toastListeners.forEach((l) => l())
+  if (duration > 0) {
+    setTimeout(() => {
+      dismissToast(id)
+    }, duration)
+  }
+  return id
+}
+
+toast.dismiss = dismissToast
+toast.success = (message: string, opts?: Omit<ToastOptions, 'tone'>) => toast(message, { ...opts, tone: 'success' })
+toast.error = (message: string, opts?: Omit<ToastOptions, 'tone'>) => toast(message, { ...opts, tone: 'danger' })
+toast.danger = (message: string, opts?: Omit<ToastOptions, 'tone'>) => toast(message, { ...opts, tone: 'danger' })
+toast.warning = (message: string, opts?: Omit<ToastOptions, 'tone'>) => toast(message, { ...opts, tone: 'warning' })
+toast.info = (message: string, opts?: Omit<ToastOptions, 'tone'>) => toast(message, { ...opts, tone: 'primary' })
+
 export function Toaster() {
   const [, setTick] = useState(0)
   useEffect(() => {
@@ -606,18 +662,96 @@ export function Toaster() {
     toastListeners.add(cb)
     return () => { toastListeners.delete(cb) }
   }, [])
+
+  if (!toasts.length) return null
+
   return (
-    <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2">
-      {toasts.map((t) => (
-        <div
-          key={t.id} role={t.tone === 'danger' ? 'alert' : 'status'}
-          className={`rounded-lg border px-4 py-3 shadow-lg ${
-            t.tone === 'danger' ? 'border-danger bg-danger/10 text-danger' : 'border-border bg-panel text-text'
-          }`}
-        >
-          {t.message}
-        </div>
-      ))}
+    <div className="fixed bottom-5 right-5 z-50 flex flex-col gap-2.5 max-w-[420px] w-full pointer-events-none select-none">
+      {toasts.map((t) => {
+        const isDanger = t.tone === 'danger'
+        const isSuccess = t.tone === 'success'
+        const isWarning = t.tone === 'warning'
+        const isPrimary = t.tone === 'primary'
+
+        const borderClass = isDanger
+          ? 'border-rose-500/40'
+          : isSuccess
+          ? 'border-emerald-500/40'
+          : isWarning
+          ? 'border-amber-500/40'
+          : isPrimary
+          ? 'border-cyan/40'
+          : 'border-white/10'
+
+        const bgClass = isDanger
+          ? 'bg-[#1e0a13]/95'
+          : isSuccess
+          ? 'bg-[#061e16]/95'
+          : isWarning
+          ? 'bg-[#211606]/95'
+          : isPrimary
+          ? 'bg-[#0b1c36]/95'
+          : 'bg-[#0c152a]/95'
+
+        return (
+          <div
+            key={t.id}
+            role={isDanger ? 'alert' : 'status'}
+            className={`pointer-events-auto relative overflow-hidden rounded-xl border ${borderClass} ${bgClass} backdrop-blur-xl p-3.5 shadow-2xl transition-all`}
+          >
+            <div className="flex items-start gap-3">
+              <div className="shrink-0 mt-0.5">
+                {isSuccess && <CheckCircle2 size={18} className="text-emerald-400" />}
+                {isDanger && <AlertCircle size={18} className="text-rose-400" />}
+                {isWarning && <AlertTriangle size={18} className="text-amber-400" />}
+                {(isPrimary || (!isSuccess && !isDanger && !isWarning)) && <Info size={18} className="text-cyan" />}
+              </div>
+
+              <div className="flex-1 min-w-0 pr-1">
+                {t.title && <div className="text-[13px] font-semibold text-white leading-tight mb-0.5">{t.title}</div>}
+                <div className={`text-[12.5px] leading-relaxed break-words ${isDanger ? 'text-rose-100' : isSuccess ? 'text-emerald-100' : isWarning ? 'text-amber-100' : 'text-slate-100'}`}>
+                  {t.message}
+                </div>
+                {t.description && <div className="text-[11.5px] text-muted leading-relaxed mt-1">{t.description}</div>}
+                {t.action && (
+                  <div className="mt-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        t.action?.onClick()
+                        dismissToast(t.id)
+                      }}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-white/20 bg-white/10 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-white/20 transition-all cursor-pointer"
+                    >
+                      {t.action.label}
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              <button
+                type="button"
+                onClick={() => dismissToast(t.id)}
+                className="shrink-0 text-muted hover:text-white rounded-md p-1 transition-colors cursor-pointer"
+                title="Dismiss"
+              >
+                <X size={14} />
+              </button>
+            </div>
+
+            {t.duration > 0 && (
+              <div
+                className={`absolute bottom-0 left-0 h-[2px] w-full origin-left opacity-60 ${
+                  isDanger ? 'bg-rose-500' : isSuccess ? 'bg-emerald-500' : isWarning ? 'bg-amber-500' : 'bg-cyan'
+                }`}
+                style={{
+                  animation: `shrinkWidth ${t.duration}ms linear forwards`,
+                }}
+              />
+            )}
+          </div>
+        )
+      })}
     </div>
   )
 }
@@ -1026,4 +1160,232 @@ export function triggerFlyToQueue(e?: React.MouseEvent | { clientX: number, clie
   const x = e ? ('clientX' in e ? e.clientX : window.innerWidth / 2) : window.innerWidth / 2
   const y = e ? ('clientY' in e ? e.clientY : window.innerHeight / 2) : window.innerHeight / 2
   window.dispatchEvent(new CustomEvent('mediagram-fly-to-queue', { detail: { x, y } }))
+}
+
+export type DuplicateMatch = {
+  chatId: number
+  messageId: number
+  name: string
+  size: number
+  duration: number
+  diskPath: string
+}
+
+export type DuplicateCheckResult = {
+  scannedPath: string
+  filesScanned: number
+  totalSelected: number
+  onDiskCount: number
+  willDownloadCount: number
+  skippedBytes: number
+  duplicates: DuplicateMatch[]
+  willDownload: { chatId: number, messageId: number, name: string, size: number, duration: number }[]
+}
+
+export function CheckDuplicatesModal({
+  open,
+  loading,
+  selectedCount,
+  result,
+  onClose,
+  onContinue,
+}: {
+  open: boolean
+  loading: boolean
+  selectedCount: number
+  result: DuplicateCheckResult | null
+  onClose: () => void
+  onContinue: (downloadItems: { chatId: number, messageId: number }[], force: boolean) => void
+}) {
+  const [skipDuplicates, setSkipDuplicates] = useState(true)
+  const [showDuplicatesList, setShowDuplicatesList] = useState(false)
+
+  useEffect(() => {
+    if (!open) {
+      setSkipDuplicates(true)
+      setShowDuplicatesList(false)
+      return
+    }
+    const handleKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', handleKey)
+    return () => window.removeEventListener('keydown', handleKey)
+  }, [open, onClose])
+
+  if (!open) return null
+
+  const onDiskCount = result?.onDiskCount ?? 0
+  const totalSelected = result?.totalSelected ?? selectedCount
+  const willDownloadCount = skipDuplicates ? (result?.willDownloadCount ?? totalSelected) : totalSelected
+
+  const handleConfirm = () => {
+    if (!result) return
+    if (skipDuplicates) {
+      onContinue(result.willDownload.map((x) => ({ chatId: x.chatId, messageId: x.messageId })), false)
+    } else {
+      const allItems = [...result.willDownload, ...result.duplicates].map((x) => ({ chatId: x.chatId, messageId: x.messageId }))
+      onContinue(allItems, true)
+    }
+  }
+
+  const subtitle = loading
+    ? `Checking ${selectedCount.toLocaleString()} selected files before download`
+    : onDiskCount > 0
+    ? `${onDiskCount.toLocaleString()} duplicates found · ${willDownloadCount.toLocaleString()} ready to download`
+    : `No duplicates found · ${willDownloadCount.toLocaleString()} ready to download`
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-md select-none animate-in fade-in duration-150"
+      onClick={onClose}
+    >
+      <div
+        className="relative w-full max-w-2xl overflow-hidden rounded-2xl border border-white/10 bg-[#0e172a] shadow-2xl flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="flex items-start justify-between border-b border-white/[0.08] px-6 py-5">
+          <div>
+            <h2 className="text-[18px] font-bold text-white tracking-wide leading-tight">Check for duplicates</h2>
+            <p className="text-[13px] text-muted mt-1 leading-normal">{subtitle}</p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg p-1.5 text-muted hover:bg-white/10 hover:text-white transition-colors cursor-pointer"
+            title="Close"
+          >
+            <X size={18} />
+          </button>
+        </div>
+
+        {/* Content Area */}
+        <div className="p-6">
+          {loading ? (
+            <div className="flex flex-col items-center justify-center py-20">
+              <div className="flex items-center gap-4">
+                <div className="size-8 rounded-full border-2 border-cyan/30 border-t-cyan animate-spin shrink-0" />
+                <div>
+                  <div className="text-[15px] font-semibold text-white">Scanning download folder</div>
+                  <div className="text-[12.5px] text-muted mt-0.5">Duplicates require an exact filename and exact byte-size match.</div>
+                </div>
+              </div>
+            </div>
+          ) : result ? (
+            <div className="space-y-4">
+              {/* Scanned Path Card */}
+              <div className="rounded-xl border border-white/[0.08] bg-white/[0.02] p-4">
+                <div className="text-[11px] font-bold tracking-wider text-muted uppercase mb-1.5">Scanned Path</div>
+                <div className="text-[13.5px] font-mono text-slate-200 break-all select-text">{result.scannedPath}</div>
+              </div>
+
+              {/* 3 Stats Grid */}
+              <div className="grid grid-cols-3 gap-3">
+                <div className="rounded-xl border border-white/[0.08] bg-white/[0.02] p-4">
+                  <div className="text-[11px] font-bold tracking-wider text-muted uppercase mb-1.5">Selected</div>
+                  <div className="text-[26px] font-bold text-white tabular-nums">{result.totalSelected.toLocaleString()}</div>
+                </div>
+                <div className="rounded-xl border border-white/[0.08] bg-white/[0.02] p-4">
+                  <div className="text-[11px] font-bold tracking-wider text-muted uppercase mb-1.5">On Disk</div>
+                  <div className={`text-[26px] font-bold tabular-nums ${onDiskCount > 0 ? 'text-amber-400' : 'text-white'}`}>
+                    {result.onDiskCount.toLocaleString()}
+                  </div>
+                </div>
+                <div className="rounded-xl border border-white/[0.08] bg-white/[0.02] p-4">
+                  <div className="text-[11px] font-bold tracking-wider text-muted uppercase mb-1.5">Will Download</div>
+                  <div className="text-[26px] font-bold text-cyan tabular-nums">{willDownloadCount.toLocaleString()}</div>
+                </div>
+              </div>
+
+              {/* Match Criteria Banner */}
+              <div className={`rounded-xl border p-4 flex items-center justify-between gap-3.5 ${
+                onDiskCount > 0
+                  ? 'border-amber-500/30 bg-amber-950/20'
+                  : 'border-emerald-500/30 bg-emerald-950/20'
+              }`}>
+                <div className="flex items-center gap-3.5">
+                  <div className={`flex size-9 shrink-0 items-center justify-center rounded-full ${
+                    onDiskCount > 0 ? 'bg-amber-500/20 text-amber-400' : 'bg-emerald-500/20 text-emerald-400'
+                  }`}>
+                    <Check size={18} strokeWidth={2.5} />
+                  </div>
+                  <div>
+                    <div className={`text-[14px] font-semibold ${onDiskCount > 0 ? 'text-amber-100' : 'text-emerald-100'}`}>
+                      Exact filename + exact byte size
+                    </div>
+                    <div className={`text-[12px] mt-0.5 ${onDiskCount > 0 ? 'text-amber-300/80' : 'text-emerald-300/80'}`}>
+                      {result.filesScanned.toLocaleString()} files scanned · {fmtBytes(result.skippedBytes)} skipped
+                    </div>
+                  </div>
+                </div>
+
+                {onDiskCount > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setShowDuplicatesList(!showDuplicatesList)}
+                    className="text-[12px] font-medium text-amber-300 hover:text-white underline cursor-pointer shrink-0"
+                  >
+                    {showDuplicatesList ? 'Hide details' : 'View duplicates'}
+                  </button>
+                )}
+              </div>
+
+              {/* Duplicates Details & Skip Toggle */}
+              {onDiskCount > 0 && (
+                <div className="space-y-3 pt-1">
+                  <label className="flex items-center gap-2.5 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={skipDuplicates}
+                      onChange={(e) => setSkipDuplicates(e.target.checked)}
+                      className="size-4 rounded accent-primary cursor-pointer"
+                    />
+                    <span className="text-[13px] font-medium text-text">
+                      Skip duplicates on disk (recommended)
+                    </span>
+                  </label>
+
+                  {showDuplicatesList && (
+                    <div className="max-h-48 overflow-y-auto rounded-xl border border-white/10 bg-black/25 p-3 space-y-2 text-[12px]">
+                      {result.duplicates.map((dup, idx) => (
+                        <div key={idx} className="flex items-center justify-between gap-2 border-b border-white/5 pb-1.5 last:border-0 last:pb-0">
+                          <div className="truncate text-slate-200">
+                            <span className="font-medium">{dup.name}</span>
+                            <span className="text-muted ml-2 font-mono text-[11px] truncate">({dup.diskPath})</span>
+                          </div>
+                          <span className="text-muted tabular-nums shrink-0">{fmtBytes(dup.size)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="py-12 text-center text-muted">No scan information available.</div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="border-t border-white/[0.08] px-6 py-4 flex items-center justify-end gap-3 bg-black/20">
+          <Button variant="secondary" onClick={onClose} className="px-5 py-2">
+            Cancel
+          </Button>
+
+          {loading ? (
+            <Button disabled className="px-5 py-2 opacity-60 bg-[#1e3a5f] text-slate-300">
+              Checking...
+            </Button>
+          ) : (
+            <Button
+              onClick={handleConfirm}
+              disabled={willDownloadCount === 0}
+              className="px-6 py-2 font-semibold"
+            >
+              Continue with {willDownloadCount}
+            </Button>
+          )}
+        </div>
+      </div>
+    </div>
+  )
 }

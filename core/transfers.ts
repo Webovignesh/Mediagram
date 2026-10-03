@@ -5,7 +5,7 @@ import path from 'node:path'
 import type * as Td from 'tdlib-types'
 import {
   type Action, addHistory, type AppError, type DB, downloadStates, type Emit, enqueue, fail, jobCounts, type JobRow, jobsAction,
-  type Kind, mediaByIds, type MediaRow, type Status, type StoredSettings, tx,
+  type Kind, mediaByIds, type MediaFilters, mediaQuery, type MediaRow, type Status, type StoredSettings, tx,
 } from './db.ts'
 import { type AuthState, type Chat, extractMedia, mediaRow } from './shapes.ts'
 import { libraryAdded, log, moveFile, type Paths, within } from './storage.ts'
@@ -123,7 +123,7 @@ export function createEngine(d: EngineDeps) {
   const gates: Record<Kind, Gate> = { download: newGate(150), upload: newGate(250) }
   let history: number[] = []
   let pumpTimer: NodeJS.Timeout | undefined, statsTimer: NodeJS.Timeout | undefined
-  let lastSample = 0, lastCleanup = 0, day = new Date().toDateString(), wasReady = false, stopped = false
+  let lastSample = 0, lastCleanup = 0, day = new Date().toDateString(), wasReady = false, wasOnline = false, stopped = false
 
   const invalidate = (...topics: string[]) => d.emit({ type: 'invalidate', topics })
   const chatTopics = (chats: number[]) => [...new Set(chats)].flatMap((c) => [`media:${c}`, `messages:${c}`])
@@ -147,7 +147,7 @@ export function createEngine(d: EngineDeps) {
   function pump() {
     clearTimeout(pumpTimer)
     pumpTimer = undefined
-    if (stopped || d.auth().step !== 'ready') return
+    if (stopped || d.auth().step !== 'ready' || d.auth().connection === 'offline') return
     const s = d.settings(), now = Date.now()
     let wake = Infinity
     for (const kind of ['download', 'upload'] as const) {
@@ -369,8 +369,10 @@ export function createEngine(d: EngineDeps) {
     try {
       const f = await d.invoke({ _: 'getFile', file_id }).catch(() => null)
       if (!isLive(l) || l.finalizing) return
+      const prevDone = l.done
       if (f) onFile(f)
       if (f?.local.is_downloading_completed) return void finalize(l, f.local.path)
+      if (l.done > prevDone) return // Progress was made: actively transferring data, not stalled
       if (f && !f.local.can_be_downloaded) return failed(l, fail(403, "Telegram doesn't allow downloading this file", { final: true }))
       if (decision === 'fail') return failed(l, fail(500, 'Download keeps stalling', { final: true }))
       if (decision === 'reassert') {
@@ -438,7 +440,15 @@ export function createEngine(d: EngineDeps) {
     for (const l of live.values()) {
       const dt = (now - l.lastAt) / 1000
       if (dt > 0) { l.speed = 0.7 * l.speed + 0.3 * Math.max(0, (l.done - l.lastBytes) / dt); l.lastBytes = l.done; l.lastAt = now }
-      if (l.kind === 'download' && !l.finalizing && !l.checking) void checkStall(l, now)
+      if (l.kind === 'download') {
+        // Periodically persist progress to SQLite so abrupt power loss or process kill retains downloaded bytes
+        if (now - ((l as any).lastSavedAt ?? 0) >= 3000 && l.done !== (l as any).lastSavedDone) {
+          ;(l as any).lastSavedAt = now
+          ;(l as any).lastSavedDone = l.done
+          saveDone(l)
+        }
+        if (!l.finalizing && !l.checking) void checkStall(l, now)
+      }
     }
     if (now - lastSample >= 1000) {
       lastSample = now
@@ -502,6 +512,147 @@ export function createEngine(d: EngineDeps) {
     return { added, skipped: items.length - added }
   }
 
+  /** Checks disk and history for exact duplicates (filename + byte size + duration) before downloading */
+  async function checkDuplicates(a: { items?: { chatId: number, messageId: number }[], chatId?: number, filters?: MediaFilters, link?: string }) {
+    let candidates: { chatId: number, messageId: number, name: string, size: number, duration: number, date: number }[] = []
+    let targetChatId = a.chatId ?? 0
+
+    if ('link' in a && a.link) {
+      const linkInfo = await d.invoke({ _: 'getInternalLinkType', link: a.link.trim() }).catch(() => null) as any
+      if (linkInfo?.url) {
+        const msgInfo = await d.invoke({ _: 'getMessageLinkInfo', url: linkInfo.url }).catch(() => null) as any
+        if (msgInfo?.chat_id && msgInfo.message && extractMedia(msgInfo.message)) {
+          targetChatId = msgInfo.chat_id
+          const x = extractMedia(msgInfo.message)!
+          candidates.push({ chatId: msgInfo.chat_id, messageId: msgInfo.message.id, name: x.name, size: x.size, duration: x.duration, date: msgInfo.message.date })
+        }
+      }
+    } else if ('filters' in a && a.chatId) {
+      targetChatId = a.chatId
+      const mediaItems = mediaQuery(db, a.chatId, a.filters ?? {}).items
+      candidates = mediaItems.map((m) => ({
+        chatId: m.chatId, messageId: m.messageId, name: m.name, size: m.size, duration: m.duration, date: m.date,
+      }))
+    } else if (a.items && a.items.length) {
+      targetChatId = a.items[0]?.chatId ?? 0
+      const byChat = Map.groupBy(a.items, (i) => i.chatId)
+      for (const [chatId, list] of byChat) {
+        const ids = [...new Set(list.map((i) => i.messageId))]
+        const known = new Map<number, MediaRow>(mediaByIds(db, chatId, ids))
+        const missing = ids.filter((id) => !known.has(id))
+        for (let i = 0; i < missing.length; i += 100) {
+          try {
+            const { messages } = await d.invoke({ _: 'getMessages', chat_id: chatId, message_ids: missing.slice(i, i + 100) })
+            for (const m of messages) {
+              const x = m && extractMedia(m)
+              if (m && x) known.set(m.id, mediaRow(chatId, m, x))
+            }
+          } catch {}
+        }
+        for (const item of list) {
+          const row = known.get(item.messageId)
+          if (row) {
+            candidates.push({
+              chatId, messageId: item.messageId, name: row.name, size: row.size, duration: row.duration, date: row.date,
+            })
+          }
+        }
+      }
+    }
+
+    const s = d.settings()
+    const chat = targetChatId ? d.chat(targetChatId) : null
+    const targetDir = chat
+      ? path.join(s.downloadRoot, folderFor(s.folderTemplate, { id: chat.id, title: chat.title }))
+      : s.downloadRoot
+
+    let filesScanned = 0
+    const diskFiles = new Map<string, string[]>()
+
+    try {
+      if (fs.existsSync(targetDir)) {
+        const entries = await fs.promises.readdir(targetDir, { recursive: true, withFileTypes: true })
+        for (const dirent of entries) {
+          if (dirent.isFile()) {
+            const full = path.join(dirent.parentPath || (dirent as any).path || targetDir, dirent.name)
+            if (dirent.name.startsWith('.') || /^(desktop\.ini|thumbs\.db)$/i.test(dirent.name)) continue
+            filesScanned++
+            const lower = dirent.name.toLowerCase()
+            const existing = diskFiles.get(lower)
+            if (existing) existing.push(full)
+            else diskFiles.set(lower, [full])
+          }
+        }
+      }
+    } catch (e: any) {
+      log('warn', `Disk dedupe scan of ${targetDir} failed: ${e.message}`)
+    }
+
+    const historyRows = db.prepare(`SELECT chat_id, message_id, name, size, path FROM history WHERE kind = 'download' AND status = 'completed' AND path IS NOT NULL`).all() as { chat_id: number, message_id: number, name: string, size: number, path: string }[]
+    const historyMap = new Map<string, { path: string, size: number }>()
+    for (const h of historyRows) {
+      historyMap.set(`${h.chat_id}:${h.message_id}`, { path: h.path, size: h.size })
+    }
+
+    const duplicates: Array<{ chatId: number, messageId: number, name: string, size: number, duration: number, diskPath: string }> = []
+    const willDownload: Array<{ chatId: number, messageId: number, name: string, size: number, duration: number }> = []
+    let skippedBytes = 0
+
+    for (const item of candidates) {
+      const targetName = fileName(item.name, item.date || Math.floor(Date.now() / 1000), s.datePrefix)
+      const lower = targetName.toLowerCase()
+      let matchedPath: string | null = null
+
+      const diskMatches = diskFiles.get(lower) ?? []
+      for (const p of diskMatches) {
+        try {
+          const st = await fs.promises.stat(p)
+          if (st.isFile() && (item.size === 0 || st.size === item.size)) {
+            matchedPath = p
+            break
+          }
+        } catch {}
+      }
+
+      if (!matchedPath) {
+        const hist = historyMap.get(`${item.chatId}:${item.messageId}`)
+        if (hist) {
+          try {
+            const st = await fs.promises.stat(hist.path)
+            if (st.isFile() && (item.size === 0 || st.size === item.size)) {
+              matchedPath = hist.path
+            }
+          } catch {}
+        }
+      }
+
+      if (matchedPath) {
+        duplicates.push({
+          chatId: item.chatId,
+          messageId: item.messageId,
+          name: item.name,
+          size: item.size,
+          duration: item.duration,
+          diskPath: matchedPath,
+        })
+        skippedBytes += item.size
+      } else {
+        willDownload.push(item)
+      }
+    }
+
+    return {
+      scannedPath: targetDir,
+      filesScanned,
+      totalSelected: candidates.length,
+      onDiskCount: duplicates.length,
+      willDownloadCount: willDownload.length,
+      skippedBytes,
+      duplicates,
+      willDownload,
+    }
+  }
+
   function action(a: Action, ids?: number[]) {
     const rows = jobsAction(db, a, ids)
     const stale: JobRow[] = []
@@ -528,15 +679,22 @@ export function createEngine(d: EngineDeps) {
   d.onUpdate((u) => { if (u._ === 'updateFile') onFile(u.file); else uploads.onUpdate(u) })
 
   return {
-    pump, action, addDownloads, addItems, addUploads: uploads.add, liveStats, requeueActiveDownloads,
+    pump, action, addDownloads, addItems, addUploads: uploads.add, checkDuplicates, liveStats, requeueActiveDownloads,
     /** Startup step 6, before TDLib starts: interrupted downloads requeued, upload routing rebuilt from pending ids. */
     recover() { requeueActiveDownloads(); uploads.rebuildRoutes() },
     /** Main forwards every auth event; entering and leaving `ready` drive recovery, requeue, and the pump. */
     onAuth(a: AuthState) {
       const ready = a.step === 'ready'
-      if (ready === wasReady) return
-      wasReady = ready
-      if (ready) { void uploads.ready(); pump() } else { requeueActiveDownloads(); uploads.leftReady() }
+      const online = a.connection === 'ready'
+      if (ready !== wasReady) {
+        wasReady = ready
+        if (ready) { void uploads.ready(); pump() } else { requeueActiveDownloads(); uploads.leftReady() }
+      } else if (ready && online && !wasOnline) {
+        // Network recovered after an outage: trigger upload recovery and pump queues
+        void uploads.ready()
+        pump()
+      }
+      wasOnline = online
     },
     /** Quit: live progress persisted; active uploads settle and go back to queued (Upload step 6). */
     async quit() {

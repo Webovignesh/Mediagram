@@ -146,6 +146,34 @@ export default function App() {
   const live = useLive()
   const route = useRoute()
 
+  const prevConnection = useRef<string | undefined>(auth?.connection)
+  const lastToast = useRef({ offline: 0, online: 0 })
+  /** Network messages live in toasts only; the OS event and TDLib's own state report both call in, so each side
+   *  suppresses a repeat of its kind for 15 s (an outage rarely announces itself just once). */
+  const netToast = (online: boolean) => {
+    const kind = online ? 'online' : 'offline'
+    const now = Date.now()
+    if (now - lastToast.current[kind] < 15_000) return
+    lastToast.current[kind] = now
+    if (online) toast.success('Connection restored. Active transfers are resuming.', { title: 'Back Online' })
+    else toast.warning('No internet connection. Transfers are paused and resume automatically.', { title: 'Network Outage' })
+  }
+  useEffect(() => {
+    // The OS notices an outage the moment it happens; TDLib can sit on dead sockets far longer, so the engine gets
+    // the signal here: a recovered network clears the failed-scan hold and restarts queues and lists.
+    const offline = () => { netToast(false); void call('app.networkChanged', { online: false }).catch(() => {}) }
+    const online = () => { netToast(true); void call('app.networkChanged', { online: true }).catch(() => {}) }
+    window.addEventListener('offline', offline)
+    window.addEventListener('online', online)
+    return () => { window.removeEventListener('offline', offline); window.removeEventListener('online', online) }
+  }, [])
+  useEffect(() => {
+    const was = prevConnection.current, now = auth?.connection
+    if (was === 'ready' && now === 'offline') netToast(false)
+    else if (was === 'offline' && now === 'ready') netToast(true)
+    prevConnection.current = now
+  }, [auth?.connection])
+
   if (error) {
     return (
       <div className="flex h-full flex-col">
@@ -173,7 +201,7 @@ export default function App() {
 
   return (
     <div className="flex h-screen w-screen flex-col overflow-hidden bg-bg">
-      {/* Top Window Bar: Solid 36px bar holding native controls, drag region, and app logo */}
+      {/* Top Window Bar: Solid 36px bar holding native controls, drag region, and the app logo */}
       <div className="drag flex h-9 shrink-0 items-center justify-between bg-[#0f172a] px-3 select-none z-30 border-b border-white/[0.06]">
         <div className="no-drag flex items-center gap-2 text-[12px] font-semibold text-text tracking-wide">
           <div className="grid size-5 place-items-center rounded bg-primary text-white shadow-glow">
@@ -181,6 +209,9 @@ export default function App() {
           </div>
           <span>Mediagram</span>
         </div>
+
+        {/* Reserved slot for the OTA update pill (the top bar carries no status indicators otherwise) */}
+        <div className="no-drag mr-36" aria-hidden="true" />
       </div>
 
       {/* Main Workspace (Sidebar + Content) */}

@@ -177,6 +177,15 @@ export function createMethods(ctx: Ctx) {
       return { freed: r.freed }
     }),
     'app.storage': method(shape({}), () => storageReport(root(), ctx.paths, ctx.native.cacheSize)),
+    // The renderer's OS online/offline event: a recovered network restarts scans, queues, and the views watching them.
+    'app.networkChanged': method(shape({ online: bool }), ({ online }) => {
+      tg.networkChanged(online)
+      if (online) {
+        engine.pump()
+        invalidate('chats', 'jobs', 'library', 'stats')
+      }
+      return { online }
+    }),
     'app.pickFolder': method(shape({ title: opt(text(80)) }), async ({ title }) => ({ path: await ctx.native.pickFolder(title) })),
     'app.openPath': method(shape({ target: oneOf('downloads', 'appData', 'logs') }), async ({ target }) => {
       const dir = target === 'downloads' ? root() : target === 'appData' ? ctx.paths.home : ctx.paths.logs
@@ -238,6 +247,17 @@ export function createMethods(ctx: Ctx) {
     'media.play': method(shape({ chatId: id, messageId: id }), async ({ chatId, messageId }) => {
       return tg.getPlayableFile(chatId, messageId)
     }),
+    /** The index bar's Retry and Resume: forget why this chat stopped or failed and start the scan again. */
+    'chats.rescan': method(shape({ chatId: id }), ({ chatId }) => {
+      knownChat(chatId)
+      tg.retryScan(chatId)
+      return tg.scanInfo(chatId)
+    }),
+    /** The index bar's Stop: the scan ends after its page and picks up from its saved cursors later. */
+    'chats.stopScan': method(shape({ chatId: id }), ({ chatId }) => {
+      knownChat(chatId)
+      return tg.holdScan(chatId)
+    }),
 
     'downloads.add': method(downloadsArgs, async (a) => {
       if ('link' in a) {
@@ -247,6 +267,7 @@ export function createMethods(ctx: Ctx) {
       if ('filters' in a) return engine.addDownloads(knownChat(a.chatId).id, mediaQuery(db, a.chatId, a.filters).items)
       return engine.addItems(a.items, a.force)
     }),
+    'downloads.checkDuplicates': method(downloadsArgs, async (a) => engine.checkDuplicates(a)),
     'uploads.add': method(shape({ chatId: id, paths: list(filePath, 1, 500), caption: text(4096), album: bool, keepNames: bool }), async (a) => {
       const auth = tg.authState()
       if (auth.step !== 'ready') throw fail(503, 'Telegram is not connected yet')

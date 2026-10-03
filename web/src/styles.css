@@ -103,3 +103,8 @@
   scrollbar-width: thin;
   scrollbar-color: rgba(96, 140, 255, 0.22) transparent;
 }
+
+@keyframes shrinkWidth {
+  from { width: 100%; }
+  to { width: 0%; }
+}

@@ -114,9 +114,10 @@ export function createUploads(core: Core) {
       l.size = todo.reduce((s, i) => s + files[i].size, 0)
       if (!core.isLive(l)) return // paused, canceled, or Telegram left ready during the copy: never also send
       const contents = todo.map((i, k) => content(files[i], sources[k], i === 0 ? job.caption : null))
+      const options: Td.messageSendOptions$Input = { _: 'messageSendOptions', from_background: false }
       const sent = todo.length === 1
-        ? [await d.invoke({ _: 'sendMessage', chat_id: job.chat_id, input_message_content: contents[0] })]
-        : (await d.invoke({ _: 'sendMessageAlbum', chat_id: job.chat_id, input_message_contents: contents })).messages
+        ? [await d.invoke({ _: 'sendMessage', chat_id: job.chat_id, options, input_message_content: contents[0] })]
+        : (await d.invoke({ _: 'sendMessageAlbum', chat_id: job.chat_id, options, input_message_contents: contents })).messages
       todo.forEach((i, k) => {
         const m = sent[k]
         if (!m) return
@@ -141,7 +142,8 @@ export function createUploads(core: Core) {
   }
 
   function progress(l: Live, f: Td.file) {
-    const uploaded = (l.uploaded ??= new Map()).set(f.id, f.remote.uploaded_size)
+    const uploadedBytes = f.remote.is_uploading_completed ? (f.size || f.expected_size || f.remote.uploaded_size) : f.remote.uploaded_size
+    const uploaded = (l.uploaded ??= new Map()).set(f.id, uploadedBytes)
     const done = [...uploaded.values()].reduce((a, b) => a + b, 0)
     if (done > l.done) { l.done = done; l.lastProgressAt = Date.now() }
   }
@@ -254,7 +256,11 @@ export function createUploads(core: Core) {
       if (!job || live.has(job.id)) continue
       const m = await d.invoke({ _: 'getMessage', chat_id: job.chat_id, message_id: pendingId }).catch(() => null)
       if (d.auth().step !== 'ready') return // left ready again; the next ready runs this again
-      if (m?.sending_state?._ === 'messageSendingStatePending') continue
+      if (m?.sending_state?._ === 'messageSendingStatePending') {
+        const mediaFile = extractMedia(m)?.file
+        if (mediaFile) inFlight.set(mediaFile.id, job.id)
+        continue
+      }
       if (m?.sending_state?._ === 'messageSendingStateFailed') void deletePending(job.chat_id, [pendingId])
       settleFile(pendingId, null, interrupted())
     }

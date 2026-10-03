@@ -208,10 +208,13 @@ Data needs: `stats.live` (+ `stats` events), `stats.overview` (topics `history`)
 Layout (mockup):
 - Title "Downloads", subtitle "Manage Telegram downloads from channels, groups, chats, and direct links in one workspace."
 - Three columns: chat list (~180px), files panel (flex), right column.
-- **Chats & Channels** panel: title + "+" button. Search "Search chats or channels…". Chips: All, Channels, Groups, Folders (Folders shows the user's Telegram folders as a sub-list with a back button). Rows: avatar, `<chat.title>` bold, `@<chat.username>` `muted`, `fmtAgo(<chat.lastDate>)` right, unread badge `<chat.unread>` (primary pill, hidden at 0). Selected row: primary-tinted background.
+- **Chats & Channels** panel: title + "+" button. Search "Search chats or channels…". Chips: All, Channels, Groups, Folders (Folders shows the user's Telegram folders as a sub-list with a back button). Rows: avatar, `<chat.title>` bold, `@<chat.username>` `muted`, `fmtAgo(<chat.lastDate>)` right, unread badge `<chat.unread>` (primary pill, hidden at 0). Selected row: primary-tinted background. The selected row also carries a primary "• Indexing" pill (pulsing dot) while its `scan.state` is `scanning`.
 - **Files panel**:
   - Header: segmented toggle "Chat View" | "Files View" and, in Files View, search "Search files in this channel…".
-  - Index bar while `scan.state` is `scanning`: "Indexing media… `<scan.indexed>` of about `<scan.total>`" with a thin progress bar; when `<scan.total>` is null, "Indexing media… `<scan.indexed>` found" with an indeterminate bar.
+  - Index bar (`role="status"`, `aria-live="polite"`), shown while `scan.state` is `scanning`, `failed`, or `paused`:
+    - `scanning`: "Indexing media… `<scan.indexed>` of about `<scan.total>` • `<eta>` left • `<rate>`/s" with a thin progress bar (indeterminate and pulsing when `<scan.total>` is null) and a secondary **Stop** button (`chats.stopScan`). The rate is an EMA of the per-second change of `<scan.indexed>`; the ETA is `(total - indexed) / rate`, both hidden until there is a sample and a total.
+    - `failed` (danger tint): "Indexing stopped: `<scan.error>`" with a primary **Retry** button (`chats.rescan`); no bar.
+    - `paused` (amber tint): "Indexing paused at `<scan.indexed>` of about `<scan.total>` files" with a primary **Resume** button (`chats.rescan`).
   - Filter row(s): Media Type, File Type (options = `<media.exts>`, every extension in the chat's index whatever the filters, so picking one keeps the others listed), Duration, Size, Status, Sort By, "Reset" (rotate icon).
   - Table: checkbox, #, Thumbnail, File Name, Type chip, Size, Duration, Status pill. A selection bar appears when rows are checked: "`<n>` selected • Download selected • Download all `<media.total>` matching" (the count makes the scope visible while indexing is still running).
   - Pagination at the bottom.
@@ -259,7 +262,8 @@ Data needs: `chats.list` (`chats`), `chats.media({ chatId, ...filters, page })` 
 | Chat rows | `<chat.*>` | "No chats yet" + "Open a chat"; search: "No chats match" | 8 skeleton rows | ErrorState |
 | Folder list | `<folder.name>`, chat count | "You have no Telegram folders" | – | – |
 | Files panel, no chat | – | "Select a chat to see its files" | – | – |
-| Index bar | `<scan.state>`, `<scan.indexed>`, `<scan.total>` | hidden when done | – | – |
+| Index bar | `<scan.state>`, `<scan.indexed>`, `<scan.total>`, `<scan.error>` | hidden when `done` or `idle`; `failed` → reason + Retry, `paused` → count + Resume | – | – |
+| Chat-list pill | `scan.state` of the selected chat | hidden unless `scanning` | – | – |
 | File rows | `<media.thumb>`, `<media.name>`, `<media.ext>`, `<media.size>`, `<media.duration>`, `<media.status>` + live progress | `<scan.state>` is `scanning` and no rows yet: index bar + 8 skeleton rows; not scanning and none: "No media in this chat"; filters: "No files match these filters" + Reset | 8 skeleton rows | ErrorState |
 | Pagination text | `<media.total>`, page, pageSize | hidden | – | – |
 | Messages | `<message.*>` | "No messages" | skeleton bubbles | ErrorState |
@@ -353,6 +357,7 @@ Data needs: `chats.list` (`chats`), `settings.get` (`settings`), `jobs.list({ ki
 
 - Title "Media Library", subtitle "Everything you have downloaded, in one place." Page action: secondary "Open folder".
 - Stats strip: Total Files `<library.stats.files>`, Total Size `<library.stats.size>`, Missing Files `<library.stats.missing>` (with "Verify" button).
+- Scan strip (`role="status"`, `aria-live="polite"`), between the stats strip and the toolbar: "Scanning the download folder… `<n>` files indexed so far" with an indeterminate pulsing bar. `library.list` answers a cached scan in milliseconds and only waits when it really has to walk the folder, so the strip appears after 150 ms — the moment a cache hit would already have answered — and disappears with the answer.
 - Toolbar: search, type chips (All, Videos, Images, Documents, Audio, Archives), chat select (options = `<library.chats>`), sort, grid/list toggle.
 - Grid: cards with 16:9 `<item.preview>` (type icon when null), `<item.name>`, "`<item.size>` • `<item.chat>` • `fmtDate(<item.mtime>)`", hover/focus actions (Open, Show in folder, Delete). List: table like Files View.
 - Multi-select with bulk "Move to Recycle Bin"; confirm "Move `<n>` files (`<size>`) to the Recycle Bin?".

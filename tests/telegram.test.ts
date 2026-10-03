@@ -6,7 +6,7 @@ import path from 'node:path'
 import { after, mock, test } from 'node:test'
 import { setImmediate as tick } from 'node:timers/promises'
 import tdl from 'tdl'
-import { type AppEvent, getScan, mediaCount, openDb, putMedia } from '../core/db.ts'
+import { type AppEvent, getScan, mediaCount, openDb, putMedia, putScan } from '../core/db.ts'
 import { openLog } from '../core/storage.ts'
 import * as tg from '../core/telegram.ts'
 
@@ -214,7 +214,7 @@ const textMsg = (chatId: number, id: number) => ({ _: 'message', id, chat_id: ch
 const pages = (cl: Fake) => cl.requests.filter((r) => r._ === 'getChatHistory').length
 
 test('scanNeeded: no row, an unfinished backfill, or a newer last message; never for a chat in failed', () => {
-  const row = { chat_id: 1, newest_id: 10, oldest_id: 1, complete: 1, total: 3 }
+  const row = { chat_id: 1, newest_id: 10, oldest_id: 1, complete: 1, total: 3, cursors: null }
   assert.deepEqual([tg.scanNeeded(undefined, null, false), tg.scanNeeded({ ...row, complete: 0 }, 10, false), tg.scanNeeded(row, 12, false)], [true, true, true])
   assert.deepEqual([tg.scanNeeded(row, 10, false), tg.scanNeeded(row, null, false), tg.scanNeeded(undefined, null, true)], [false, false, false])
 })
@@ -232,7 +232,7 @@ test('media scan: the first walk creates the row and backfills by page; once new
   tg.ensureScan(chatId)
   assert.equal(tg.scanInfo(chatId).state, 'scanning')
   await until(() => tg.scanInfo(chatId).state !== 'scanning')
-  assert.deepEqual({ ...getScan(db, chatId) }, { chat_id: chatId, newest_id: 10, oldest_id: 1, complete: 1, total: 7 })
+  assert.deepEqual({ ...getScan(db, chatId) }, { chat_id: chatId, newest_id: 10, oldest_id: 1, complete: 1, total: 7, cursors: null })
   assert.deepEqual([pages(cl), tg.scanInfo(chatId)], [4, { state: 'done', indexed: 5, total: 7 }])
   tg.ensureScan(chatId) // the refetch that the finish invalidation causes
   await tick()
@@ -267,7 +267,7 @@ test('media scan: a page error puts the chat in failed (no rescan on refetch) un
   })
   cl.update({ _: 'updateNewChat', chat: chatOf(chatId) })
   tg.ensureScan(chatId)
-  await until(() => tg.scanInfo(chatId).state === 'idle' && pages(cl) === 1)
+  await until(() => tg.scanInfo(chatId).state === 'failed' && pages(cl) === 1)
   tg.ensureScan(chatId)
   await tick()
   assert.equal(pages(cl), 1)
@@ -275,7 +275,110 @@ test('media scan: a page error puts the chat in failed (no rescan on refetch) un
   broken = false
   tg.ensureScan(chatId)
   await until(() => getScan(db, chatId)?.complete === 1)
-  assert.deepEqual({ ...getScan(db, chatId) }, { chat_id: chatId, newest_id: 0, oldest_id: 0, complete: 1, total: null }) // an empty chat; counts failed
+  assert.deepEqual({ ...getScan(db, chatId) }, { chat_id: chatId, newest_id: 0, oldest_id: 0, complete: 1, total: null, cursors: null }) // an empty chat; counts failed
+})
+
+test('networkChanged: offline changes nothing; back online clears the failed hold and pings the wanted scan and chats', async () => {
+  const chatId = -22
+  let broken = true
+  const cl = await signIn((req) => {
+    if (req._ === 'getChatMessageCount') return { _: 'count', count: 1 }
+    if (req._ !== 'getChatHistory') return notFound()
+    if (broken) throw new tdl.TDLibError(400, 'NETWORK_DOWN')
+    return { _: 'messages', total_count: 0, messages: [] }
+  })
+  cl.update({ _: 'updateNewChat', chat: chatOf(chatId) })
+  tg.ensureScan(chatId)
+  await until(() => tg.scanInfo(chatId).state === 'failed' && pages(cl) === 1) // the failed page holds the chat
+  tg.ensureScan(chatId)
+  await tick()
+  assert.equal(pages(cl), 1)
+  const before = events.length
+  tg.networkChanged(false)
+  assert.equal(events.length, before)
+  tg.networkChanged(true)
+  const topics = events.slice(before).flatMap((e) => (e.type === 'invalidate' ? e.topics : []))
+  assert.ok(topics.includes('chats'), 'the chat lists ask again')
+  assert.ok(topics.includes(`media:${chatId}`), 'the wanted scan gets its refetch')
+  broken = false
+  tg.ensureScan(chatId) // the refetch the invalidation causes
+  await until(() => getScan(db, chatId)?.complete === 1)
+})
+
+/** TDLib answers a search in decreasing id order with `from_message_id` itself at the head, and may cut a page short. */
+const searched = (docs: { id: number }[], from: number) => {
+  const at = from === 0 ? 0 : docs.findIndex((m) => m.id === from)
+  const page = docs.slice(at, at + 4)
+  return { _: 'foundChatMessages', total_count: docs.length, messages: page,
+    next_from_message_id: at + 4 < docs.length ? docs[at + 4].id : 0 }
+}
+
+test('media scan: the backfill searches one filter at a time instead of walking the history; every filter keeps a cursor', async () => {
+  const chatId = -30
+  const docs = Array.from({ length: 10 }, (_, i) => docMsg(chatId, 10 - i)) // ids 10..1, all documents
+  const froms: number[] = []
+  const cl = await signIn((req) => {
+    if (req._ === 'getChatMessageCount') return { _: 'count', count: req.filter._ === 'searchMessagesFilterDocument' ? 10 : 0 }
+    if (req._ === 'getChatHistory') return { _: 'messages', total_count: 10, messages: docs }
+    if (req._ !== 'searchChatMessages') return notFound()
+    if (req.filter._ !== 'searchMessagesFilterDocument') return { _: 'foundChatMessages', total_count: 0, messages: [], next_from_message_id: 0 }
+    froms.push(req.from_message_id)
+    return searched(docs, req.from_message_id)
+  })
+  cl.update({ _: 'updateNewChat', chat: { ...chatOf(chatId), last_message: { id: 10, date: 10 } } })
+  tg.ensureScan(chatId)
+  await until(() => tg.scanInfo(chatId).state !== 'scanning')
+  assert.deepEqual([pages(cl), froms], [1, [0, 7, 4]]) // one history page to create the row, then the search paged itself
+  assert.deepEqual(tg.scanInfo(chatId), { state: 'done', indexed: 10, total: 10 })
+  assert.deepEqual(JSON.parse(getScan(db, chatId)!.cursors!), [0, 0, 1, 0, 0, 0, 0])
+  tg.ensureScan(chatId) // the refetch the finish invalidation causes
+  await tick()
+  assert.deepEqual([pages(cl), froms.length], [1, 3])
+})
+
+test('media scan: an unfinished scan resumes from the cursors it saved instead of re-reading the history', async () => {
+  const chatId = -31
+  const docs = Array.from({ length: 10 }, (_, i) => docMsg(chatId, 10 - i))
+  const froms: number[] = []
+  const cl = await signIn((req) => {
+    if (req._ === 'getChatMessageCount') return { _: 'count', count: req.filter._ === 'searchMessagesFilterDocument' ? 10 : 0 }
+    if (req._ === 'getChatHistory') return { _: 'messages', total_count: 10, messages: docs }
+    if (req._ !== 'searchChatMessages') return notFound()
+    if (req.filter._ !== 'searchMessagesFilterDocument') return { _: 'foundChatMessages', total_count: 0, messages: [], next_from_message_id: 0 }
+    froms.push(req.from_message_id)
+    return searched(docs, req.from_message_id)
+  })
+  cl.update({ _: 'updateNewChat', chat: { ...chatOf(chatId), last_message: { id: 10, date: 10 } } })
+  putScan(db, { chat_id: chatId, newest_id: 10, oldest_id: 1, complete: 0, total: 10, cursors: '[0,0,7,0,0,0,0]' })
+  tg.ensureScan(chatId)
+  await until(() => tg.scanInfo(chatId).state !== 'scanning')
+  assert.equal(pages(cl), 0) // newest_id is current: only the backfill is left, from where it stopped
+  assert.deepEqual(froms, [7, 4])
+  assert.deepEqual(JSON.parse(getScan(db, chatId)!.cursors!), [0, 0, 1, 0, 0, 0, 0])
+  assert.deepEqual(tg.scanInfo(chatId), { state: 'done', indexed: 6, total: 10 }) // ids 7..10 were already indexed
+})
+
+test('index bar: Stop holds the scan back without losing it; the next ask and Resume both go through it', async () => {
+  const chatId = -32
+  const docs = Array.from({ length: 10 }, (_, i) => docMsg(chatId, 10 - i))
+  const cl = await signIn((req) => {
+    if (req._ === 'getChatMessageCount') return { _: 'count', count: req.filter._ === 'searchMessagesFilterDocument' ? 10 : 0 }
+    if (req._ === 'getChatHistory') return { _: 'messages', total_count: 10, messages: docs }
+    if (req._ !== 'searchChatMessages') return notFound()
+    if (req.filter._ !== 'searchMessagesFilterDocument') return { _: 'foundChatMessages', total_count: 0, messages: [], next_from_message_id: 0 }
+    return searched(docs, req.from_message_id)
+  })
+  cl.update({ _: 'updateNewChat', chat: { ...chatOf(chatId), last_message: { id: 10, date: 10 } } })
+  tg.ensureScan(chatId)
+  assert.equal(tg.holdScan(chatId).state, 'paused')
+  await tick(); await tick()
+  assert.deepEqual([pages(cl), mediaCount(db, chatId), tg.scanInfo(chatId).state], [0, 0, 'paused'])
+  tg.ensureScan(chatId) // the refetch the stop invalidates causes must not start it again
+  await tick()
+  assert.equal(pages(cl), 0)
+  tg.retryScan(chatId)
+  await until(() => tg.scanInfo(chatId).state === 'done')
+  assert.deepEqual([pages(cl), mediaCount(db, chatId)], [1, 10])
 })
 
 test('linkMessages: the message, or its whole album; 400 for links without media or that are not message links, 404 without access', async () => {

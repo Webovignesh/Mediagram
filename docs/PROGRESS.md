@@ -396,6 +396,12 @@ Agents never use the user's session or credentials, so these stay open until the
 | 2026-10-02 | Electron 44.5.1 login item read-back needs quoted executable path `path: "\"<execPath>\""` | `CommandLine::FromString` splits on unquoted space (e.g. `C:\Users\First Last`), so without quotes the setting would always read back as off |
 | 2026-10-02 | `mock.timers` mocks `setTimeout`, `setInterval`, and `Date` together in `node:test` | Allows fully deterministic unit testing of engine tick, spacing, backoff, and flood delays without real time delays |
 | 2026-10-02 | Re-check `checkDownloadRoot(await realLocation(root), roots)` in `clearAll()` right before deleting downloads | Prevents data loss if a saved harmless folder was later replaced by a junction pointing to a protected folder (Phase 2 review finding #2) |
+| 2026-10-03 | The media-index backfill reads TDLib through `searchChatMessages` (one `from_message_id` cursor per media filter, 3 filters at a time) instead of walking every message with `getChatHistory`; a search this TDLib cannot answer falls back to the old walk | The chat's media are a handful of filters, not its history: the link sees the media alone. `bench-before.txt` vs `bench-after.txt` in `test-results/` |
+| 2026-10-03 | Schema **v2** adds `scans.cursors` (JSON array of 7 cursors), applied by `openDb` as a numbered step for an existing file and inside the fresh create for a new one | The resume state has to survive a restart, and the repo's rule is "numbered steps, no migration framework" |
+| 2026-10-03 | `scan.state` gains `failed` (with `error`) and `paused`, with `chats.rescan` (Retry/Resume) and `chats.stopScan` (Stop) — **43 IPC methods** | The old design showed a failed scan as `idle` with no reason and had no way to stop a long one; both were `ponytail:` upgrade paths (ARCHITECTURE review 4 #3) |
+| 2026-10-03 | The Library watcher passes the root through `fs.realpathSync.native` before `fs.watch(root, { recursive: true })` | libuv asserts (`src/win/fs-event.c:72`) and kills the process when the watched name is an 8.3 one such as `C:\Users\LONGNA~1`, which is what `os.tmpdir()` returns on this machine; Windows reports changes under the long name |
+| 2026-10-03 | `electron/main.ts` sets `process.env.UV_THREADPOOL_SIZE ??= '16'` before anything touches the disk | The Library walk, TDLib's scan, and every other async fs call share libuv's 4-thread pool |
+| 2026-10-03 | `statAll` walks the folder in bursts of 64 with 4 bursts in flight, not a per-file pool of 256 | A per-file pool waits for a JS microtask between requests (58 ms per 10 000 hot files); a burst submits them in one synchronous pass (35 ms) and still only holds up its own burst, so a slow file does not stall the walk |
 
 ## Status
 
@@ -484,6 +490,36 @@ FileGram was removed from the main workspace. To complete the switch:
    ```
 
 ## Changelog
+
+### 2026-10-03 · Media index and Library indexing, faster and honest about its state (v1.0.9)
+
+Everything below is scoped to indexing speed, resumability, and the UI that reports it.
+
+**Telegram media index (`core/telegram.ts`)**
+- The backfill no longer walks the chat's history. It runs one `searchChatMessages` stream per media filter (`counted`, the same 7 that `getChatMessageCount` sums), `PARALLEL = 3` at a time, each resuming from its own `from_message_id` cursor. Pages are read as TDLib returns them (decreasing id, the cursor itself at the head, `next_from_message_id` for the next one) and filtered to `id < from`, so an inclusive page or a short page can neither duplicate nor skip an id. `complete = 1` only when all 7 streams are exhausted; a cursor that cannot move ends that stream, so ids strictly decrease and the loop terminates.
+- New helper `request()` wraps every scan call: a 429 sleeps `retryAfter` (while the scan is alive), a 5xx is retried three times with 1 s / 2 s / 3 s backoff, anything else is thrown. The top-up and the backfill both go through it.
+- `runScan` catches its first error as `failure` (so no worker can leave an unhandled rejection) and falls back to the old unfiltered `getChatHistory` walk when a search fails with something that is not a flood wait or a 5xx — a TDLib that refuses `searchChatMessages` still finishes the scan.
+- `failedScans` is now a `Map<number, string>`; `scanInfo` reports `state: 'failed'` with `error`, which is exactly the `ponytail:` upgrade path review 4 asked for. New `retryScan(chatId)` (`chats.rescan`) and `holdScan(chatId)` (`chats.stopScan`, backed by a `held` set that `ensureScan` checks) make Retry, Resume, and Stop real; `stopScan()` (Clear app data) clears `held`.
+- `synchronous = NORMAL` alongside WAL: a scan's per-page commit no longer fsyncs the page cache.
+
+**Storage (`core/db.ts`)**
+- Schema **v2**: `scans.cursors TEXT`, applied by `openDb` for an existing file and inside the fresh create for a new one; `user_version` 1 → 2.
+- `putMedia` inserts a page in one multi-row `INSERT OR IGNORE` (500 rows per statement, 5000 parameters) and returns how many rows it actually added. The per-chat count it used to recalculate is now a `WeakMap` cache that a batch updates directly when the batch is a single chat and drops otherwise (`dropCounts`); `clearRows` drops it. `mediaCount` caches the same way.
+- `save()` inside a scan re-reads the row through `getScan` and merges only the scan's own fields, so a concurrent live-upkeep `newest_id` move cannot be written back stale.
+
+**Library (`core/storage.ts`, `electron/main.ts`)**
+- `statAll` stats the folder in bursts of 64 with 4 bursts in flight (256 files at a time, input order kept, vanished files dropped): a burst submits every request in one synchronous pass, which libuv's thread pool drains without a gap between them, while a slow file only holds up its own burst. Measured on this machine over 10 000 hot files: a per-file pool of 64 or 256 costs 58 ms, 64-at-a-time batches 36 ms, and the burst shape 35 ms — so the straggler tolerance of a pool without its per-request submission gap.
+- `library()` arms one `fs.watch(root, { recursive: true })` for the current root: a change anywhere under it drops the cache after 400 ms of quiet and fires `onLibraryChange`, which main turns into `invalidate: ['library']` — files that appear outside TeleFlow show up at once instead of within 60 s. The path goes through `fs.realpathSync.native` first (libuv aborts the process on an 8.3 watched path); a drive root is never watched; `unwatchLibrary()` closes the handle and the tests call it before deleting their folders.
+- `electron/main.ts` sets `UV_THREADPOOL_SIZE ??= '16'` before the first disk call.
+
+**UI**
+- Downloads index bar (`role="status"`, `aria-live="polite"`): while `scanning` it shows the count, an EMA-derived rate, an ETA, and a **Stop** button, with a pulsing indeterminate bar when there is no `total`; `failed` shows the reason with **Retry**; `paused` shows where it stopped with **Resume**. The selected chat row carries an "• Indexing" pill while it runs.
+- Library: a scan strip between the stats and the toolbar, shown only once a cache hit would already have answered (150 ms), with the file count so far and a pulsing bar.
+
+**Tests and docs**
+- New: the search backfill (`pages(cl) === 1`, one `getChatHistory` page to create the row, then 3 paged searches), cursor resume from a saved `cursors`, Stop/Resume, the v2 migration, the Library watcher, and `chats.rescan`/`chats.stopScan` validation (43 methods). Existing scan tests updated for `cursors`, for `state: 'failed'`, and for `getChatMessageCount` now being answered in parallel.
+- `ARCHITECTURE.md` (schema v2, Media index scan, Library scan, Methods, call map, startup), `UI.md` (index bar, chat-list pill, Library scan strip), and the Decision log above.
+- Benchmarks: `test-results/bench-before.txt` (captured before any source change) and `test-results/bench-after.txt`, both 3 runs of `npm run bench`.
 
 ### 2026-10-02 · Phase 5 · All 6 pages skeleton (items 5.1–5.13)
 - **5.1–5.6 Pages**: Overview, Downloads, Uploads, Queue, Media Library, Settings all implemented as skeletons with complete structure per UI.md: all sections render, panels visible, controls present, IPC calls wired to correct methods, real data bound where available (me.name, storage stats, live counts), Empty/Error/Loading states on all data-bearing elements. Each page uses the correct layout (3-column for Downloads/Uploads, single-column with right panel for Overview/Queue/Settings, full-width for Library). No hardcoded sample data.

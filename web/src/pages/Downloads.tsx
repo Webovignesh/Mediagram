@@ -3,7 +3,7 @@ import React, { useState, useRef, useEffect, useLayoutEffect } from 'react'
 import { Plus, RotateCcw, Download, Folder, CheckSquare, Square, FolderOpen, Send, ExternalLink, Copy, Filter, FileText, ChevronDown, Play, SlidersHorizontal, ArrowDown, Trash2, Film, LogOut, MoreVertical } from 'lucide-react'
 import { call, useCall, useLive, navigate } from '../api.ts'
 import type { LiveStats } from '../../../core/transfers.ts'
-import { Panel, SearchInput, Chip, Select, Button, Avatar, Pill, Thumb, TypeChip, Pagination, Empty, Skeleton, ErrorState, OpenChatDialog, MediaPreviewModal, Dialog, fmtBytes, fmtAgo, fmtDuration, toast, triggerFlyToQueue, confirm } from '../ui.tsx'
+import { Panel, SearchInput, Chip, Select, Button, Avatar, Pill, Thumb, TypeChip, Pagination, Empty, Skeleton, ErrorState, OpenChatDialog, MediaPreviewModal, Dialog, fmtBytes, fmtAgo, fmtDuration, toast, triggerFlyToQueue, confirm, CheckDuplicatesModal, type DuplicateCheckResult } from '../ui.tsx'
 
 function LinkifiedText({
   text,
@@ -103,6 +103,12 @@ export default function Downloads() {
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const [showScrollBottom, setShowScrollBottom] = useState(false)
 
+  // Dedupe check modal state
+  const [dedupeModalOpen, setDedupeModalOpen] = useState(false)
+  const [dedupeLoading, setDedupeLoading] = useState(false)
+  const [dedupeSelectedCount, setDedupeSelectedCount] = useState(0)
+  const [dedupeResult, setDedupeResult] = useState<DuplicateCheckResult | null>(null)
+
   // Data fetching
   const { data: chatsData, error: chatsErr, reload: chatsReload } = useCall<{ chats: any[], folders: any[] }>('chats.list', {}, ['chats'])
 
@@ -155,7 +161,7 @@ export default function Downloads() {
     pageSize: 20,
   }
 
-  const { data: mediaData, error: mediaErr, reload: mediaReload } = useCall<{ items: any[], total: number, exts: string[], scan: { state: string, indexed: number, total: number | null } }>(
+  const { data: mediaData, error: mediaErr, reload: mediaReload } = useCall<{ items: any[], total: number, exts: string[], scan: { state: 'scanning' | 'failed' | 'paused' | 'done' | 'idle', indexed: number, total: number | null, error?: string } }>(
     'chats.media', activeChatId ? mediaFilters : null, activeChatId ? [`media:${activeChatId}`] : []
   )
 
@@ -166,6 +172,29 @@ export default function Downloads() {
   const mediaItems = mediaData?.items ?? (mediaData as any)?.media ?? []
   const availableExts = mediaData?.exts ?? []
   const scan = mediaData?.scan
+
+  // The scan reports a new `indexed` count at most once a second; the samples are smoothed so the rate and the ETA do
+  // not jump with every page.
+  const scanSample = useRef<{ at: number, indexed: number } | null>(null)
+  const [scanRate, setScanRate] = useState(0)
+  useEffect(() => {
+    if (scan?.state !== 'scanning') { scanSample.current = null; return }
+    const now = Date.now(), prev = scanSample.current
+    scanSample.current = { at: now, indexed: scan.indexed }
+    if (!prev || now - prev.at < 400) return
+    const rate = ((scan.indexed - prev.indexed) * 1000) / (now - prev.at)
+    if (Number.isFinite(rate) && rate > 0) setScanRate((old) => (old ? (old * 2 + rate) / 3 : rate))
+  }, [scan?.state, scan?.indexed])
+  const remaining = scan && scan.total ? Math.max(0, scan.total - scan.indexed) : 0
+  const eta = scanRate > 0 && remaining > 0 ? remaining / scanRate : 0
+  const fmtLeft = (s: number) =>
+    s < 60 ? `${Math.max(1, Math.round(s))}s` : s < 3600 ? `${Math.round(s / 60)}m` : `${Math.floor(s / 3600)}h ${Math.round((s % 3600) / 60)}m`
+  const scanPct = scan?.total ? Math.min(100, Math.round((scan.indexed / scan.total) * 100)) : 0
+  const rescan = async (method: 'chats.stopScan' | 'chats.rescan') => {
+    if (!activeChatId) return
+    try { await call(method, { chatId: activeChatId }) } catch (e) { toast((e as Error).message); return }
+    mediaReload()
+  }
   const messages = msgData?.messages ?? []
   const filteredMessages = messages.filter((m: any) => {
     if (mediaOnlyChat && !m.media) return false
@@ -313,48 +342,109 @@ export default function Downloads() {
   const liveStats = liveState.stats
 
   async function downloadItems(items: { chatId: number, messageId: number }[], force = false, e?: React.MouseEvent) {
+    if (force) {
+      try {
+        const res = await call<{ added: number, skipped: number }>('downloads.add', { items, force: true })
+        toast(`Added ${res.added}${res.skipped > 0 ? `, skipped ${res.skipped}` : ''}`)
+        setSelectedIds([])
+        if (res.added > 0) {
+          triggerFlyToQueue(e)
+        }
+      } catch (err) {
+        toast((err as Error).message, 'danger')
+      }
+      return
+    }
+
+    setDedupeSelectedCount(items.length)
+    setDedupeLoading(true)
+    setDedupeModalOpen(true)
+    setDedupeResult(null)
     try {
-      const res = await call<{ added: number, skipped: number }>('downloads.add', { items, force })
+      const res = await call<DuplicateCheckResult>('downloads.checkDuplicates', { items })
+      setDedupeResult(res)
+      setDedupeLoading(false)
+    } catch (err) {
+      setDedupeModalOpen(false)
+      toast((err as Error).message, 'danger')
+    }
+  }
+
+  async function handleDedupeContinue(itemsToDownload: { chatId: number, messageId: number }[], force: boolean) {
+    setDedupeModalOpen(false)
+    setDedupeResult(null)
+    if (!itemsToDownload.length) {
+      toast('All duplicate files were skipped.', 'info')
+      return
+    }
+    try {
+      const res = await call<{ added: number, skipped: number }>('downloads.add', { items: itemsToDownload, force })
       toast(`Added ${res.added}${res.skipped > 0 ? `, skipped ${res.skipped}` : ''}`)
       setSelectedIds([])
       if (res.added > 0) {
-        triggerFlyToQueue(e)
+        triggerFlyToQueue()
       }
-    } catch (e) {
-      toast((e as Error).message, 'danger')
+    } catch (err) {
+      toast((err as Error).message, 'danger')
     }
   }
 
   async function downloadAllMatching(e?: React.MouseEvent) {
     if (!activeChatId) return
+    const total = mediaData?.total ?? 0
+    setDedupeSelectedCount(total)
+    setDedupeLoading(true)
+    setDedupeModalOpen(true)
+    setDedupeResult(null)
     try {
-      const res = await call<{ added: number, skipped: number }>('downloads.add', {
+      const res = await call<DuplicateCheckResult>('downloads.checkDuplicates', {
         chatId: activeChatId,
         filters: mediaFilters,
       })
-      toast(`Added ${res.added}${res.skipped > 0 ? `, skipped ${res.skipped}` : ''}`)
-      if (res.added > 0) {
-        triggerFlyToQueue(e)
-      }
-    } catch (e) {
-      toast((e as Error).message, 'danger')
+      setDedupeResult(res)
+      setDedupeLoading(false)
+    } catch (err) {
+      setDedupeModalOpen(false)
+      toast((err as Error).message, 'danger')
     }
   }
 
   async function downloadAllFolderMedia() {
     if (!filteredChats.length) return
+    setDedupeSelectedCount(filteredChats.length * 30)
+    setDedupeLoading(true)
+    setDedupeModalOpen(true)
+    setDedupeResult(null)
     try {
-      let totalAdded = 0
-      for (const c of filteredChats) {
-        const res = await call<{ added: number, skipped: number }>('downloads.add', {
-          chatId: c.id,
-          filters: mediaFilters,
-        }).catch(() => ({ added: 0, skipped: 0 }))
-        totalAdded += res.added
+      const checkResults = await Promise.all(
+        filteredChats.map((c) =>
+          call<DuplicateCheckResult>('downloads.checkDuplicates', {
+            chatId: c.id,
+            filters: mediaFilters,
+          }).catch(() => null)
+        )
+      )
+      const validResults = checkResults.filter((r): r is DuplicateCheckResult => r !== null)
+      if (!validResults.length) {
+        setDedupeModalOpen(false)
+        toast('No media found in folder channels', 'info')
+        return
       }
-      toast(`Added ${totalAdded} files from folder channels to download queue`)
-    } catch (e) {
-      toast((e as Error).message, 'danger')
+      const combined: DuplicateCheckResult = {
+        scannedPath: validResults[0].scannedPath,
+        filesScanned: validResults.reduce((acc, r) => acc + r.filesScanned, 0),
+        totalSelected: validResults.reduce((acc, r) => acc + r.totalSelected, 0),
+        onDiskCount: validResults.reduce((acc, r) => acc + r.onDiskCount, 0),
+        willDownloadCount: validResults.reduce((acc, r) => acc + r.willDownloadCount, 0),
+        skippedBytes: validResults.reduce((acc, r) => acc + r.skippedBytes, 0),
+        duplicates: validResults.flatMap((r) => r.duplicates),
+        willDownload: validResults.flatMap((r) => r.willDownload),
+      }
+      setDedupeResult(combined)
+      setDedupeLoading(false)
+    } catch (err) {
+      setDedupeModalOpen(false)
+      toast((err as Error).message, 'danger')
     }
   }
 
@@ -440,7 +530,16 @@ export default function Downloads() {
         open={!!previewItem}
         item={previewItem}
         onClose={() => setPreviewItem(null)}
-        onDownload={previewItem?.messageId && activeChatId ? () => downloadItems([{ chatId: activeChatId, messageId: previewItem.messageId }], true) : undefined}
+        onDownload={previewItem?.messageId && activeChatId ? () => downloadItems([{ chatId: activeChatId, messageId: previewItem.messageId }]) : undefined}
+      />
+
+      <CheckDuplicatesModal
+        open={dedupeModalOpen}
+        loading={dedupeLoading}
+        selectedCount={dedupeSelectedCount}
+        result={dedupeResult}
+        onClose={() => { setDedupeModalOpen(false); setDedupeResult(null) }}
+        onContinue={handleDedupeContinue}
       />
 
       {/* Custom Size Dialog */}
@@ -665,6 +764,14 @@ export default function Downloads() {
                   >
                     <Trash2 size={13} />
                   </button>
+                  {active && scan?.state === 'scanning' && (
+                    <span
+                      className="flex shrink-0 items-center gap-1 rounded-full bg-primary/20 px-1.5 py-0.5 text-[10px] font-semibold text-primary"
+                      title="Indexing this chat's media"
+                    >
+                      <span className="size-1.5 animate-pulse rounded-full bg-primary" /> Indexing
+                    </span>
+                  )}
                   {c.unread > 0 && (
                     <span className="rounded-full bg-primary px-1.5 py-0.5 text-[10px] font-bold text-white shrink-0">
                       {c.unread}
@@ -736,18 +843,54 @@ export default function Downloads() {
           </div>
         )}
 
-        {/* Index bar while scanning */}
-        {scan && scan.state === 'scanning' && (
-          <div className="rounded-lg border border-primary/30 bg-primary/10 p-2.5 text-[12px] text-text">
-            <div className="flex items-center justify-between mb-1.5">
-              <span>Indexing media… {scan.indexed} {scan.total ? `of about ${scan.total}` : 'found'}</span>
+        {/* Media index bar: how fast and how much is left while it runs, and why it stopped when it did */}
+        {scan && (scan.state === 'scanning' || scan.state === 'failed' || scan.state === 'paused') && (
+          <div
+            role="status"
+            aria-live="polite"
+            className={`rounded-lg border p-2.5 text-[12px] text-text ${
+              scan.state === 'failed' ? 'border-danger/40 bg-danger/10'
+                : scan.state === 'paused' ? 'border-amber-400/40 bg-amber-400/10'
+                : 'border-primary/30 bg-primary/10'
+            }`}
+          >
+            <div className="flex items-center justify-between gap-3">
+              <span className="min-w-0 truncate">
+                {scan.state === 'scanning' && (
+                  <>
+                    Indexing media… {scan.indexed.toLocaleString()}
+                    {scan.total ? ` of about ${scan.total.toLocaleString()}` : ''}
+                    {eta > 0 ? ` · ${fmtLeft(eta)} left` : ''}
+                    {scanRate > 0 ? ` · ${Math.round(scanRate).toLocaleString()}/s` : ''}
+                  </>
+                )}
+                {scan.state === 'failed' && <>Indexing stopped: {scan.error || 'Telegram refused the request'}</>}
+                {scan.state === 'paused' && (
+                  <>Indexing paused at {scan.indexed.toLocaleString()}
+                  {scan.total ? ` of about ${scan.total.toLocaleString()}` : ''} files</>
+                )}
+              </span>
+              {scan.state === 'scanning' && (
+                <Button variant="secondary" className="py-1 px-2.5 text-[11px] shrink-0" onClick={() => rescan('chats.stopScan')}>Stop</Button>
+              )}
+              {scan.state !== 'scanning' && (
+                <Button
+                  variant="primary"
+                  className="py-1 px-2.5 text-[11px] shrink-0"
+                  onClick={() => rescan('chats.rescan')}
+                >
+                  {scan.state === 'failed' ? 'Retry' : 'Resume'}
+                </Button>
+              )}
             </div>
-            <div className="h-1.5 w-full rounded-full bg-[#1e2a47] overflow-hidden">
-              <div
-                className="h-full bg-primary rounded-full transition-all duration-300"
-                style={{ width: scan.total ? `${Math.min(100, Math.round((scan.indexed / scan.total) * 100))}%` : '50%' }}
-              />
-            </div>
+            {scan.state !== 'failed' && (
+              <div className="mt-1.5 h-1.5 w-full rounded-full bg-[#1e2a47] overflow-hidden">
+                <div
+                  className={`h-full rounded-full transition-all duration-300 ${scan.total ? 'bg-primary' : 'w-1/2 animate-pulse bg-primary/70'}`}
+                  style={scan.total ? { width: `${scanPct}%` } : undefined}
+                />
+              </div>
+            )}
           </div>
         )}
 
@@ -909,7 +1052,7 @@ export default function Downloads() {
                 <div className="font-semibold">{selectedIds.length} items selected</div>
                 <div className="flex items-center gap-2">
                   <Button
-                    onClick={() => downloadItems(selectedIds.map((id) => ({ chatId: activeChatId!, messageId: id })), true)}
+                    onClick={() => void downloadItems(selectedIds.map((id) => ({ chatId: activeChatId!, messageId: id })), false)}
                     className="py-1 px-3 text-[12px]"
                   >
                     Download selected
@@ -1030,11 +1173,11 @@ export default function Downloads() {
                                   </button>
                                 </div>
                               ) : (
-                                <button
-                                  onClick={() => downloadItems([{ chatId: activeChatId!, messageId: m.messageId }], true)}
-                                  className="rounded p-1.5 text-muted hover:text-primary hover:bg-white/10 transition-colors"
-                                  title="Download"
-                                >
+                                  <button
+                                    onClick={(e) => downloadItems([{ chatId: activeChatId!, messageId: m.messageId }], false, e)}
+                                    className="rounded p-1.5 text-muted hover:text-primary hover:bg-white/10 transition-colors"
+                                    title="Download"
+                                  >
                                   <Download size={16} />
                                 </button>
                               )}
@@ -1273,14 +1416,14 @@ export default function Downloads() {
                                           </button>
                                         )
                                       ) : (
-                                        <button
-                                          onClick={(e) => {
-                                            e.stopPropagation()
-                                            downloadItems([{ chatId: activeChatId!, messageId: m.id }], true)
-                                          }}
-                                          className="size-7 rounded-full bg-black/70 backdrop-blur-md text-white hover:bg-primary flex items-center justify-center shadow"
-                                          title="Download"
-                                        >
+                                          <button
+                                            onClick={(ev) => {
+                                              ev.stopPropagation()
+                                              downloadItems([{ chatId: activeChatId!, messageId: m.id }], false, ev)
+                                            }}
+                                            className="size-7 rounded-full bg-black/70 backdrop-blur-md text-white hover:bg-primary flex items-center justify-center shadow"
+                                            title="Download"
+                                          >
                                           <Download size={13} />
                                         </button>
                                       )}
@@ -1325,11 +1468,11 @@ export default function Downloads() {
                                         </button>
                                       </>
                                     ) : (
-                                      <Button
-                                        variant="primary"
-                                        onClick={() => downloadItems([{ chatId: activeChatId!, messageId: m.id }], true)}
-                                        className="text-[11.5px] py-1 px-3 flex items-center gap-1 font-medium shadow-sm"
-                                      >
+                                        <Button
+                                          variant="primary"
+                                          onClick={() => void downloadItems([{ chatId: activeChatId!, messageId: m.id }], false)}
+                                          className="text-[11.5px] py-1 px-3 flex items-center gap-1 font-medium shadow-sm"
+                                        >
                                         <Download size={13} /> Download
                                       </Button>
                                     )}

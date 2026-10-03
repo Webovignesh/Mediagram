@@ -7,13 +7,13 @@ import { pathToFileURL } from 'node:url'
 import { type DB, downloadStates, enqueue, getSettings, openDb, putMedia, putScan, putSetting, readSetting } from '../core/db.ts'
 import {
   checkDownloadRoot, clearAll, clearAppData, clearCache, type ClearDeps, dirSize, library, libraryAdded, libraryCached, libraryFile, libraryMissing,
-  libType, log, moveFile, openLog, pageKey, realLocation, realRoots, resolvePaths, scanLibrary, storageReport, trash, within,
+  libType, log, moveFile, openLog, pageKey, realLocation, realRoots, resolvePaths, scanLibrary, storageReport, trash, unwatchLibrary, within,
 } from '../core/storage.ts'
 
 const env = { LOCALAPPDATA: 'C:\\Users\\u\\AppData\\Local' }
 const repo = 'C:\\src\\teleflow'
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'teleflow-'))
-after(() => fs.rmSync(temp, { recursive: true, force: true }))
+after(() => { unwatchLibrary(); fs.rmSync(temp, { recursive: true, force: true }) })
 let n = 0
 /** A fresh folder with the given files (relative path → content). */
 function tree(files: Record<string, string>) {
@@ -254,6 +254,15 @@ test('libraryAdded: a completed download joins the cached scan; part files and o
   assert.deepEqual(libraryCached(root).map((e) => [e.rel, e.type, e.size]).sort(), [['Chat\\b.jpg', 'image', 2], ['a.mp4', 'video', 1]])
 })
 
+test('library: a change anywhere under the root drops the cached scan, so the next read sees the new file', async () => {
+  const root = tree({ 'a.mp4': '1' })
+  assert.equal((await library(root)).length, 1)
+  fs.writeFileSync(path.join(root, 'b.mp4'), '22')
+  await new Promise((r) => setTimeout(r, 700)) // the watcher lets the burst settle instead of rescanning per event
+  assert.deepEqual(libraryCached(root), [], 'the cached scan is gone')
+  assert.equal((await library(root)).length, 2)
+})
+
 // ---- Clearing (3.6) ----
 
 function clearRig() {
@@ -299,7 +308,7 @@ test('Clear app data: keeps the credentials, window, and downloads; removes jobs
   addJob(t.db, 'download', 'completed')
   t.db.prepare(`INSERT INTO history (kind, status, chat_id, chat_title, name, type, size, finished_at) VALUES ('download', 'completed', 8, 'c', 'f', 'video', 1, 0)`).run()
   putMedia(t.db, [{ chatId: 9, messageId: 1, date: 0, type: 'video', name: 'v.mp4', ext: 'mp4', size: 1, duration: 1, caption: '', thumb: null }])
-  putScan(t.db, { chat_id: 9, newest_id: 1, oldest_id: 1, complete: 1, total: 1 })
+  putScan(t.db, { chat_id: 9, newest_id: 1, oldest_id: 1, complete: 1, total: 1, cursors: null })
   addJob(t.db, 'download', 'active')
   await assert.rejects(clearAppData(t.deps), { status: 409 })
   t.db.exec(`UPDATE jobs SET status = 'paused'`)

@@ -6,12 +6,17 @@ import { app, BrowserWindow, dialog, ipcMain, Menu, net, Notification, protocol,
 import { getTdjson } from 'prebuilt-tdlib'
 import icon from '../assets/icon.png?asset'
 import { type AppEvent, type DB, getSettings, type Kind, openDb, putSetting, readSetting } from '../core/db.ts'
-import { library, log, openLog, pageKey, realRoots, resolvePaths } from '../core/storage.ts'
+import { library, log, onLibraryChange, openLog, pageKey, realRoots, resolvePaths } from '../core/storage.ts'
 import * as telegram from '../core/telegram.ts'
 import { createEngine, type Engine, type LiveStats } from '../core/transfers.ts'
 import { createMethods, handleCall, type License, protocolFile } from './ipc.ts'
 
 declare const __LICENSES__: License[] // built by electron.vite.config.ts
+
+// fs and zlib run on the libuv thread pool (4 threads by default). The Library walk of a large root, TDLib's media scan,
+// and every other fs call share it, so a bigger pool keeps them off each other's feet. libuv reads this the first time
+// it needs a thread, which is the first asynchronous fs call — still ahead of us.
+process.env.UV_THREADPOOL_SIZE ??= '16'
 
 let win: BrowserWindow | null = null
 let tray: Tray | null = null
@@ -179,7 +184,8 @@ function startup() {
     // 8.
     const apiId = readSetting(db, 'apiId'), apiHash = readSetting(db, 'apiHash')
     if (typeof apiId === 'number' && typeof apiHash === 'string') await telegram.start({ apiId, apiHash })
-    // 9. Fills the cache global search reads from.
+    // 9. Fills the cache global search reads from, and listens for files appearing outside TeleFlow.
+    onLibraryChange(() => emit({ type: 'invalidate', topics: ['library'] }))
     library(settings().downloadRoot).catch((e) => log('warn', `Library scan failed: ${(e as Error).message}`))
   }).catch(fatal)
 

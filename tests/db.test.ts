@@ -11,11 +11,11 @@ import {
 const is400For = (key: string) => (e: Error & { status?: number }) => e.status === 400 && e.message.startsWith(`${key} `)
 const pragma = (db: DB, name: string) => Object.values(db.prepare(`PRAGMA ${name}`).get()!)[0]
 
-test('openDb: creates schema v1 on :memory:', () => {
+test('openDb: creates schema v1 then the v2 scans.cursors column on :memory:', () => {
   const db = openDb(':memory:')
-  assert.equal(pragma(db, 'user_version'), 1)
+  assert.equal(pragma(db, 'user_version'), 2)
   assert.equal(pragma(db, 'foreign_keys'), 1)
-  const names = (type: string) => db.prepare('SELECT name FROM sqlite_master WHERE type = ? AND name NOT LIKE ? ORDER BY name').all(type, 'sqlite_%').map((r) => r.name)
+  const names = (type: string) => db.prepare(`SELECT name FROM sqlite_master WHERE type = ? AND name NOT LIKE ? ORDER BY name`).all(type, 'sqlite_%').map((r) => r.name)
   assert.deepEqual(names('table'), ['history', 'jobs', 'media', 'scans', 'settings'])
   assert.deepEqual(names('index'), ['history_msg', 'history_path', 'history_time', 'jobs_download_msg', 'jobs_finished', 'jobs_path', 'jobs_queue', 'media_chat_date'])
   assert.throws(() => db.prepare(`INSERT INTO jobs (kind, status, position, chat_id, chat_title, name, type, created_at) VALUES ('torrent', 'queued', 1, 1, 't', 'n', 'video', 0)`).run(), /CHECK/)
@@ -31,8 +31,27 @@ test('openDb: reopening a file keeps its data and does not re-run the schema', (
     putSetting(db, 'maxDownloads', 4)
     db.close()
     db = openDb(file)
-    assert.equal(pragma(db, 'user_version'), 1)
+    assert.equal(pragma(db, 'user_version'), 2)
     assert.equal(readSetting(db, 'maxDownloads'), 4)
+    db.close()
+  } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('openDb: a v1 file is migrated to v2 by adding scans.cursors, once', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'teleflow-'))
+  try {
+    const file = path.join(dir, 'teleflow.db')
+    let db = openDb(file)
+    db.exec('ALTER TABLE scans DROP COLUMN cursors')
+    db.exec('PRAGMA user_version = 1')
+    db.close()
+    db = openDb(file)
+    assert.equal(pragma(db, 'user_version'), 2)
+    assert.equal(db.prepare(`SELECT name FROM pragma_table_info('scans') WHERE name = 'cursors'`).all().length, 1)
+    assert.deepEqual(db.prepare(`SELECT cursors FROM scans`).all(), [])
+    db.close()
+    db = openDb(file)
+    assert.equal(pragma(db, 'user_version'), 2)
     db.close()
   } finally { fs.rmSync(dir, { recursive: true, force: true }) }
 })

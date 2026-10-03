@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useSyncExternalStore } from 'react'
+import { useEffect, useState, useCallback, useRef, useSyncExternalStore } from 'react'
 import type { Envelope } from '../../electron/ipc.ts'
 import type { Bridge } from '../../electron/preload.ts'
 import type { AuthState } from '../../core/shapes.ts'
@@ -34,6 +34,12 @@ export function useCall<T>(
     setTick((t) => t + 1)
   }, [])
 
+  const errorRef = useRef(error)
+  const loadingRef = useRef(loading)
+  const pendingSince = useRef(0)
+  errorRef.current = error
+  loadingRef.current = loading
+
   useEffect(() => {
     if (args === null) {
       setData(undefined)
@@ -41,6 +47,7 @@ export function useCall<T>(
       return
     }
     let active = true
+    pendingSince.current = Date.now()
     call<T>(method, args)
       .then((d) => {
         if (active) {
@@ -56,6 +63,29 @@ export function useCall<T>(
       })
     return () => { active = false }
   }, [method, JSON.stringify(args), tick])
+
+  // An outage can fail a call or leave it queued behind TDLib's dead sockets; both come back when the OS reports the
+  // network again or TDLib re-enters ready, so a failed or hanging call (over 2 s) fetches once now and once more
+  // a few seconds later, when TDLib has had time to reconnect on its own.
+  useEffect(() => {
+    if (args === null) return
+    let delayed: NodeJS.Timeout | undefined
+    const hung = () => !!errorRef.current || (loadingRef.current && Date.now() - pendingSince.current > 2000)
+    const recover = () => {
+      if (hung()) reload()
+      clearTimeout(delayed)
+      delayed = setTimeout(() => { if (hung()) reload() }, 5000)
+    }
+    window.addEventListener('online', recover)
+    const unsub = on((event) => {
+      if (event.type === 'auth' && event.auth.connection === 'ready') recover()
+    })
+    return () => {
+      window.removeEventListener('online', recover)
+      clearTimeout(delayed)
+      unsub()
+    }
+  }, [JSON.stringify(args), reload])
 
   useEffect(() => {
     if (topics.length === 0) return

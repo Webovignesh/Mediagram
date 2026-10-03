@@ -97,15 +97,26 @@ export type LibraryItem = {
   chat: string | null, chatId: number | null, messageId: number | null, historyId: number | null, preview: string | null,
 }
 
-/** stat() in batches of 64; files that vanished in between are left out. */
+/** stat() in bursts of 64 with 4 bursts in flight: a burst submits every request in one synchronous pass, which
+ *  libuv's thread pool drains without a gap between them, while a slow file only ever holds up its own burst (the
+ *  three others keep walking). Files that vanished are left out, and the input order is kept, so a scan of the same
+ *  folder always answers with the same list. */
 async function statAll(files: string[]) {
-  const out: [string, fs.Stats][] = []
-  for (let i = 0; i < files.length; i += 64) {
-    const batch = files.slice(i, i + 64)
-    const stats = await Promise.all(batch.map((f) => fs.promises.stat(f).catch(() => null)))
-    stats.forEach((s, j) => { if (s?.isFile()) out.push([batch[j], s]) })
+  const SIZE = 64, SLOTS = 4
+  const out: ([string, fs.Stats] | undefined)[] = new Array(files.length)
+  let chunk = 0
+  const worker = async () => {
+    for (;;) {
+      const c = chunk++
+      const at = c * SIZE
+      if (at >= files.length) return
+      const batch = files.slice(at, at + SIZE)
+      const stats = await Promise.all(batch.map((f) => fs.promises.stat(f).catch(() => null)))
+      stats.forEach((s, j) => { if (s?.isFile()) out[at + j] = [batch[j], s] })
+    }
   }
-  return out
+  await Promise.all(Array.from({ length: Math.min(SLOTS, Math.ceil(files.length / SIZE)) }, worker))
+  return out.filter((e): e is [string, fs.Stats] => e !== undefined)
 }
 const filesUnder = async (dir: string) => (await fs.promises.readdir(dir, { recursive: true, withFileTypes: true })
   .catch((e: NodeJS.ErrnoException) => { if (e.code === 'ENOENT') return []; throw e }))
@@ -121,12 +132,53 @@ export async function scanLibrary(root: string): Promise<LibraryEntry[]> {
   }))
 }
 
-// ponytail: no file watcher, so files added outside TeleFlow show up within 60 s; upgrade: fs.watch on the root.
+// The cached scan is dropped when the root changes, when something is cleared, and when the watcher below sees a file
+// change outside TeleFlow, so the Library no longer waits up to 60 s for a copy or an external move to show up.
 let cache: { key: string, at: number, entries: LibraryEntry[] } | null = null
 let scanning: { key: string, promise: Promise<LibraryEntry[]> } | null = null
+let watching: string | null = null
+let watcher: fs.FSWatcher | null = null
+let settle: NodeJS.Timeout | undefined
+
+/** Drops the cached scan; the next `library()` walks the root again. */
+export const dropLibraryCache = () => { cache = null }
+
+let changed: (() => void) | null = null
+/** The app registers this so open Library views refetch once the watcher below has dropped the cache. */
+export const onLibraryChange = (fn: (() => void) | null) => { changed = fn }
+
+/** Closes the root watcher (tests, and before arming another root). */
+export function unwatchLibrary() {
+  watcher?.close(); watcher = null
+  watching = null
+  clearTimeout(settle); settle = undefined
+}
+
+/** Watches `root` whole and drops the cached scan once the changes settle: a download finishing or a folder being copied
+ *  in costs one rescan, not one per event. Only one root is watched; a root change re-arms it. The path goes through
+ *  realpath first: Windows reports changes under the long name, and libuv aborts the process when the watched name is an
+ *  8.3 one (`C:\Users\LONGNA~1`), which is exactly what os.tmpdir() hands back. */
+function armWatch(root: string) {
+  const key = root.toLowerCase()
+  if (watching === key) return
+  unwatchLibrary()
+  let real: string
+  try { real = fs.realpathSync.native(root) } catch { return } // not created yet: the next scan tries again
+  if (real === path.parse(real).root) return // a whole drive would be watched file by file
+  try {
+    watcher = fs.watch(real, { recursive: true }, () => {
+      clearTimeout(settle)
+      settle = setTimeout(() => { dropLibraryCache(); settle = undefined; changed?.() }, 400)
+      settle.unref()
+    })
+  } catch { watcher = null; return }
+  watching = key
+  watcher.on('error', () => { if (watching === key) unwatchLibrary() })
+}
 
 /** The cached scan of `root`, rebuilt when older than 60 s or for another root (a root change drops it). */
 export function library(root: string, now = Date.now()): Promise<LibraryEntry[]> {
+  armWatch(root)
   const key = root.toLowerCase()
   if (cache?.key === key && now - cache.at < 60_000) return Promise.resolve(cache.entries)
   if (scanning?.key !== key) {

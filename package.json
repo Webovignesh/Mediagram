@@ -1,6 +1,6 @@
 {
   "name": "mediagram",
-  "version": "1.0.7",
+  "version": "1.0.9",
   "private": true,
   "description": "Desktop download and upload manager for Telegram media, powered by TDLib.",
   "type": "module",
@@ -18,6 +18,7 @@
     "test:ui": "playwright test tests/ui.spec.ts",
     "dist": "electron-vite build && electron-builder --win nsis",
     "test:app": "playwright test tests/app.spec.ts",
+    "bench": "node scripts/bench.ts",
     "icon": "node scripts/icon.ts"
   },
   "dependencies": {

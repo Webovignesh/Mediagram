@@ -5,12 +5,12 @@ import path from 'node:path'
 import { after, test } from 'node:test'
 import { pathToFileURL } from 'node:url'
 import { type AppEvent, fail, getSettings, openDb, putMedia, readSetting } from '../core/db.ts'
-import { library, pageKey, realRoots, resolvePaths } from '../core/storage.ts'
+import { library, pageKey, realRoots, resolvePaths, unwatchLibrary } from '../core/storage.ts'
 import { createEngine } from '../core/transfers.ts'
 import { createMethods, type Ctx, handleCall, id, oneOf, page, pageSize, protocolFile, q, repoUrl, shape } from '../electron/ipc.ts'
 
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'teleflow-'))
-after(() => fs.rmSync(temp, { recursive: true, force: true }))
+after(() => { unwatchLibrary(); fs.rmSync(temp, { recursive: true, force: true }) })
 
 function fixture(tg: Partial<Ctx['tg']> = {}) {
   const paths = resolvePaths({ env: { TELEFLOW_HOME: path.join(temp, `home${Math.random()}`) }, packaged: true, appDir: path.join(temp, 'app') })
@@ -19,7 +19,7 @@ function fixture(tg: Partial<Ctx['tg']> = {}) {
   const events: AppEvent[] = []
   const login = { on: false, sets: [] as boolean[] }
   const fakeTg = { authState: () => ({ step: 'credentials', connection: 'offline' }), chatList: () => { throw fail(503, 'Telegram is not connected yet') },
-    chat: () => null, invoke: () => Promise.reject(fail(503, 'Telegram is not connected yet')), onUpdate: () => () => {}, ...tg } as unknown as Ctx['tg']
+    chat: () => null, invoke: () => Promise.reject(fail(503, 'Telegram is not connected yet')), onUpdate: () => () => {}, networkChanged: () => {}, ...tg } as unknown as Ctx['tg']
   const settings = () => getSettings(db, root)
   const emit = (e: AppEvent) => { events.push(e) }
   const engine = createEngine({ db, invoke: fakeTg.invoke, onUpdate: fakeTg.onUpdate, auth: fakeTg.authState, chat: fakeTg.chat, emit, paths, settings, finished() {} })
@@ -98,10 +98,10 @@ test('repoUrl: strips git+ and .git; only https links survive', () => {
   assert.equal(repoUrl(undefined), null)
 })
 
-const phase2 = ['app.info', 'app.storage', 'app.pickFolder', 'app.openPath', 'auth.get', 'auth.credentials', 'auth.phone', 'auth.code',
+const phase2 = ['app.info', 'app.storage', 'app.networkChanged', 'app.pickFolder', 'app.openPath', 'auth.get', 'auth.credentials', 'auth.phone', 'auth.code',
   'auth.password', 'auth.logout', 'chats.list', 'chats.open', 'chats.messages', 'search.global', 'library.list', 'library.missing',
   'library.open', 'library.reveal', 'library.trash', 'settings.get', 'settings.set']
-const phase3 = ['app.clearCache', 'app.clearData', 'app.clearAll', 'auth.resetCredentials', 'chats.leave', 'chats.delete', 'chats.clear', 'chats.send', 'chats.media', 'media.play', 'downloads.add', 'uploads.add', 'jobs.list', 'jobs.action',
+const phase3 = ['app.clearCache', 'app.clearData', 'app.clearAll', 'auth.resetCredentials', 'chats.leave', 'chats.delete', 'chats.clear', 'chats.send', 'chats.media', 'chats.rescan', 'chats.stopScan', 'media.play', 'downloads.add', 'downloads.checkDuplicates', 'uploads.add', 'jobs.list', 'jobs.action',
   'stats.live', 'stats.overview', 'stats.activity', 'stats.chats']
 const validate = (name: string, args: unknown) => (methods as Record<string, { validate(a: unknown): unknown }>)[name].validate(args)
 const rejects400 = (cases: [string, unknown, string][]) => {
@@ -110,7 +110,7 @@ const rejects400 = (cases: [string, unknown, string][]) => {
   }
 }
 
-test('validators: all 33 methods are registered; the 12 Phase 3 methods accept valid args and reject bad ones naming the field', () => {
+test('validators: all 43 methods are registered; the 21 Phase 3 methods accept valid args and reject bad ones naming the field', () => {
   assert.deepEqual(Object.keys(methods).sort(), [...phase2, ...phase3].sort())
   const items = (n: number) => Array.from({ length: n }, (_, i) => ({ chatId: -100, messageId: (i + 1) * 2 ** 20 }))
   const good: [string, unknown, unknown?][] = [
@@ -119,10 +119,14 @@ test('validators: all 33 methods are registered; the 12 Phase 3 methods accept v
     ['chats.leave', { chatId: 5 }, { chatId: 5 }], ['chats.delete', { chatId: 5 }, { chatId: 5 }], ['chats.clear', { chatId: 5 }, { chatId: 5 }], ['chats.send', { chatId: 5, text: 'hello' }, { chatId: 5, text: 'hello' }],
     ['chats.media', { chatId: 5 }, { chatId: 5, type: undefined, ext: undefined, duration: undefined, size: undefined, status: undefined, q: '', sort: undefined, page: 1, pageSize: 25 }],
     ['chats.media', { chatId: 5, type: 'animation', ext: ' MP4 ', duration: 'xlong', size: 'small', status: 'downloaded', q: ' cat ', sort: 'longest', page: 3, pageSize: 100 }],
+    ['chats.rescan', { chatId: 5 }, { chatId: 5 }], ['chats.stopScan', { chatId: 5 }, { chatId: 5 }],
     ['media.play', { chatId: 5, messageId: 10 }, { chatId: 5, messageId: 10 }],
     ['downloads.add', { items: items(10_000) }], ['downloads.add', { items: items(1), force: true }, { items: items(1), force: true }],
     ['downloads.add', { chatId: 5, filters: {} }], ['downloads.add', { chatId: 5, filters: { type: 'video', sort: 'oldest' } }],
     ['downloads.add', { link: ' t.me/fixture/42 ' }, { link: 't.me/fixture/42' }],
+    ['downloads.checkDuplicates', { items: items(1) }, { items: items(1), force: false }],
+    ['downloads.checkDuplicates', { chatId: 5, filters: {} }],
+    ['downloads.checkDuplicates', { link: ' t.me/fixture/42 ' }, { link: 't.me/fixture/42' }],
     ['uploads.add', { chatId: 5, paths: Array(500).fill('C:\\x.jpg'), caption: '', album: true, keepNames: false }],
     ['jobs.list', {}, { kind: undefined, status: undefined, q: '', page: 1, pageSize: 25 }], ['jobs.list', { kind: 'upload', status: 'open' }],
     ['jobs.list', { status: 'failed', q: '100%' }], ['jobs.action', { action: 'pause' }, { action: 'pause', ids: undefined }],
@@ -143,6 +147,7 @@ test('validators: all 33 methods are registered; the 12 Phase 3 methods accept v
     ['chats.media', { chatId: 5, ext: 'x'.repeat(17) }, 'ext'], ['chats.media', { chatId: 5, duration: 'huge' }, 'duration'],
     ['chats.media', { chatId: 5, size: 'tiny' }, 'size'], ['chats.media', { chatId: 5, status: 'done' }, 'status'], ['chats.media', { chatId: 5, sort: 'size' }, 'sort'],
     ['chats.media', { chatId: 5, pageSize: 101 }, 'pageSize'],
+    ['chats.rescan', {}, 'chatId'], ['chats.rescan', { chatId: 0 }, 'chatId'], ['chats.stopScan', {}, 'chatId'],
     ['downloads.add', {}, 'items'], ['downloads.add', { items: [] }, 'items'], ['downloads.add', { items: items(10_001) }, 'items'],
     ['downloads.add', { items: [{ chatId: 1, messageId: 0 }] }, 'items[0].messageId'], ['downloads.add', { items: [{ chatId: 1, messageId: 1, x: 1 }] }, 'Unknown field items[0].x'],
     ['downloads.add', { items: [5] }, 'items[0]'], ['downloads.add', { items: items(1), force: 1 }, 'force'],
@@ -163,10 +168,11 @@ test('validators: all 33 methods are registered; the 12 Phase 3 methods accept v
   ])
 })
 
-test('validators: the 21 Phase 2 methods accept valid args and reject bad ones with a 400 naming the field', () => {
+test('validators: the 22 Phase 2 methods accept valid args and reject bad ones with a 400 naming the field', () => {
   const hash = 'ABCDEF0123456789abcdef0123456789'
   const good: [string, unknown, unknown?][] = [
     ['app.pickFolder', undefined, { title: undefined }], ['app.pickFolder', { title: ' Pick ' }, { title: 'Pick' }], ['app.openPath', { target: 'logs' }],
+    ['app.networkChanged', { online: true }, { online: true }], ['app.networkChanged', { online: false }],
     ['auth.credentials', { apiId: 2_147_483_647, apiHash: hash }], ['auth.phone', { phone: '+1 (234) 567-8901' }], ['auth.phone', { phone: '12345' }],
     ['auth.code', { code: ' 12345 ' }, { code: '12345' }], ['auth.code', { code: '12345678' }], ['auth.password', { password: ' pass word ' }, { password: ' pass word ' }],
     ['chats.open', { link: 'ab' }, { link: 'ab', join: false }], ['chats.open', { link: 't.me/x', join: true }],
@@ -182,6 +188,7 @@ test('validators: the 21 Phase 2 methods accept valid args and reject bad ones w
   }
   const bad: [string, unknown, string][] = [
     ['app.pickFolder', { title: 'x'.repeat(81) }, 'title'], ['app.pickFolder', { title: 5 }, 'title'],
+    ['app.networkChanged', { online: 'yes' }, 'online'], ['app.networkChanged', {}, 'online'], ['app.networkChanged', { x: 1 }, 'Unknown field x'],
     ['app.openPath', { target: 'home' }, 'target'], ['app.openPath', {}, 'target'],
     ['auth.credentials', { apiId: 0, apiHash: hash }, 'apiId'], ['auth.credentials', { apiId: 2_147_483_648, apiHash: hash }, 'apiId'],
     ['auth.credentials', { apiId: '123', apiHash: hash }, 'apiId'], ['auth.credentials', { apiId: 1, apiHash: 'g'.repeat(32) }, 'apiHash'],
@@ -297,6 +304,15 @@ const call = (f: ReturnType<typeof fixture>, name: string, args: unknown) => {
   const m = (f.methods as unknown as Record<string, { validate(a: unknown): unknown, run(a: unknown): Promise<unknown> }>)[name]
   return Promise.resolve().then(() => m.run(m.validate(args))) as Promise<any>
 }
+
+test('app.networkChanged: back online notifies the engine and invalidates the views; offline does nothing', async () => {
+  const f = fixture()
+  assert.deepEqual(await call(f, 'app.networkChanged', { online: false }), { online: false })
+  assert.equal(f.events.length, 0) // going offline changes nothing
+  assert.deepEqual(await call(f, 'app.networkChanged', { online: true }), { online: true })
+  const topics = f.events.flatMap((e) => (e.type === 'invalidate' ? e.topics : []))
+  for (const t of ['chats', 'jobs', 'library', 'stats']) assert.ok(topics.includes(t), t)
+})
 
 test('uploads.add: needs Telegram, a chat you can post to, a caption within captionMax, and existing files within uploadMax', async () => {
   const me = { id: 1, captionMax: 10, uploadMax: 4 }

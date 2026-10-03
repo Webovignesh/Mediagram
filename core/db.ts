@@ -90,6 +90,9 @@ CREATE TABLE scans (
   total      INTEGER
 ) STRICT;`
 
+// v2: one resume cursor per media filter, so an interrupted backfill resumes where each filter stopped.
+const v2 = `ALTER TABLE scans ADD COLUMN cursors TEXT`
+
 export function tx<T>(db: DB, fn: () => T): T {
   db.exec('BEGIN')
   try { const out = fn(); db.exec('COMMIT'); return out } catch (e) { db.exec('ROLLBACK'); throw e }
@@ -98,9 +101,11 @@ export function tx<T>(db: DB, fn: () => T): T {
 /** Opens (and on first run creates) the database. Future schema changes add a numbered step here. */
 export function openDb(file: string) {
   const db = new DatabaseSync(file)
-  db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON')
+  // NORMAL is the documented safe pairing with WAL: a crash of this process cannot corrupt the file.
+  db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON')
   const { user_version } = db.prepare('PRAGMA user_version').get() as { user_version: number }
   if (user_version < 1) tx(db, () => { db.exec(v1); db.exec('PRAGMA user_version = 1') })
+  if (user_version < 2) tx(db, () => { db.exec(v2); db.exec('PRAGMA user_version = 2') })
   return db
 }
 
@@ -381,6 +386,7 @@ export function clearRows(db: DB, keep: string[]) {
     db.prepare('DELETE FROM settings WHERE key NOT IN (SELECT value FROM json_each(?))').run(JSON.stringify(keep))
     return ids.map((r) => r.chat_id as number)
   })
+  dropCounts(db)
   db.exec('VACUUM; PRAGMA wal_checkpoint(TRUNCATE)')
   return chats
 }
@@ -399,21 +405,67 @@ export type MediaFilters = { type?: 'video' | 'photo' | 'document' | 'audio' | '
   duration?: 'short' | 'medium' | 'long' | 'xlong' | string,
   size?: 'small' | 'medium' | 'large' | 'xlarge' | string,
   status?: DownloadState['status'], q?: string, sort?: 'newest' | 'oldest' | 'largest' | 'smallest' | 'name' | 'longest' }
-export type ScanRow = { chat_id: number, newest_id: number, oldest_id: number, complete: number, total: number | null }
+export type ScanRow = { chat_id: number, newest_id: number, oldest_id: number, complete: number, total: number | null,
+  /** JSON array of one `from_message_id` per media filter (v2), or null before the backfill has started. */
+  cursors: string | null }
 
+/** One multi-row INSERT instead of one statement per row: 500 rows per statement, 5 000 parameters, well inside the
+ *  32 766 SQLite ships with. `OR IGNORE` keeps a re-walk from rewriting rows it already indexed, and its change
+ *  count is exactly how many rows joined the index. Returns how many rows were added. */
 export function putMedia(db: DB, rows: MediaRow[]) {
-  if (!rows.length) return
-  const put = db.prepare(`INSERT OR REPLACE INTO media (chat_id, message_id, date, type, name, ext, size, duration, caption, thumb)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-  tx(db, () => { for (const m of rows) put.run(m.chatId, m.messageId, m.date, m.type, m.name, m.ext, m.size, m.duration, m.caption, m.thumb) })
+  if (!rows.length) return 0
+  const cols = '(chat_id, message_id, date, type, name, ext, size, duration, caption, thumb)'
+  const one = '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+  const stmts = statements(db)
+  let added = 0
+  const seen = new Set<number>()
+  for (let i = 0; i < rows.length; i += 500) {
+    const chunk = rows.slice(i, i + 500)
+    let stmt = stmts.get(chunk.length)
+    if (!stmt) { stmt = db.prepare(`INSERT OR IGNORE INTO media ${cols} VALUES ${Array.from({ length: chunk.length }, () => one).join(', ')}`); stmts.set(chunk.length, stmt) }
+    const args = chunk.flatMap((r) => [r.chatId, r.messageId, r.date, r.type, r.name, r.ext, r.size, r.duration, r.caption, r.thumb])
+    added += Number(stmt.run(...args).changes)
+    for (const r of chunk) seen.add(r.chatId)
+  }
+  const byChat = counts.get(db)
+  if (seen.size === 1 && byChat) { // one chat: the new rows can be added to its cached size without a COUNT(*)
+    const chatId = rows[0].chatId
+    const cached = byChat.get(chatId)
+    if (cached !== undefined) byChat.set(chatId, cached + added)
+  } else if (byChat) dropCounts(db) // a mixed batch, or a chat nobody has asked about yet
+  return added
 }
-export const deleteMedia = (db: DB, chatId: number, ids: number[]) =>
-  db.prepare('DELETE FROM media WHERE chat_id = ? AND message_id IN (SELECT value FROM json_each(?))').run(chatId, JSON.stringify(ids)).changes
+const statements = (db: DB) => {
+  let m = prepared.get(db)
+  if (!m) { m = new Map(); prepared.set(db, m) }
+  return m
+}
+const prepared = new WeakMap<DB, Map<number, ReturnType<DB['prepare']>>>()
+/** Per-chat index sizes, maintained by putMedia/deleteMedia so the index bar never scans the media table. */
+const counts = new WeakMap<DB, Map<number, number>>()
+const dropCounts = (db: DB) => counts.delete(db)
+
+export const deleteMedia = (db: DB, chatId: number, ids: number[]) => {
+  const changes = Number(db.prepare('DELETE FROM media WHERE chat_id = ? AND message_id IN (SELECT value FROM json_each(?))')
+    .run(chatId, JSON.stringify(ids)).changes as bigint)
+  const c = counts.get(db)?.get(chatId)
+  if (c !== undefined) counts.get(db)!.set(chatId, Math.max(0, c - changes))
+  return changes
+}
 export const getScan = (db: DB, chatId: number) => db.prepare('SELECT * FROM scans WHERE chat_id = ?').get(chatId) as ScanRow | undefined
-export const putScan = (db: DB, s: ScanRow) => db.prepare(`INSERT INTO scans (chat_id, newest_id, oldest_id, complete, total) VALUES (?, ?, ?, ?, ?)
-  ON CONFLICT (chat_id) DO UPDATE SET newest_id = excluded.newest_id, oldest_id = excluded.oldest_id, complete = excluded.complete, total = excluded.total`)
-  .run(s.chat_id, s.newest_id, s.oldest_id, s.complete, s.total)
-export const mediaCount = (db: DB, chatId: number) => (db.prepare('SELECT COUNT(*) AS n FROM media WHERE chat_id = ?').get(chatId) as { n: number }).n
+export const putScan = (db: DB, s: ScanRow) => db.prepare(`INSERT INTO scans (chat_id, newest_id, oldest_id, complete, total, cursors) VALUES (?, ?, ?, ?, ?, ?)
+  ON CONFLICT (chat_id) DO UPDATE SET newest_id = excluded.newest_id, oldest_id = excluded.oldest_id, complete = excluded.complete,
+    total = excluded.total, cursors = excluded.cursors`)
+  .run(s.chat_id, s.newest_id, s.oldest_id, s.complete, s.total, s.cursors ?? null)
+export const mediaCount = (db: DB, chatId: number) => {
+  let byChat = counts.get(db)
+  if (!byChat) { byChat = new Map(); counts.set(db, byChat) }
+  const cached = byChat.get(chatId)
+  if (cached !== undefined) return cached
+  const n = (db.prepare('SELECT COUNT(*) AS n FROM media WHERE chat_id = ?').get(chatId) as { n: number }).n
+  byChat.set(chatId, n)
+  return n
+}
 /** Distinct extensions of the whole chat index, ignoring filters (the File Type options). */
 export const mediaExts = (db: DB, chatId: number) =>
   (db.prepare(`SELECT DISTINCT ext FROM media WHERE chat_id = ? AND ext <> '' ORDER BY ext`).all(chatId) as { ext: string }[]).map((r) => r.ext)
