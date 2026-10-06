@@ -742,13 +742,11 @@ export default function Settings() {
                             Update your Telegram API ID and API hash below. These are saved securely on this device and never leave it.
                           </div>
                         </div>
-                        <span className={`text-[11px] font-medium px-2 py-0.5 rounded-full border ${
-                          settings?.apiHashSaved
-                            ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400'
-                            : 'border-warning/30 bg-warning/10 text-warning'
-                        }`}>
-                          {settings?.apiHashSaved ? 'Saved & Encrypted' : 'Session Only'}
-                        </span>
+                        {!settings?.apiHashSaved && (
+                          <span className="text-[11px] font-medium px-2.5 py-0.5 rounded-full border border-warning/30 bg-warning/10 text-warning">
+                            Session Only • Not Saved
+                          </span>
+                        )}
                       </div>
 
                       {inEditMode && (
