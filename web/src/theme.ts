@@ -56,15 +56,15 @@ export const THEMES: ThemeDef[] = [
     previewColors: ['#070e1e', '#16274e', '#0ea5e9'],
   },
   {
-    id: 'sunset',
-    name: 'Sunset Amber',
-    description: 'Warm espresso & obsidian dark mode with golden amber glow',
-    accentColor: '#f59e0b',
-    bgColor: '#141013',
-    sidebarColor: '#1a1418',
-    overlayColor: '#141013',
-    symbolColor: '#f59e0b',
-    previewColors: ['#141013', '#2a1f26', '#f59e0b'],
+    id: 'emerald',
+    name: 'Emerald Forest',
+    description: 'Deep obsidian & pine dark mode with radiant emerald accents',
+    accentColor: '#10b981',
+    bgColor: '#08140e',
+    sidebarColor: '#0b1a13',
+    overlayColor: '#08140e',
+    symbolColor: '#34d399',
+    previewColors: ['#08140e', '#123324', '#10b981'],
   },
   {
     id: 'tokyo',
@@ -81,7 +81,8 @@ export const THEMES: ThemeDef[] = [
 
 export function getActiveTheme(): ThemeDef {
   try {
-    const id = localStorage.getItem('mediagram_theme') || 'dark'
+    let id = localStorage.getItem('mediagram_theme') || 'dark'
+    if (id === 'sunset') id = 'emerald'
     return THEMES.find((t) => t.id === id) || THEMES[0]
   } catch {
     return THEMES[0]

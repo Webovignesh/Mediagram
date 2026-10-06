@@ -18,7 +18,7 @@
   --color-upload: #a855f7;
   --color-cyan: #38bdf8;
   --color-pink: #f472b6;
-  --shadow-glow: 0 0 0 1px #3b82f6, 0 0 16px rgb(59 130 246 / 0.35);
+  --shadow-glow: 0 0 0 1px var(--color-primary), 0 0 16px color-mix(in srgb, var(--color-primary) 35%, transparent);
   --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 }
 
@@ -35,6 +35,10 @@
   --color-primary-hover: #60a5fa;
   --color-cyan: #38bdf8;
   --shadow-glow: 0 0 0 1px #3b82f6, 0 0 16px rgb(59 130 246 / 0.35);
+  --chat-bg: #070c14;
+  --chat-gradient: radial-gradient(ellipse 95% 85% at 50% 15%, rgba(20, 36, 58, 0.5) 0%, rgba(10, 18, 30, 0.8) 60%, rgba(6, 10, 18, 0.96) 100%);
+  --chat-doodle-color: #94a3b8;
+  --chat-doodle-opacity: 0.16;
 }
 
 [data-theme="telegram"] {
@@ -50,6 +54,10 @@
   --color-primary-hover: #6ba3de;
   --color-cyan: #5288c1;
   --shadow-glow: 0 0 0 1px #5288c1, 0 0 16px rgb(82 136 193 / 0.35);
+  --chat-bg: #0e1621;
+  --chat-gradient: radial-gradient(ellipse 95% 85% at 50% 15%, rgba(23, 33, 43, 0.7) 0%, rgba(14, 22, 33, 0.95) 100%);
+  --chat-doodle-color: #5288c1;
+  --chat-doodle-opacity: 0.18;
 }
 
 [data-theme="ocean"] {
@@ -65,6 +73,10 @@
   --color-primary-hover: #38bdf8;
   --color-cyan: #38bdf8;
   --shadow-glow: 0 0 0 1px #0ea5e9, 0 0 16px rgb(14 165 233 / 0.35);
+  --chat-bg: #050b17;
+  --chat-gradient: radial-gradient(ellipse 95% 85% at 50% 15%, rgba(11, 21, 45, 0.6) 0%, rgba(7, 14, 30, 0.95) 100%);
+  --chat-doodle-color: #0ea5e9;
+  --chat-doodle-opacity: 0.18;
 }
 
 [data-theme="light"] {
@@ -72,7 +84,7 @@
   --color-sidebar: #f1f5f9;
   --color-panel: #ffffff;
   --color-tile: #ffffff;
-  --color-border: #e2e8f0;
+  --color-border: #cbd5e1;
   --color-text: #0f172a;
   --color-text-2: #334155;
   --color-muted: #64748b;
@@ -80,21 +92,29 @@
   --color-primary-hover: #0369a1;
   --color-cyan: #0284c7;
   --shadow-glow: 0 0 0 1px #0284c7, 0 2px 10px rgb(2 132 199 / 0.2);
+  --chat-bg: #e2e8f0;
+  --chat-gradient: radial-gradient(ellipse 95% 85% at 50% 15%, rgba(255, 255, 255, 0.85) 0%, rgba(235, 240, 246, 0.9) 60%, rgba(220, 227, 236, 0.98) 100%);
+  --chat-doodle-color: #475569;
+  --chat-doodle-opacity: 0.16;
 }
 
-[data-theme="sunset"] {
-  --color-bg: #141013;
-  --color-sidebar: #1a1418;
-  --color-panel: rgb(34 26 31 / 0.95);
-  --color-tile: #2a1f26;
-  --color-border: rgb(245 158 11 / 0.18);
-  --color-text: #fffbeb;
-  --color-text-2: #fde68a;
-  --color-muted: #b45309;
-  --color-primary: #f59e0b;
-  --color-primary-hover: #fbbf24;
-  --color-cyan: #f59e0b;
-  --shadow-glow: 0 0 0 1px #f59e0b, 0 0 16px rgb(245 158 11 / 0.35);
+[data-theme="emerald"], [data-theme="sunset"] {
+  --color-bg: #08140e;
+  --color-sidebar: #0b1a13;
+  --color-panel: rgb(15 38 27 / 0.95);
+  --color-tile: #123324;
+  --color-border: rgb(16 185 129 / 0.22);
+  --color-text: #ecfdf5;
+  --color-text-2: #a7f3d0;
+  --color-muted: #34d399;
+  --color-primary: #10b981;
+  --color-primary-hover: #059669;
+  --color-cyan: #10b981;
+  --shadow-glow: 0 0 0 1px #10b981, 0 0 16px rgb(16 185 129 / 0.35);
+  --chat-bg: #06100b;
+  --chat-gradient: radial-gradient(ellipse 95% 85% at 50% 15%, rgba(13, 28, 22, 0.7) 0%, rgba(9, 20, 16, 0.95) 100%);
+  --chat-doodle-color: #10b981;
+  --chat-doodle-opacity: 0.16;
 }
 
 [data-theme="tokyo"] {
@@ -110,6 +130,10 @@
   --color-primary-hover: #bb9af7;
   --color-cyan: #7dcfff;
   --shadow-glow: 0 0 0 1px #7aa2f7, 0 0 16px rgb(122 162 247 / 0.35);
+  --chat-bg: #13141f;
+  --chat-gradient: radial-gradient(ellipse 95% 85% at 50% 15%, rgba(26, 27, 38, 0.7) 0%, rgba(19, 20, 31, 0.95) 100%);
+  --chat-doodle-color: #7aa2f7;
+  --chat-doodle-opacity: 0.18;
 }
 
 @layer base {
@@ -210,12 +234,22 @@
 }
 
 @keyframes splashPulse {
-  0%, 100% { transform: scale(1); opacity: 0.92; }
-  50% { transform: scale(1.07); opacity: 1; filter: drop-shadow(0 0 30px rgba(59, 130, 246, 0.65)); }
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.05); }
+}
+
+@keyframes splashAura {
+  0%, 100% { transform: scale(0.88); opacity: 0.32; }
+  50% { transform: scale(1.26); opacity: 0.65; }
 }
 
 .splash-icon {
-  animation: splashPulse 2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  animation: splashPulse 2.2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+.splash-aura {
+  animation: splashAura 2.2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  pointer-events: none;
 }
 
 @keyframes logoutPulse {
@@ -254,7 +288,7 @@
   app-region: no-drag;
 }
 
-/* Custom sleek dark scrollbar */
+/* Custom sleek scrollbar adopting active theme primary */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
@@ -263,15 +297,15 @@
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(96, 140, 255, 0.22);
+  background: color-mix(in srgb, var(--color-muted) 35%, transparent);
   border-radius: 9999px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(96, 140, 255, 0.45);
+  background: color-mix(in srgb, var(--color-primary) 50%, transparent);
 }
 * {
   scrollbar-width: thin;
-  scrollbar-color: rgba(96, 140, 255, 0.22) transparent;
+  scrollbar-color: color-mix(in srgb, var(--color-muted) 35%, transparent) transparent;
 }
 
 @keyframes shrinkWidth {
@@ -279,15 +313,29 @@
   to { width: 0%; }
 }
 
-/* Telegram Iconic Dark Chat Wallpaper with High-Visibility Vector Doodle Pattern */
+/* Telegram Iconic Chat Wallpaper with Theme-Adaptive Vector Doodle Pattern */
 .telegram-chat-wallpaper {
-  background-color: #070c14;
-  background-image:
-    radial-gradient(ellipse 95% 85% at 50% 15%, rgba(20, 36, 58, 0.5) 0%, rgba(10, 18, 30, 0.8) 60%, rgba(6, 10, 18, 0.96) 100%),
-    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='400' viewBox='0 0 400 400' fill='none' stroke='%23a4c4e8' stroke-width='1.25' stroke-linecap='round' stroke-linejoin='round' opacity='0.22'%3E%3Cpath d='M35 150 C35 140 45 130 65 130 C85 130 95 145 95 155 C95 165 75 170 55 170 C40 170 35 160 35 150 Z M95 150 C105 142 115 140 115 135 M95 152 C105 155 115 160 115 165 M60 130 C60 120 55 115 50 115 M60 125 C65 118 70 118 75 125' /%3E%3Cpath d='M305 55 C305 35 320 20 320 20 C320 20 335 35 335 55 L335 75 L305 75 Z M305 70 L295 80 L305 80 M335 70 L345 80 L335 80 M320 42 A4 4 0 1 0 320 50 A4 4 0 1 0 320 42 M315 80 L320 90 L325 80' /%3E%3Cpath d='M65 52 A14 14 0 1 0 65 24 A14 14 0 1 0 65 52 Z M45 40 C53 32 77 32 85 40 C77 48 53 48 45 40' /%3E%3Cpath d='M140 152 C130 152 125 157 125 164 C125 172 135 177 155 177 C175 177 185 172 185 164 C185 157 180 152 170 152 Z M150 152 V144 H158 M140 164 A1.8 1.8 0 1 0 140 166 M152 164 A1.8 1.8 0 1 0 152 166 M164 164 A1.8 1.8 0 1 0 164 166' /%3E%3Cpath d='M275 178 Q277 158 273 143 M273 143 Q260 135 253 143 M273 143 Q267 128 263 125 M273 143 Q283 128 287 125 M273 143 Q290 135 295 145' /%3E%3Cpath d='M160 48 V28 H166 V32 H172 V28 H178 V32 H184 V28 H190 V48 Z M175 40 V48 M148 53 C148 46 158 46 163 50 C168 44 183 44 188 50 C193 46 203 48 203 53 Z' /%3E%3Cpath d='M245 42 A12 12 0 1 0 245 18 A12 12 0 1 0 245 42 Z M245 30 A5 5 0 1 0 245 20 A5 5 0 1 0 245 30 Z M245 26 A1.5 1.5 0 1 0 245 23 M245 30 A2 2 0 1 0 245 26' /%3E%3Cpath d='M45 255 C35 255 30 259 30 262 C30 265 40 268 55 268 C70 268 80 265 80 262 C80 259 75 255 65 255 Z M47 255 C47 248 63 248 63 255' /%3E%3Cpath d='M35 345 L78 360 L44 372 L36 392 L32 368 Z M44 372 L78 360' /%3E%3Cpath d='M140 250 C140 240 150 233 165 233 C180 233 190 240 190 250 C190 260 180 268 165 268 C160 268 155 270 150 273 L151 266 C144 263 140 257 140 250 Z' /%3E%3Cpath d='M335 155 C329 155 323 159 323 165 L325 180 C326 183 329 185 332 185 L337 179 L345 179 L350 185 C353 185 356 183 357 180 L359 165 C359 159 353 155 347 155 Z M341 164 H349 M345 160 V168' /%3E%3Cpath d='M235 255 H261 V273 C261 281 255 285 248 285 C241 285 235 281 235 273 Z M261 259 H268 C272 259 274 262 274 266 C274 270 272 273 268 273 H261 M231 289 H265' /%3E%3Cpath d='M140 345 V367 C138 365 134 365 131 367 C127 369 125 373 127 377 C129 381 134 383 138 381 C141 379 143 375 143 371 V353 H165 V367 C163 365 159 365 156 367 C152 369 150 373 152 377 C154 381 159 383 163 381 C166 379 168 375 168 371 V345 Z' /%3E%3Cpath d='M315 260 C310 250 296 254 296 264 C296 275 315 288 315 288 C315 288 334 275 334 264 C334 254 320 250 315 260 Z' /%3E%3Cpath d='M245 355 A15 15 0 1 0 245 325 A15 15 0 1 0 245 355 Z M245 332 V340 L251 343' /%3E%3Cpath d='M335 350 A16 16 0 1 0 335 318 A16 16 0 1 0 335 350 Z M329 330 A1.5 1.5 0 1 0 329 333 A1.5 1.5 0 1 0 329 330 Z M341 330 A1.5 1.5 0 1 0 341 333 A1.5 1.5 0 1 0 341 330 Z M328 338 C331 344 339 344 342 338' /%3E%3Cpath d='M45 95 Q50 95 50 90 Q50 95 55 95 Q50 95 50 100 Q50 95 45 95 Z' /%3E%3Cpath d='M365 105 Q370 105 370 100 Q370 105 375 105 Q370 105 370 110 Q370 105 365 105 Z' /%3E%3Cpath d='M205 185 Q210 185 210 180 Q210 185 215 185 Q210 185 210 190 Q210 185 205 185 Z' /%3E%3C/svg%3E");
-  background-repeat: no-repeat, repeat;
-  background-size: 100% 100%, 400px 400px;
-  background-attachment: local, local;
+  position: relative;
+  background-color: var(--chat-bg, #070c14);
+  background-image: var(--chat-gradient);
+  background-repeat: no-repeat;
+  background-size: 100% 100%;
+}
+
+.telegram-chat-wallpaper::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-color: var(--chat-doodle-color, #94a3b8);
+  opacity: var(--chat-doodle-opacity, 0.16);
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='400' viewBox='0 0 400 400' fill='none' stroke='white' stroke-width='1.25' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M35 150 C35 140 45 130 65 130 C85 130 95 145 95 155 C95 165 75 170 55 170 C40 170 35 160 35 150 Z M95 150 C105 142 115 140 115 135 M95 152 C105 155 115 160 115 165 M60 130 C60 120 55 115 50 115 M60 125 C65 118 70 118 75 125' /%3E%3Cpath d='M305 55 C305 35 320 20 320 20 C320 20 335 35 335 55 L335 75 L305 75 Z M305 70 L295 80 L305 80 M335 70 L345 80 L335 80 M320 42 A4 4 0 1 0 320 50 A4 4 0 1 0 320 42 M315 80 L320 90 L325 80' /%3E%3Cpath d='M65 52 A14 14 0 1 0 65 24 A14 14 0 1 0 65 52 Z M45 40 C53 32 77 32 85 40 C77 48 53 48 45 40' /%3E%3Cpath d='M140 152 C130 152 125 157 125 164 C125 172 135 177 155 177 C175 177 185 172 185 164 C185 157 180 152 170 152 Z M150 152 V144 H158 M140 164 A1.8 1.8 0 1 0 140 166 M152 164 A1.8 1.8 0 1 0 152 166 M164 164 A1.8 1.8 0 1 0 164 166' /%3E%3Cpath d='M275 178 Q277 158 273 143 M273 143 Q260 135 253 143 M273 143 Q267 128 263 125 M273 143 Q283 128 287 125 M273 143 Q290 135 295 145' /%3E%3Cpath d='M160 48 V28 H166 V32 H172 V28 H178 V32 H184 V28 H190 V48 Z M175 40 V48 M148 53 C148 46 158 46 163 50 C168 44 183 44 188 50 C193 46 203 48 203 53 Z' /%3E%3Cpath d='M245 42 A12 12 0 1 0 245 18 A12 12 0 1 0 245 42 Z M245 30 A5 5 0 1 0 245 20 A5 5 0 1 0 245 30 Z M245 26 A1.5 1.5 0 1 0 245 23 M245 30 A2 2 0 1 0 245 26' /%3E%3Cpath d='M45 255 C35 255 30 259 30 262 C30 265 40 268 55 268 C70 268 80 265 80 262 C80 259 75 255 65 255 Z M47 255 C47 248 63 248 63 255' /%3E%3Cpath d='M35 345 L78 360 L44 372 L36 392 L32 368 Z M44 372 L78 360' /%3E%3Cpath d='M140 250 C140 240 150 233 165 233 C180 233 190 240 190 250 C190 260 180 268 165 268 C160 268 155 270 150 273 L151 266 C144 263 140 257 140 250 Z' /%3E%3Cpath d='M335 155 C329 155 323 159 323 165 L325 180 C326 183 329 185 332 185 L337 179 L345 179 L350 185 C353 185 356 183 357 180 L359 165 C359 159 353 155 347 155 Z M341 164 H349 M345 160 V168' /%3E%3Cpath d='M235 255 H261 V273 C261 281 255 285 248 285 C241 285 235 281 235 273 Z M261 259 H268 C272 259 274 262 274 266 C274 270 272 273 268 273 H261 M231 289 H265' /%3E%3Cpath d='M140 345 V367 C138 365 134 365 131 367 C127 369 125 373 127 377 C129 381 134 383 138 381 C141 379 143 375 143 371 V353 H165 V367 C163 365 159 365 156 367 C152 369 150 373 152 377 C154 381 159 383 163 381 C166 379 168 375 168 371 V345 Z' /%3E%3Cpath d='M315 260 C310 250 296 254 296 264 C296 275 315 288 315 288 C315 288 334 275 334 264 C334 254 320 250 315 260 Z' /%3E%3Cpath d='M245 355 A15 15 0 1 0 245 325 A15 15 0 1 0 245 355 Z M245 332 V340 L251 343' /%3E%3Cpath d='M335 350 A16 16 0 1 0 335 318 A16 16 0 1 0 335 350 Z M329 330 A1.5 1.5 0 1 0 329 333 A1.5 1.5 0 1 0 329 330 Z M341 330 A1.5 1.5 0 1 0 341 333 A1.5 1.5 0 1 0 341 330 Z M328 338 C331 344 339 344 342 338' /%3E%3Cpath d='M45 95 Q50 95 50 90 Q50 95 55 95 Q50 95 50 100 Q50 95 45 95 Z' /%3E%3Cpath d='M365 105 Q370 105 370 100 Q370 105 375 105 Q370 105 370 110 Q370 105 365 105 Z' /%3E%3Cpath d='M205 185 Q210 185 210 180 Q210 185 215 185 Q210 185 210 190 Q210 185 205 185 Z' /%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='400' viewBox='0 0 400 400' fill='none' stroke='white' stroke-width='1.25' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M35 150 C35 140 45 130 65 130 C85 130 95 145 95 155 C95 165 75 170 55 170 C40 170 35 160 35 150 Z M95 150 C105 142 115 140 115 135 M95 152 C105 155 115 160 115 165 M60 130 C60 120 55 115 50 115 M60 125 C65 118 70 118 75 125' /%3E%3Cpath d='M305 55 C305 35 320 20 320 20 C320 20 335 35 335 55 L335 75 L305 75 Z M305 70 L295 80 L305 80 M335 70 L345 80 L335 80 M320 42 A4 4 0 1 0 320 50 A4 4 0 1 0 320 42 M315 80 L320 90 L325 80' /%3E%3Cpath d='M65 52 A14 14 0 1 0 65 24 A14 14 0 1 0 65 52 Z M45 40 C53 32 77 32 85 40 C77 48 53 48 45 40' /%3E%3Cpath d='M140 152 C130 152 125 157 125 164 C125 172 135 177 155 177 C175 177 185 172 185 164 C185 157 180 152 170 152 Z M150 152 V144 H158 M140 164 A1.8 1.8 0 1 0 140 166 M152 164 A1.8 1.8 0 1 0 152 166 M164 164 A1.8 1.8 0 1 0 164 166' /%3E%3Cpath d='M275 178 Q277 158 273 143 M273 143 Q260 135 253 143 M273 143 Q267 128 263 125 M273 143 Q283 128 287 125 M273 143 Q290 135 295 145' /%3E%3Cpath d='M160 48 V28 H166 V32 H172 V28 H178 V32 H184 V28 H190 V48 Z M175 40 V48 M148 53 C148 46 158 46 163 50 C168 44 183 44 188 50 C193 46 203 48 203 53 Z' /%3E%3Cpath d='M245 42 A12 12 0 1 0 245 18 A12 12 0 1 0 245 42 Z M245 30 A5 5 0 1 0 245 20 A5 5 0 1 0 245 30 Z M245 26 A1.5 1.5 0 1 0 245 23 M245 30 A2 2 0 1 0 245 26' /%3E%3Cpath d='M45 255 C35 255 30 259 30 262 C30 265 40 268 55 268 C70 268 80 265 80 262 C80 259 75 255 65 255 Z M47 255 C47 248 63 248 63 255' /%3E%3Cpath d='M35 345 L78 360 L44 372 L36 392 L32 368 Z M44 372 L78 360' /%3E%3Cpath d='M140 250 C140 240 150 233 165 233 C180 233 190 240 190 250 C190 260 180 268 165 268 C160 268 155 270 150 273 L151 266 C144 263 140 257 140 250 Z' /%3E%3Cpath d='M335 155 C329 155 323 159 323 165 L325 180 C326 183 329 185 332 185 L337 179 L345 179 L350 185 C353 185 356 183 357 180 L359 165 C359 159 353 155 347 155 Z M341 164 H349 M345 160 V168' /%3E%3Cpath d='M235 255 H261 V273 C261 281 255 285 248 285 C241 285 235 281 235 273 Z M261 259 H268 C272 259 274 262 274 266 C274 270 272 273 268 273 H261 M231 289 H265' /%3E%3Cpath d='M140 345 V367 C138 365 134 365 131 367 C127 369 125 373 127 377 C129 381 134 383 138 381 C141 379 143 375 143 371 V353 H165 V367 C163 365 159 365 156 367 C152 369 150 373 152 377 C154 381 159 383 163 381 C166 379 168 375 168 371 V345 Z' /%3E%3Cpath d='M315 260 C310 250 296 254 296 264 C296 275 315 288 315 288 C315 288 334 275 334 264 C334 254 320 250 315 260 Z' /%3E%3Cpath d='M245 355 A15 15 0 1 0 245 325 A15 15 0 1 0 245 355 Z M245 332 V340 L251 343' /%3E%3Cpath d='M335 350 A16 16 0 1 0 335 318 A16 16 0 1 0 335 350 Z M329 330 A1.5 1.5 0 1 0 329 333 A1.5 1.5 0 1 0 329 330 Z M341 330 A1.5 1.5 0 1 0 341 333 A1.5 1.5 0 1 0 341 330 Z M328 338 C331 344 339 344 342 338' /%3E%3Cpath d='M45 95 Q50 95 50 90 Q50 95 55 95 Q50 95 50 100 Q50 95 45 95 Z' /%3E%3Cpath d='M365 105 Q370 105 370 100 Q370 105 375 105 Q370 105 370 110 Q370 105 365 105 Z' /%3E%3Cpath d='M205 185 Q210 185 210 180 Q210 185 215 185 Q210 185 210 190 Q210 185 205 185 Z' /%3E%3C/svg%3E");
+  -webkit-mask-repeat: repeat;
+  mask-repeat: repeat;
+  -webkit-mask-size: 400px 400px;
+  mask-size: 400px 400px;
+  z-index: 0;
 }
 
 @keyframes emojiBounceIn {

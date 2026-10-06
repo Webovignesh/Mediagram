@@ -244,29 +244,76 @@ export default function App() {
     )
   }
 
+  // Safety timeout on app launch: if connection takes over 2.5s, offer Enter App, retry or fresh login
+  const [splashTimeout, setSplashTimeout] = useState(false)
+  const [bypassSplash, setBypassSplash] = useState(false)
+  useEffect(() => {
+    const timer = setTimeout(() => setSplashTimeout(true), 2500)
+    return () => clearTimeout(timer)
+  }, [])
+
   // Sustained Splash screen on app launch: stays active until session check is complete and minSplashDone elapsed
-  if (loading || !auth || auth.step === 'starting' || (!minSplashDone && auth.step === 'ready')) {
+  if (!bypassSplash && (loading || !auth || auth.step === 'starting' || (!minSplashDone && auth.step === 'ready'))) {
     return (
       <div className="relative flex h-screen w-screen flex-col items-center justify-center bg-bg select-none overflow-hidden">
         <WindowDragBar />
         <div className="flex flex-col items-center gap-4">
-          <div className="splash-icon flex size-16 items-center justify-center rounded-2xl shadow-[0_0_40px_rgba(59,130,246,0.35)]">
-            <MediagramLogo size={64} className="rounded-2xl" />
+          <div className="relative flex size-20 items-center justify-center">
+            {/* Dedicated theme aura: pulses using pure var(--color-primary) with zero blue leakage */}
+            <div
+              className="splash-aura absolute -inset-2 rounded-3xl"
+              style={{
+                backgroundColor: 'var(--color-primary)',
+                filter: 'blur(22px)',
+              }}
+            />
+            {/* Logo */}
+            <div className="splash-icon relative z-10 drop-shadow-md">
+              <MediagramLogo size={64} className="rounded-2xl" />
+            </div>
           </div>
           <div className="flex flex-col items-center gap-1.5 text-center">
-            <div className="text-[19px] font-bold text-white tracking-wide">Mediagram</div>
+            <div className="text-[19px] font-bold text-text tracking-wide">Mediagram</div>
             <div className="text-[12px] text-muted font-medium flex items-center gap-2">
               <span className="size-1.5 rounded-full bg-primary animate-pulse" />
               Connecting to Telegram…
             </div>
+            {splashTimeout && (
+              <div className="mt-3 flex flex-col items-center gap-2.5 animate-in fade-in duration-300">
+                <div className="text-[11.5px] text-muted">Connecting is taking longer than expected</div>
+                <div className="flex flex-wrap items-center justify-center gap-2 max-w-[360px]">
+                  <button
+                    type="button"
+                    onClick={() => setBypassSplash(true)}
+                    className="rounded-lg bg-primary text-white font-medium px-3.5 py-1.5 text-[12px] shadow-sm hover:brightness-110 transition-all cursor-pointer"
+                  >
+                    Enter App
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void reload()}
+                    className="rounded-lg bg-tile border border-border px-3 py-1.5 text-[12px] font-medium text-text hover:bg-tile/80 transition-colors cursor-pointer"
+                  >
+                    Retry
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void call('auth.forgetKeys').then(() => reload()).catch(() => {})}
+                    className="rounded-lg bg-tile border border-border px-3 py-1.5 text-[12px] font-medium text-text-2 hover:text-text hover:bg-tile/80 transition-colors cursor-pointer"
+                  >
+                    Sign In / Reset Keys
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </div>
     )
   }
 
-  // Auth gate: any other non-ready step shows Login with smooth entrance animation
-  if (auth.step !== 'ready') {
+  // Auth gate: any other non-ready step shows Login with smooth entrance animation unless bypassed
+  if (auth && auth.step !== 'ready' && !bypassSplash) {
     return (
       <div className="login-enter h-screen w-screen overflow-hidden">
         <Login />
@@ -281,7 +328,21 @@ export default function App() {
     <div className="flex h-full w-full flex-col overflow-hidden bg-bg">
       {/* Top Window Bar: Solid 36px bar holding native controls and drag region */}
       <div className="drag flex h-9 shrink-0 items-center justify-between bg-bg px-3 select-none z-30 border-b border-border/40">
-        <div />
+        <div className="flex items-center gap-2">
+          {auth?.step !== 'ready' && (
+            <div className="no-drag flex items-center gap-2 text-[11px] text-muted font-medium bg-tile/80 px-2.5 py-0.5 rounded-full border border-border/60">
+              <span className="size-1.5 rounded-full bg-primary animate-pulse" />
+              <span>Connecting to Telegram…</span>
+              <button
+                type="button"
+                onClick={() => void reload()}
+                className="text-primary hover:underline ml-1 cursor-pointer"
+              >
+                Retry
+              </button>
+            </div>
+          )}
+        </div>
 
         {/* Reserved slot for the OTA update pill (the top bar carries no status indicators otherwise) */}
         <div className="no-drag mr-36" aria-hidden="true" />

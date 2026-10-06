@@ -355,13 +355,19 @@ export function Toggle({
         disabled={disabled}
       />
       <div
-        className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full border transition-colors duration-200 ease-in-out ${
-          checked ? 'bg-primary border-primary' : 'bg-tile border-border'
+        className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full border-2 transition-all duration-200 ease-in-out ${
+          checked
+            ? 'bg-primary border-primary shadow-sm'
+            : 'border-slate-400/80 bg-slate-200/90 hover:border-slate-500 shadow-inner'
         }`}
+        style={!checked ? {
+          backgroundColor: 'color-mix(in srgb, var(--color-muted) 28%, var(--color-tile))',
+          borderColor: 'color-mix(in srgb, var(--color-muted) 60%, transparent)',
+        } : undefined}
       >
         <span
-          className={`pointer-events-none inline-block size-4 rounded-full bg-white shadow transition-transform duration-200 ease-in-out ${
-            checked ? 'translate-x-6' : 'translate-x-1'
+          className={`pointer-events-none inline-block size-4 rounded-full bg-white shadow-md ring-1 ring-black/15 transition-transform duration-200 ease-in-out ${
+            checked ? 'translate-x-5' : 'translate-x-0.5'
           }`}
         />
       </div>
@@ -1065,8 +1071,8 @@ export function MediagramLogo({ size = 20, className = '' }: { size?: number, cl
     >
       <defs>
         <linearGradient id="mediagram-logo-grad" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0%" stopColor="var(--color-primary, #3b82f6)" />
-          <stop offset="100%" stopColor="var(--color-primary-hover, #1d4ed8)" />
+          <stop offset="0%" stopColor="var(--color-primary)" />
+          <stop offset="100%" stopColor="var(--color-primary-hover, var(--color-primary))" />
         </linearGradient>
       </defs>
       <rect width="256" height="256" rx="56" fill="url(#mediagram-logo-grad)" />
@@ -1934,7 +1940,7 @@ export function TelegramInviteModal({
             <span>Join Request Sent!</span>
           </div>
         ) : isRequest ? (
-          <div className="mt-4 p-2.5 rounded-xl bg-blue-500/10 border border-blue-500/20 text-[11.5px] text-blue-200 flex items-center justify-center gap-1.5 font-medium">
+          <div className="mt-4 p-2.5 rounded-xl bg-primary/10 border border-primary/20 text-[11.5px] text-text-2 flex items-center justify-center gap-1.5 font-medium">
             <span>An admin will review your request to join</span>
           </div>
         ) : null}

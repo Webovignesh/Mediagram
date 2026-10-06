@@ -109,20 +109,20 @@ export function FormattedMessageText({
     const tokenRegex = /(```[\s\S]*?```|`[^`]+`|\*\*[^*]+\*\*|\*[^*]+\*|__[^_]+__|~~[^~]+~~|\|\|[^|]+\|\||https?:\/\/[^\s]+|t\.me\/[^\s]+|tg:\/\/[^\s]+)/g
     const parts = text.split(tokenRegex)
     return (
-      <div className="whitespace-pre-wrap leading-relaxed text-[13.5px] text-slate-100 font-normal break-words">
+      <div className="whitespace-pre-wrap leading-relaxed text-[13.5px] text-text font-normal break-words">
         {parts.map((part, i) => {
           if (!part) return null
           if (part.startsWith('```') && part.endsWith('```')) {
             const code = part.slice(3, -3).replace(/^\n/, '')
             return (
-              <pre key={i} className="my-1.5 rounded-lg bg-black/50 p-2 font-mono text-[12px] text-cyan overflow-x-auto border border-white/10">
+              <pre key={i} className="my-1.5 rounded-lg bg-panel p-2 font-mono text-[12px] text-primary overflow-x-auto border border-border">
                 <code>{code}</code>
               </pre>
             )
           }
           if (part.startsWith('`') && part.endsWith('`')) {
             return (
-              <code key={i} className="rounded bg-black/40 px-1.5 py-0.5 font-mono text-[12px] text-cyan border border-white/10">
+              <code key={i} className="rounded bg-tile px-1.5 py-0.5 font-mono text-[12px] text-primary border border-border">
                 {part.slice(1, -1)}
               </code>
             )
@@ -137,11 +137,11 @@ export function FormattedMessageText({
             return <u key={i} className="underline underline-offset-2">{part.slice(2, -2)}</u>
           }
           if (part.startsWith('~~') && part.endsWith('~~')) {
-            return <s key={i} className="line-through opacity-75">{part.slice(2, -2)}</s>
+            return <s key={i} className="line-through text-muted">{part.slice(2, -2)}</s>
           }
           if (part.startsWith('||') && part.endsWith('||')) {
             return (
-              <span key={i} className="rounded bg-white/20 px-1 py-0.5 filter blur-[3px] hover:filter-none transition-all cursor-pointer" title="Click to reveal spoiler">
+              <span key={i} className="rounded bg-tile text-text px-1 py-0.5 filter blur-[3px] hover:filter-none transition-all cursor-pointer" title="Click to reveal spoiler">
                 {part.slice(2, -2)}
               </span>
             )
@@ -156,7 +156,7 @@ export function FormattedMessageText({
                   e.stopPropagation()
                   onOpenLink(part)
                 }}
-                className="inline-flex items-center gap-1 text-cyan hover:text-cyan/80 underline font-medium hover:bg-cyan/10 rounded px-1 -mx-0.5 transition-colors cursor-pointer text-left break-all"
+                className="inline-flex items-center gap-1 text-primary hover:text-primary-hover underline font-medium hover:bg-primary/10 rounded px-1 -mx-0.5 transition-colors cursor-pointer text-left break-all"
                 title={isTg ? 'Open Telegram link' : 'Open in browser'}
               >
                 {isTg ? <MediagramLogo size={13} className="inline shrink-0 mr-0.5 rounded-[3px]" /> : <ExternalLink size={11} className="inline shrink-0 opacity-75" />}
@@ -196,7 +196,7 @@ export function FormattedMessageText({
         segments.push(<u key={key} className="underline underline-offset-2">{content}</u>)
         break
       case 'strikethrough':
-        segments.push(<s key={key} className="line-through text-slate-400">{content}</s>)
+        segments.push(<s key={key} className="line-through text-muted">{content}</s>)
         break
       case 'code':
         segments.push(
@@ -207,7 +207,7 @@ export function FormattedMessageText({
               navigator.clipboard.writeText(content)
               toast('Code copied to clipboard', 'info')
             }}
-            className="rounded bg-black/40 px-1.5 py-0.5 font-mono text-[12px] text-cyan border border-white/10 select-all cursor-pointer hover:bg-black/60 transition-colors"
+            className="rounded bg-tile px-1.5 py-0.5 font-mono text-[12px] text-primary border border-border select-all cursor-pointer hover:bg-tile/80 transition-colors"
             title="Click to copy code"
           >
             {content}
@@ -216,7 +216,7 @@ export function FormattedMessageText({
         break
       case 'pre':
         segments.push(
-          <div key={key} className="relative my-2 rounded-xl bg-black/60 p-3 font-mono text-[12px] text-slate-200 border border-white/10 overflow-x-auto group/pre">
+          <div key={key} className="relative my-2 rounded-xl bg-panel p-3 font-mono text-[12px] text-text border border-border overflow-x-auto group/pre">
             <pre className="whitespace-pre">{content}</pre>
             <button
               type="button"
@@ -225,7 +225,7 @@ export function FormattedMessageText({
                 navigator.clipboard.writeText(content)
                 toast('Code block copied', 'info')
               }}
-              className="absolute top-2 right-2 p-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-muted hover:text-white transition-colors"
+              className="absolute top-2 right-2 p-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-muted hover:text-text transition-colors"
               title="Copy code block"
             >
               <Copy size={13} />
@@ -244,8 +244,8 @@ export function FormattedMessageText({
             }}
             className={`cursor-pointer rounded px-1 transition-all ${
               isRevealed
-                ? 'bg-white/10 text-white'
-                : 'bg-slate-700/80 text-transparent select-none blur-[4px] hover:blur-[3px]'
+                ? 'bg-tile text-text'
+                : 'bg-black/40 text-transparent select-none blur-[4px] hover:blur-[3px]'
             }`}
             title="Click to reveal spoiler"
           >
@@ -264,7 +264,7 @@ export function FormattedMessageText({
               e.stopPropagation()
               onOpenLink(targetUrl)
             }}
-            className="inline-flex items-center gap-0.5 text-cyan hover:text-cyan/80 underline font-medium hover:bg-cyan/10 rounded px-1 -mx-0.5 transition-colors cursor-pointer text-left break-all"
+            className="inline-flex items-center gap-0.5 text-primary hover:text-primary-hover underline font-medium hover:bg-primary/10 rounded px-1 -mx-0.5 transition-colors cursor-pointer text-left break-all"
             title="Open link"
           >
             <ExternalLink size={11} className="inline shrink-0 opacity-75 mr-0.5" />
@@ -275,7 +275,7 @@ export function FormattedMessageText({
       }
       case 'mention':
         segments.push(
-          <span key={key} className="text-cyan font-medium cursor-pointer hover:underline">
+          <span key={key} className="text-primary font-medium cursor-pointer hover:underline">
             {content}
           </span>
         )
@@ -292,7 +292,7 @@ export function FormattedMessageText({
     segments.push(<span key={`tail-${lastIndex}`}>{text.substring(lastIndex)}</span>)
   }
 
-  return <p className="whitespace-pre-wrap leading-relaxed text-[13.5px] text-slate-100 font-normal break-words">{segments}</p>
+  return <p className="whitespace-pre-wrap leading-relaxed text-[13.5px] text-text font-normal break-words">{segments}</p>
 }
 
 interface ChatViewProps {
@@ -799,7 +799,7 @@ export function ChatView({
                 {activeChat?.title || 'Chat'}
               </span>
               {activeChat?.pinnedMessageId && (
-                <span className="flex items-center gap-1 rounded bg-cyan/15 text-cyan px-1.5 py-0.5 text-[10.5px] font-medium border border-cyan/20">
+                <span className="flex items-center gap-1 rounded bg-primary/15 text-primary px-1.5 py-0.5 text-[10.5px] font-medium border border-primary/20">
                   <Pin size={10} />
                   <span>Pinned</span>
                 </span>
@@ -807,8 +807,8 @@ export function ChatView({
             </div>
             <div className="text-[12px] text-muted truncate leading-tight mt-0.5">
               {activeTyping ? (
-                <span className="text-cyan font-medium animate-pulse flex items-center gap-1.5">
-                  <span className="size-1.5 rounded-full bg-cyan animate-ping inline-block" />
+                <span className="text-primary font-medium animate-pulse flex items-center gap-1.5">
+                  <span className="size-1.5 rounded-full bg-primary animate-ping inline-block" />
                   <span>{activeTyping}</span>
                 </span>
               ) : (
@@ -858,14 +858,14 @@ export function ChatView({
       {activeChat?.pinnedMessageId && (
         <div
           onClick={() => jumpToMessage(activeChat.pinnedMessageId)}
-          className="flex items-center justify-between rounded-xl border border-cyan/20 bg-cyan/10 px-3.5 py-2 text-[12px] text-slate-200 mb-2 cursor-pointer hover:bg-cyan/15 transition-colors select-none"
+          className="flex items-center justify-between rounded-xl border border-primary/20 bg-primary/10 px-3.5 py-2 text-[12px] text-text mb-2 cursor-pointer hover:bg-primary/15 transition-colors select-none"
         >
           <div className="flex items-center gap-2 min-w-0">
-            <Pin size={13} className="text-cyan shrink-0" />
-            <span className="font-semibold text-cyan shrink-0">Pinned Message:</span>
+            <Pin size={13} className="text-primary shrink-0" />
+            <span className="font-semibold text-primary shrink-0">Pinned Message:</span>
             <span className="truncate opacity-90">Click to view pinned message</span>
           </div>
-          <span className="text-[11px] text-cyan font-medium shrink-0 ml-2">Jump →</span>
+          <span className="text-[11px] text-primary font-medium shrink-0 ml-2">Jump →</span>
         </div>
       )}
 
@@ -885,7 +885,7 @@ export function ChatView({
             <button
               type="button"
               onClick={onLoadOlder}
-              className="text-[12px] rounded-full px-4 py-1.5 shadow-sm border border-white/10 bg-white/5 text-slate-300 hover:bg-white/10 hover:text-white transition-all cursor-pointer"
+              className="text-[12px] rounded-full px-4 py-1.5 shadow-sm border border-border bg-tile text-text-2 hover:bg-tile/80 hover:text-text transition-all cursor-pointer"
             >
               Load older messages
             </button>
@@ -1005,7 +1005,7 @@ export function ChatView({
 
                                 {/* Forward Header */}
                                 {m.forwardFrom && (
-                                  <div className="flex items-center gap-1.5 text-[11.5px] text-cyan/90 px-3.5 pt-2.5 pb-1 italic select-none">
+                                  <div className="flex items-center gap-1.5 text-[11.5px] text-primary/90 px-3.5 pt-2.5 pb-1 italic select-none">
                                     <CornerDownRight size={12} className="shrink-0" />
                                     <span>Forwarded from {m.forwardFrom.name || m.forwardFrom.chatTitle || 'Channel'}</span>
                                   </div>
@@ -1019,13 +1019,13 @@ export function ChatView({
                                         e.stopPropagation()
                                         jumpToMessage(m.replyTo.id)
                                       }}
-                                      className="flex items-center gap-2 rounded-lg border-l-2 border-cyan bg-black/25 px-2.5 py-1.5 text-[11.5px] cursor-pointer hover:bg-black/35 transition-colors select-none"
+                                      className="flex items-center gap-2 rounded-lg border-l-2 border-primary bg-panel/60 px-2.5 py-1.5 text-[11.5px] cursor-pointer hover:bg-panel transition-colors select-none"
                                       title="Jump to replied message"
                                     >
-                                      <Reply size={12} className="text-cyan shrink-0" />
+                                      <Reply size={12} className="text-primary shrink-0" />
                                       <div className="min-w-0 flex-1">
-                                        <div className="font-semibold text-cyan leading-tight truncate">{m.replyTo.sender}</div>
-                                        <div className="text-slate-300 truncate leading-tight mt-0.5">{m.replyTo.text}</div>
+                                        <div className="font-semibold text-primary leading-tight truncate">{m.replyTo.sender}</div>
+                                        <div className="text-text-2 truncate leading-tight mt-0.5">{m.replyTo.text}</div>
                                       </div>
                                     </div>
                                   </div>
@@ -1034,7 +1034,7 @@ export function ChatView({
                                 {/* Sender Header for Groups */}
                                 {!isOut && !isChannel && (m.sender || activeChat?.title) && (
                                   <div className="flex items-center justify-between text-[11.5px] px-3.5 pt-2 pb-1">
-                                    <span className="font-semibold text-cyan tracking-wide truncate max-w-[240px]">
+                                    <span className="font-semibold text-primary tracking-wide truncate max-w-[240px]">
                                       {m.sender || activeChat?.title}
                                     </span>
                                   </div>
@@ -1143,12 +1143,12 @@ export function ChatView({
                                             className={`flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11.5px] font-medium border transition-all cursor-pointer ${
                                               r.chosen
                                                 ? 'bg-primary/25 border-primary/60 ring-1 ring-primary/40 shadow-sm'
-                                                : 'bg-black/30 border-white/10 text-slate-300 hover:bg-black/50 hover:text-white'
+                                                : 'bg-tile border-border text-text-2 hover:bg-tile/80 hover:text-text'
                                             }`}
                                             title={`Reaction ${displayEmoji}${r.chosen ? ' (click to remove)' : ''}`}
                                           >
                                             <span className="emoji-glyph text-[13px] leading-none select-none">{displayEmoji}</span>
-                                            <span className={`text-[10.5px] tabular-nums font-semibold ${r.chosen ? 'text-cyan' : 'text-slate-300'}`}>
+                                            <span className={`text-[10.5px] tabular-nums font-semibold ${r.chosen ? 'text-primary' : 'text-text-2'}`}>
                                               {r.count}
                                             </span>
                                           </button>
@@ -1344,7 +1344,7 @@ export function ChatView({
                                   <button
                                     type="button"
                                     onClick={(e) => openContextMenu(e, m)}
-                                    className="p-1 text-slate-300 hover:text-white rounded-full bg-black/40 hover:bg-black/60 transition-colors"
+                                    className="p-1 text-muted hover:text-text rounded-full bg-tile/70 hover:bg-tile transition-colors"
                                     title="Message Options"
                                   >
                                     <MoreVertical size={13} />
@@ -1354,7 +1354,7 @@ export function ChatView({
 
                               {/* Forwarded Header */}
                               {m.forwardFrom && (
-                                <div className="flex items-center gap-1.5 text-[11.5px] text-cyan/90 mb-1.5 italic select-none">
+                                <div className="flex items-center gap-1.5 text-[11.5px] text-primary/90 mb-1.5 italic select-none">
                                   <CornerDownRight size={12} className="shrink-0" />
                                   <span>Forwarded from {m.forwardFrom.name || m.forwardFrom.chatTitle || 'Channel'}</span>
                                 </div>
@@ -1367,13 +1367,13 @@ export function ChatView({
                                     e.stopPropagation()
                                     jumpToMessage(m.replyTo.id)
                                   }}
-                                  className="flex items-center gap-2 rounded-lg border-l-2 border-cyan bg-black/25 px-2.5 py-1.5 text-[11.5px] mb-2 cursor-pointer hover:bg-black/35 transition-colors select-none"
+                                  className="flex items-center gap-2 rounded-lg border-l-2 border-primary bg-panel/60 px-2.5 py-1.5 text-[11.5px] mb-2 cursor-pointer hover:bg-panel transition-colors select-none"
                                   title="Jump to replied message"
                                 >
-                                  <Reply size={12} className="text-cyan shrink-0" />
+                                  <Reply size={12} className="text-primary shrink-0" />
                                   <div className="min-w-0 flex-1">
-                                    <div className="font-semibold text-cyan leading-tight truncate">{m.replyTo.sender}</div>
-                                    <div className="text-slate-300 truncate leading-tight mt-0.5">{m.replyTo.text}</div>
+                                    <div className="font-semibold text-primary leading-tight truncate">{m.replyTo.sender}</div>
+                                    <div className="text-text-2 truncate leading-tight mt-0.5">{m.replyTo.text}</div>
                                   </div>
                                 </div>
                               )}
@@ -1452,7 +1452,7 @@ export function ChatView({
                                       } else if (['ZIP', 'RAR', '7Z', 'TAR', 'GZ'].includes(ext)) {
                                         colorClasses = 'from-amber-500/25 to-amber-600/15 border-amber-500/30 text-amber-400'
                                       } else if (['DOC', 'DOCX', 'TXT', 'MD', 'XLS', 'XLSX'].includes(ext)) {
-                                        colorClasses = 'from-sky-500/25 to-blue-600/15 border-sky-500/30 text-sky-400'
+                                        colorClasses = 'from-primary/25 to-primary/10 border-primary/30 text-primary'
                                       } else if (['EXE', 'MSI', 'DMG', 'APK', 'ISO'].includes(ext)) {
                                         colorClasses = 'from-purple-500/25 to-indigo-600/15 border-purple-500/30 text-purple-400'
                                       }
@@ -1475,7 +1475,7 @@ export function ChatView({
                                             <div className="flex items-center gap-2 text-[11px] text-muted mt-0.5 tabular-nums">
                                               <span>{fmtBytes(m.media.size)}</span>
                                               <span>•</span>
-                                              <span className={m.media.status === 'downloaded' ? 'text-emerald-400 font-medium' : 'text-slate-400'}>
+                                              <span className={m.media.status === 'downloaded' ? 'text-emerald-400 font-medium' : 'text-muted'}>
                                                 {m.media.status === 'downloaded' ? 'Saved' : ext}
                                               </span>
                                             </div>
@@ -1486,7 +1486,7 @@ export function ChatView({
                                               <button
                                                 type="button"
                                                 onClick={() => onRevealFile(m.media.path)}
-                                                className="size-9 rounded-xl bg-white/5 hover:bg-cyan/20 text-cyan border border-cyan/20 flex items-center justify-center transition-all hover:scale-105 active:scale-95 shadow"
+                                                className="size-9 rounded-xl bg-tile hover:bg-primary/20 text-primary border border-border flex items-center justify-center transition-all hover:scale-105 active:scale-95 shadow"
                                                 title="Show in folder"
                                               >
                                                 <FolderOpen size={15} />
@@ -1533,12 +1533,12 @@ export function ChatView({
                                         className={`flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11.5px] font-medium border transition-all cursor-pointer ${
                                           r.chosen
                                             ? 'bg-primary/25 border-primary/60 ring-1 ring-primary/40 shadow-sm'
-                                            : 'bg-black/30 border-white/10 text-slate-300 hover:bg-black/50 hover:text-white'
+                                            : 'bg-tile border-border text-text-2 hover:bg-tile/80 hover:text-text'
                                         }`}
                                         title={`Reaction ${displayEmoji}${r.chosen ? ' (click to remove)' : ''}`}
                                       >
                                         <span className="emoji-glyph text-[13px] leading-none select-none">{displayEmoji}</span>
-                                        <span className={`text-[10.5px] tabular-nums font-semibold ${r.chosen ? 'text-cyan' : 'text-slate-300'}`}>
+                                        <span className={`text-[10.5px] tabular-nums font-semibold ${r.chosen ? 'text-primary' : 'text-text-2'}`}>
                                           {r.count}
                                         </span>
                                       </button>
@@ -1567,7 +1567,7 @@ export function ChatView({
                                     ) : m.deliveryStatus === 'failed' ? (
                                       <span title="Message failed to send"><AlertCircle size={12} className="text-danger" /></span>
                                     ) : m.deliveryStatus === 'read' ? (
-                                      <span className="text-cyan font-bold text-[11px]" title="Read">✓✓</span>
+                                      <span className="text-primary font-bold text-[11px]" title="Read">✓✓</span>
                                     ) : (
                                       <span title="Sent to server"><Check size={12} className="text-muted/70" /></span>
                                     )}
@@ -1812,15 +1812,15 @@ export function ChatView({
       <div className="mt-2 pt-2 border-t border-white/[0.08] flex flex-col gap-1.5">
         {/* Reply Preview Bar */}
         {replyingTo && (
-          <div className="flex items-center justify-between rounded-xl bg-cyan/10 border border-cyan/20 px-3 py-1.5 text-[12px] animate-in slide-in-from-bottom-2 duration-150">
+          <div className="flex items-center justify-between rounded-xl bg-primary/10 border border-primary/20 px-3 py-1.5 text-[12px] animate-in slide-in-from-bottom-2 duration-150">
             <div className="flex items-center gap-2 min-w-0">
-              <Reply size={14} className="text-cyan shrink-0" />
+              <Reply size={14} className="text-primary shrink-0" />
               <div className="min-w-0">
-                <div className="flex items-center gap-1 font-semibold text-cyan leading-tight text-[12px]">
+                <div className="flex items-center gap-1 font-semibold text-primary leading-tight text-[12px]">
                   <span>Replying to</span>
                   <span>{replyingTo.sender}</span>
                 </div>
-                <div className="text-slate-300 truncate text-[11px] leading-tight mt-0.5">
+                <div className="text-text-2 truncate text-[11px] leading-tight mt-0.5">
                   {replyingTo.text || replyingTo.media?.name || 'Attachment'}
                 </div>
               </div>
@@ -1828,7 +1828,7 @@ export function ChatView({
             <button
               type="button"
               onClick={() => setReplyingTo(null)}
-              className="p-1 rounded-full text-muted hover:text-white hover:bg-white/10 transition-colors"
+              className="p-1 rounded-full text-muted hover:text-text hover:bg-tile transition-colors cursor-pointer"
               title="Cancel reply"
             >
               <X size={13} />
@@ -1843,7 +1843,7 @@ export function ChatView({
               <Edit3 size={14} className="text-primary shrink-0" />
               <div className="min-w-0">
                 <div className="font-semibold text-primary leading-tight text-[12px]">Editing message</div>
-                <div className="text-slate-300 truncate text-[11px] leading-tight mt-0.5">
+                <div className="text-text-2 truncate text-[11px] leading-tight mt-0.5">
                   {editingMessage.text}
                 </div>
               </div>
@@ -1982,7 +1982,7 @@ export function ChatView({
           onClose={() => setDeleteModalOpen(false)}
         >
           <div className="space-y-4">
-            <p className="text-[13px] text-slate-300">
+            <p className="text-[13px] text-text-2">
               Are you sure you want to delete this message? This action cannot be undone.
             </p>
 
@@ -2000,7 +2000,7 @@ export function ChatView({
               <button
                 type="button"
                 onClick={() => setDeleteModalOpen(false)}
-                className="px-3.5 py-1.5 rounded-lg border border-border bg-tile text-[12.5px] text-text hover:border-white/30"
+                className="px-3.5 py-1.5 rounded-lg border border-border bg-tile text-[12.5px] text-text hover:border-primary/40 transition-colors"
               >
                 Cancel
               </button>
@@ -2025,19 +2025,19 @@ export function ChatView({
         >
           <div className="space-y-3.5">
             {/* Forward Message Quote Preview */}
-            <div className="rounded-xl border-l-4 border-cyan bg-black/30 p-2.5 flex items-start gap-2.5">
+            <div className="rounded-xl border-l-4 border-primary bg-panel p-2.5 flex items-start gap-2.5 border border-border">
               <div className="min-w-0 flex-1">
-                <div className="text-[12px] font-semibold text-cyan truncate">
+                <div className="text-[12px] font-semibold text-primary truncate">
                   {forwardingMessage.sender || activeChat?.title || 'Unknown'}
                 </div>
-                <div className="text-[12.5px] text-slate-200 truncate mt-0.5">
+                <div className="text-[12.5px] text-text truncate mt-0.5">
                   {forwardingMessage.text || forwardingMessage.media?.name || (forwardingMessage.media?.type ? `[${forwardingMessage.media.type}]` : 'Message')}
                 </div>
               </div>
             </div>
 
             {/* Send as copy toggle */}
-            <label className="flex items-center gap-2 text-[12.5px] text-slate-300 cursor-pointer select-none">
+            <label className="flex items-center gap-2 text-[12.5px] text-text-2 cursor-pointer select-none">
               <input
                 type="checkbox"
                 checked={sendAsCopy}
