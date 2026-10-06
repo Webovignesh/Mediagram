@@ -101,8 +101,8 @@ function AreaChart({
       >
         <defs>
           <linearGradient id="dlGrad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#38bdf8" stopOpacity="0.45" />
-            <stop offset="100%" stopColor="#38bdf8" stopOpacity="0.0" />
+            <stop offset="0%" stopColor="var(--color-primary, #0284c7)" stopOpacity="0.45" />
+            <stop offset="100%" stopColor="var(--color-primary, #0284c7)" stopOpacity="0.0" />
           </linearGradient>
           <linearGradient id="upGrad" x1="0" y1="0" x2="0" y2="1">
             <stop offset="0%" stopColor="#a855f7" stopOpacity="0.45" />
@@ -112,20 +112,20 @@ function AreaChart({
 
         {yTicks.map((val) => (
           <g key={val}>
-            <line x1={padL} y1={getY(val)} x2={width - padR} y2={getY(val)} stroke="rgba(96, 140, 255, 0.12)" strokeDasharray="3 3" />
-            <text x={padL - 6} y={getY(val) + 3} textAnchor="end" className="fill-[#7a88a8] text-[9px] font-mono">{val}</text>
+            <line x1={padL} y1={getY(val)} x2={width - padR} y2={getY(val)} stroke="currentColor" className="text-border" strokeDasharray="3 3" />
+            <text x={padL - 6} y={getY(val) + 3} textAnchor="end" fill="currentColor" className="text-muted text-[9px] font-mono">{val}</text>
           </g>
         ))}
 
         <path d={dlArea} fill="url(#dlGrad)" />
         <path d={upArea} fill="url(#upGrad)" />
-        <path d={dlLine} fill="none" stroke="#38bdf8" strokeWidth="2" strokeLinecap="round" />
+        <path d={dlLine} fill="none" stroke="var(--color-primary, #0284c7)" strokeWidth="2" strokeLinecap="round" />
         <path d={upLine} fill="none" stroke="#a855f7" strokeWidth="2" strokeLinecap="round" />
 
         {buckets.map((b, i) => {
           if (i % step !== 0 && i !== n - 1) return null
           return (
-            <text key={b} x={getX(i)} y={height - 4} textAnchor="middle" className="fill-[#7a88a8] text-[9px]">
+            <text key={b} x={getX(i)} y={height - 4} textAnchor="middle" fill="currentColor" className="text-muted text-[9px]">
               {formatBucketLabel(b)}
             </text>
           )
@@ -136,22 +136,22 @@ function AreaChart({
             <line
               x1={getX(hoverIndex)} y1={padT}
               x2={getX(hoverIndex)} y2={padT + innerH}
-              stroke="rgba(255, 255, 255, 0.3)" strokeDasharray="2 2"
+              stroke="currentColor" className="text-muted/40" strokeDasharray="2 2"
             />
-            <circle cx={getX(hoverIndex)} cy={getY(download[hoverIndex])} r="3.5" fill="#38bdf8" stroke="#060b18" strokeWidth="2" />
-            <circle cx={getX(hoverIndex)} cy={getY(upload[hoverIndex])} r="3.5" fill="#a855f7" stroke="#060b18" strokeWidth="2" />
+            <circle cx={getX(hoverIndex)} cy={getY(download[hoverIndex])} r="3.5" fill="var(--color-primary, #0284c7)" stroke="var(--color-panel, #060b18)" strokeWidth="2" />
+            <circle cx={getX(hoverIndex)} cy={getY(upload[hoverIndex])} r="3.5" fill="#a855f7" stroke="var(--color-panel, #060b18)" strokeWidth="2" />
           </g>
         )}
       </svg>
 
       {hoverIndex !== null && (
         <div
-          className="pointer-events-none absolute -top-1 z-20 rounded-lg border border-border bg-[#070d1d]/95 p-2 text-[11px] shadow-xl backdrop-blur"
+          className="pointer-events-none absolute -top-1 z-20 rounded-lg border border-border bg-panel/95 p-2 text-[11px] shadow-xl backdrop-blur text-text"
           style={{ left: `${Math.min(78, Math.max(12, (getX(hoverIndex) / width) * 100))}%`, transform: 'translateX(-50%)' }}
         >
           <div className="mb-1 font-semibold text-text">{formatBucketLabel(buckets[hoverIndex])}</div>
-          <div className="flex items-center gap-1.5 text-[#38bdf8]">
-            <span className="size-2 rounded-full bg-[#38bdf8]" />
+          <div className="flex items-center gap-1.5 text-primary">
+            <span className="size-2 rounded-full bg-primary" />
             <span>Downloads: <strong>{download[hoverIndex]}</strong></span>
           </div>
           <div className="flex items-center gap-1.5 text-[#a855f7]">
@@ -163,7 +163,7 @@ function AreaChart({
 
       <div className="mt-1 flex items-center justify-center gap-4 text-[11px] text-muted">
         <div className="flex items-center gap-1.5">
-          <span className="size-2 rounded-full bg-[#38bdf8]" />
+          <span className="size-2 rounded-full bg-primary" />
           <span>Downloads</span>
         </div>
         <div className="flex items-center gap-1.5">
@@ -229,7 +229,7 @@ export default function Overview() {
 
       <div className="flex items-center justify-between pr-40">
         <div>
-          <h1 className="text-[26px] font-bold text-white tracking-wide">Welcome to Mediagram</h1>
+          <h1 className="text-[26px] font-bold text-text tracking-wide">Welcome to Mediagram</h1>
           <p className="mt-1 text-[13px] text-text-2">Your Telegram videos, downloads, and uploads — all in one place.</p>
         </div>
       </div>
@@ -282,7 +282,7 @@ export default function Overview() {
                         <span className="truncate">{c.title}</span>
                         <span className="text-[11px] text-muted shrink-0 ml-2">{c.count} files</span>
                       </div>
-                      <div className="h-1.5 w-full rounded-full bg-[#1e2a47] overflow-hidden">
+                      <div className="h-1.5 w-full rounded-full bg-border/60 overflow-hidden">
                         <div className={`h-full rounded-full ${barColor} transition-all duration-300`} style={{ width: `${barPercent}%` }} />
                       </div>
                     </div>

@@ -1,5 +1,5 @@
 import { useState, type FormEvent, type ReactNode, useEffect, useRef } from 'react'
-import { Send, ArrowLeft, ChevronDown, Check, Loader2, AlertTriangle, ExternalLink } from 'lucide-react'
+import { Send, ArrowLeft, ChevronDown, Check, Loader2, AlertTriangle, ExternalLink, Eye, EyeOff } from 'lucide-react'
 import type { AuthState } from '../../../core/shapes.ts'
 import { call, useCall } from '../api.ts'
 import { Input, Button, toast, MediagramLogo } from '../ui.tsx'
@@ -64,6 +64,8 @@ export default function Login() {
   // Credentials step
   const [apiId, setApiId] = useState('')
   const [apiHash, setApiHash] = useState('')
+  const [showApiId, setShowApiId] = useState(false)
+  const [showApiHash, setShowApiHash] = useState(false)
 
   // Phone step
   const [countryCode, setCountryCode] = useState('+91')
@@ -257,9 +259,9 @@ export default function Login() {
 
   return (
     <div className="flex h-full flex-col">
-      {/* The 40px drag strip keeps clear of the native window buttons drawn by titleBarOverlay */}
+      {/* The 36px drag strip keeps clear of the native window buttons drawn by titleBarOverlay */}
       <div
-        className="drag h-10 shrink-0"
+        className="drag flex h-9 shrink-0 items-center justify-between px-3 bg-bg border-b border-border/40 select-none z-30"
         style={{ paddingRight: 'calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw))' }}
       />
       <main className="grid flex-1 place-items-center overflow-auto p-6">
@@ -340,27 +342,50 @@ export default function Login() {
                 </p>
               )}
               <div className="mt-5">
-                <Input 
-                  label="API ID"
-                  placeholder="e.g. 2040"
-                  value={apiId} 
-                  onChange={setApiId} 
-                  inputMode="numeric" 
-                  autoComplete="off" 
-                  required 
-                />
+                <label className="block text-[12px] text-text-2 mb-1">API ID</label>
+                <div className="relative">
+                  <input
+                    type={showApiId ? 'text' : 'password'}
+                    placeholder="e.g. 2040"
+                    value={apiId}
+                    onChange={(e) => setApiId(e.target.value)}
+                    inputMode="numeric"
+                    autoComplete="off"
+                    required
+                    className="block w-full rounded-[10px] border border-border bg-tile pl-3.5 pr-10 py-2.5 text-[13px] text-text placeholder:text-muted focus:border-primary outline-none transition-colors"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowApiId(!showApiId)}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted hover:text-text p-1 transition-colors"
+                    title={showApiId ? 'Hide API ID' : 'Show API ID'}
+                  >
+                    {showApiId ? <EyeOff size={16} /> : <Eye size={16} />}
+                  </button>
+                </div>
               </div>
               <div className="mt-3">
-                <Input 
-                  label="API hash"
-                  type="password"
-                  placeholder="32-character hash from my.telegram.org"
-                  value={apiHash} 
-                  onChange={setApiHash} 
-                  autoComplete="off" 
-                  spellCheck={false} 
-                  required 
-                />
+                <label className="block text-[12px] text-text-2 mb-1">API hash</label>
+                <div className="relative">
+                  <input
+                    type={showApiHash ? 'text' : 'password'}
+                    placeholder="32-character hash from my.telegram.org"
+                    value={apiHash}
+                    onChange={(e) => setApiHash(e.target.value)}
+                    autoComplete="off"
+                    spellCheck={false}
+                    required
+                    className="block w-full rounded-[10px] border border-border bg-tile pl-3.5 pr-10 py-2.5 text-[13px] text-text placeholder:text-muted focus:border-primary outline-none transition-colors"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowApiHash(!showApiHash)}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted hover:text-text p-1 transition-colors"
+                    title={showApiHash ? 'Hide API hash' : 'Show API hash'}
+                  >
+                    {showApiHash ? <EyeOff size={16} /> : <Eye size={16} />}
+                  </button>
+                </div>
               </div>
               {(error || a.error) && <p role="alert" className="mt-3 text-danger">{error || a.error}</p>}
               {/* The one thing a first-time user cannot guess: where these two values come from. */}

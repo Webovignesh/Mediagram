@@ -115,7 +115,7 @@ function TelegramAudioPlayer({
   }
 
   return (
-    <div className="flex items-center gap-3 p-3 rounded-2xl bg-[#0e1622] my-1 w-full max-w-[380px] border border-white/[0.06] shadow-sm select-none" onClick={(e) => e.stopPropagation()}>
+    <div className="flex items-center gap-3 p-3 rounded-2xl bg-tile my-1 w-full max-w-[380px] border border-border shadow-sm select-none" onClick={(e) => e.stopPropagation()}>
       {audioUrl && (
         <audio
           ref={audioRef}
@@ -144,7 +144,7 @@ function TelegramAudioPlayer({
 
       {/* Info & scrubber */}
       <div className="min-w-0 flex-1 flex flex-col justify-center">
-        <div className="text-[13px] font-semibold text-white truncate cursor-pointer hover:text-cyan transition-colors" onClick={onOpenViewer} title={media.name}>
+        <div className="text-[13px] font-semibold text-text truncate cursor-pointer hover:text-primary transition-colors" onClick={onOpenViewer} title={media.name}>
           {media.name}
         </div>
         <div className="mt-1 flex items-center gap-2">
@@ -158,7 +158,7 @@ function TelegramAudioPlayer({
               setCurrentTime(val)
               if (audioRef.current) audioRef.current.currentTime = val
             }}
-            className="w-full h-1 bg-white/20 rounded-lg appearance-none cursor-pointer accent-primary"
+            className="w-full h-1 bg-border rounded-lg appearance-none cursor-pointer accent-primary"
           />
         </div>
         <div className="flex items-center justify-between text-[10.5px] text-muted mt-0.5 tabular-nums">
@@ -172,10 +172,10 @@ function TelegramAudioPlayer({
         <button
           type="button"
           onClick={onDownload}
-          className="size-8 rounded-full hover:bg-white/10 text-muted hover:text-white flex items-center justify-center transition-colors"
+          className="size-8 rounded-full hover:bg-tile text-muted hover:text-text flex items-center justify-center transition-colors"
           title={media.status === 'downloaded' ? 'Show in folder' : 'Download audio'}
         >
-          {media.status === 'downloaded' ? <FolderOpen size={15} className="text-cyan" /> : <Download size={15} />}
+          {media.status === 'downloaded' ? <FolderOpen size={15} className="text-primary" /> : <Download size={15} />}
         </button>
       </div>
     </div>
@@ -218,9 +218,20 @@ function loadInitialChatFilters(): Record<number, Partial<ChatFilterState>> {
   return {}
 }
 
+const CHAT_VIEW_MODES_KEY = 'mediagram_chat_view_modes'
+
+function loadInitialChatViewModes(): Record<number, 'files' | 'chat'> {
+  try {
+    const raw = localStorage.getItem(CHAT_VIEW_MODES_KEY)
+    if (raw) return JSON.parse(raw)
+  } catch {}
+  return {}
+}
+
 export default function Downloads() {
   const [openChat, setOpenChat] = useState(false)
   const [previewItem, setPreviewItem] = useState<any>(null)
+  const [chatViewModes, setChatViewModes] = useState<Record<number, 'files' | 'chat'>>(loadInitialChatViewModes)
   const [chatId, setChatId] = useState<number | null>(() => {
     try {
       const saved = localStorage.getItem('mediagram_active_chat_id')
@@ -231,6 +242,11 @@ export default function Downloads() {
   })
   const [view, setView] = useState<'files' | 'chat'>(() => {
     try {
+      const savedChatId = localStorage.getItem('mediagram_active_chat_id')
+      if (savedChatId) {
+        const modes = loadInitialChatViewModes()
+        if (modes[Number(savedChatId)]) return modes[Number(savedChatId)]!
+      }
       const saved = localStorage.getItem('mediagram_downloads_view')
       return (saved === 'chat' || saved === 'files') ? (saved as 'files' | 'chat') : 'files'
     } catch {
@@ -285,6 +301,13 @@ export default function Downloads() {
   const [dedupeLoading, setDedupeLoading] = useState(false)
   const [dedupeSelectedCount, setDedupeSelectedCount] = useState(0)
   const [dedupeResult, setDedupeResult] = useState<DuplicateCheckResult | null>(null)
+  const [customScanPath, setCustomScanPath] = useState<string | null>(null)
+  const lastDedupeTargetRef = useRef<
+    | { type: 'items', items: { chatId: number, messageId: number }[] }
+    | { type: 'matching' }
+    | { type: 'folder' }
+    | null
+  >(null)
 
   // Telegram Invite / Join Request Modal
   const [inviteModalOpen, setInviteModalOpen] = useState(false)
@@ -317,6 +340,16 @@ export default function Downloads() {
   const typingMap = useTyping()
   const activeTyping = activeChatId ? typingMap[activeChatId] : null
 
+  // Restore persisted view mode for activeChatId if not explicitly set yet
+  const initialModeSyncedRef = useRef(false)
+  useEffect(() => {
+    if (activeChatId && !initialModeSyncedRef.current) {
+      initialModeSyncedRef.current = true
+      const mode = chatViewModes[activeChatId]
+      if (mode) setView(mode)
+    }
+  }, [activeChatId, chatViewModes])
+
   // Persistent chat filters map
   const [chatFilters, setChatFilters] = useState<Record<number, Partial<ChatFilterState>>>(loadInitialChatFilters)
 
@@ -336,6 +369,22 @@ export default function Downloads() {
       } catch {}
       return nextMap
     })
+  }, [activeChatId])
+
+  const handleSetView = useCallback((newView: 'files' | 'chat') => {
+    setView(newView)
+    if (activeChatId) {
+      setChatViewModes((prev) => {
+        const next = { ...prev, [activeChatId]: newView }
+        try {
+          localStorage.setItem(CHAT_VIEW_MODES_KEY, JSON.stringify(next))
+        } catch {}
+        return next
+      })
+    }
+    try {
+      localStorage.setItem('mediagram_downloads_view', newView)
+    } catch {}
   }, [activeChatId])
 
   // Getters for current filters
@@ -370,7 +419,13 @@ export default function Downloads() {
       }
       if (chatKind === 'channels') return c.kind === 'channel'
       if (chatKind === 'groups') return c.kind === 'group' || c.kind === 'supergroup'
-      if (chatKind === 'folders' && selectedFolderId !== null) return c.folders?.includes(selectedFolderId)
+      if (chatKind === 'folders') {
+        const targetFolder = selectedFolderId ?? allFolders[0]?.id
+        if (targetFolder !== undefined && targetFolder !== null) {
+          return Array.isArray(c.folders) && c.folders.includes(targetFolder)
+        }
+        return Array.isArray(c.folders) && c.folders.length > 0
+      }
       return true
     })
 
@@ -610,6 +665,82 @@ export default function Downloads() {
   const liveState = useLive()
   const liveStats = liveState.stats
 
+  async function runDuplicateCheck(
+    target: { type: 'items', items: { chatId: number, messageId: number }[] } | { type: 'matching' } | { type: 'folder' } | null,
+    scanPath: string | null
+  ) {
+    if (!target) return
+    setDedupeLoading(true)
+    try {
+      if (target.type === 'items') {
+        const res = await call<DuplicateCheckResult>('downloads.checkDuplicates', {
+          items: target.items,
+          ...(scanPath ? { customPath: scanPath } : {}),
+        })
+        setDedupeResult(res)
+      } else if (target.type === 'matching') {
+        if (!activeChatId) return
+        const res = await call<DuplicateCheckResult>('downloads.checkDuplicates', {
+          chatId: activeChatId,
+          filters: dupFilters,
+          ...(scanPath ? { customPath: scanPath } : {}),
+        })
+        setDedupeResult(res)
+      } else if (target.type === 'folder') {
+        if (!filteredChats.length) return
+        const checkResults = await Promise.all(
+          filteredChats.map((c) =>
+            call<DuplicateCheckResult>('downloads.checkDuplicates', {
+              chatId: c.id,
+              filters: dupFilters,
+              ...(scanPath ? { customPath: scanPath } : {}),
+            }).catch(() => null)
+          )
+        )
+        const validResults = checkResults.filter((r): r is DuplicateCheckResult => r !== null)
+        if (!validResults.length) {
+          setDedupeModalOpen(false)
+          toast('No media found in the chats of this folder', 'info')
+          return
+        }
+        const combined: DuplicateCheckResult = {
+          scannedPath: scanPath || validResults[0].scannedPath,
+          filesScanned: validResults.reduce((acc, r) => acc + r.filesScanned, 0),
+          totalSelected: validResults.reduce((acc, r) => acc + r.totalSelected, 0),
+          onDiskCount: validResults.reduce((acc, r) => acc + r.onDiskCount, 0),
+          willDownloadCount: validResults.reduce((acc, r) => acc + r.willDownloadCount, 0),
+          skippedBytes: validResults.reduce((acc, r) => acc + r.skippedBytes, 0),
+          duplicates: validResults.flatMap((r) => r.duplicates),
+          willDownload: validResults.flatMap((r) => r.willDownload),
+        }
+        setDedupeResult(combined)
+      }
+    } catch (err) {
+      toast((err as Error).message, 'danger')
+    } finally {
+      setDedupeLoading(false)
+    }
+  }
+
+  async function handlePickCustomScanPath() {
+    try {
+      const res = await call<{ path: string | null }>('app.pickFolder', { title: 'Select custom folder to scan for duplicates' })
+      if (res?.path) {
+        setCustomScanPath(res.path)
+        toast(`Scanning folder: ${res.path}`)
+        await runDuplicateCheck(lastDedupeTargetRef.current, res.path)
+      }
+    } catch (e) {
+      toast((e as Error).message, 'danger')
+    }
+  }
+
+  async function handleResetCustomScanPath() {
+    setCustomScanPath(null)
+    toast('Reset to default download folder')
+    await runDuplicateCheck(lastDedupeTargetRef.current, null)
+  }
+
   async function downloadItems(items: { chatId: number, messageId: number }[], force = false, e?: React.MouseEvent) {
     if (force) {
       try {
@@ -625,12 +756,16 @@ export default function Downloads() {
       return
     }
 
+    lastDedupeTargetRef.current = { type: 'items', items }
     setDedupeSelectedCount(items.length)
     setDedupeLoading(true)
     setDedupeModalOpen(true)
     setDedupeResult(null)
     try {
-      const res = await call<DuplicateCheckResult>('downloads.checkDuplicates', { items })
+      const res = await call<DuplicateCheckResult>('downloads.checkDuplicates', {
+        items,
+        ...(customScanPath ? { customPath: customScanPath } : {}),
+      })
       setDedupeResult(res)
       setDedupeLoading(false)
     } catch (err) {
@@ -660,6 +795,7 @@ export default function Downloads() {
 
   async function downloadAllMatching(e?: React.MouseEvent) {
     if (!activeChatId) return
+    lastDedupeTargetRef.current = { type: 'matching' }
     const total = mediaData?.total ?? 0
     setDedupeSelectedCount(total)
     setDedupeLoading(true)
@@ -669,6 +805,7 @@ export default function Downloads() {
       const res = await call<DuplicateCheckResult>('downloads.checkDuplicates', {
         chatId: activeChatId,
         filters: dupFilters,
+        ...(customScanPath ? { customPath: customScanPath } : {}),
       })
       setDedupeResult(res)
       setDedupeLoading(false)
@@ -680,6 +817,7 @@ export default function Downloads() {
 
   async function downloadAllFolderMedia() {
     if (!filteredChats.length) return
+    lastDedupeTargetRef.current = { type: 'folder' }
     setDedupeSelectedCount(filteredChats.length * 30)
     setDedupeLoading(true)
     setDedupeModalOpen(true)
@@ -690,6 +828,7 @@ export default function Downloads() {
           call<DuplicateCheckResult>('downloads.checkDuplicates', {
             chatId: c.id,
             filters: dupFilters,
+            ...(customScanPath ? { customPath: customScanPath } : {}),
           }).catch(() => null)
         )
       )
@@ -700,7 +839,7 @@ export default function Downloads() {
         return
       }
       const combined: DuplicateCheckResult = {
-        scannedPath: validResults[0].scannedPath,
+        scannedPath: customScanPath || validResults[0].scannedPath,
         filesScanned: validResults.reduce((acc, r) => acc + r.filesScanned, 0),
         totalSelected: validResults.reduce((acc, r) => acc + r.totalSelected, 0),
         onDiskCount: validResults.reduce((acc, r) => acc + r.onDiskCount, 0),
@@ -854,8 +993,11 @@ export default function Downloads() {
         loading={dedupeLoading}
         selectedCount={dedupeSelectedCount}
         result={dedupeResult}
+        customPath={customScanPath}
         onClose={() => { setDedupeModalOpen(false); setDedupeResult(null) }}
         onContinue={handleDedupeContinue}
+        onPickCustomPath={handlePickCustomScanPath}
+        onResetCustomPath={handleResetCustomScanPath}
       />
 
       {/* Custom Size Dialog */}
@@ -1012,24 +1154,49 @@ export default function Downloads() {
             <Chip label="Channels" active={chatKind === 'channels'} onClick={() => { setChatKind('channels'); setSelectedFolderId(null) }} />
             <Chip label="Groups" active={chatKind === 'groups'} onClick={() => { setChatKind('groups'); setSelectedFolderId(null) }} />
             {allFolders.length > 0 && (
-              <Chip label="Folders" active={chatKind === 'folders'} onClick={() => setChatKind('folders')} />
+              <Chip
+                label="Folders"
+                active={chatKind === 'folders'}
+                onClick={() => {
+                  setChatKind('folders')
+                  if (selectedFolderId === null && allFolders.length > 0) {
+                    setSelectedFolderId(allFolders[0].id)
+                  }
+                }}
+              />
             )}
           </div>
         </div>
 
-        {chatKind === 'folders' && selectedFolderId === null && (
-          <div className="p-2 space-y-1 overflow-y-auto max-h-40 border-b border-border">
-            <div className="text-[11px] text-muted px-2 py-1 font-semibold uppercase">Telegram Folders</div>
-            {allFolders.map((f: any) => (
-              <button
-                key={f.id}
-                onClick={() => setSelectedFolderId(f.id)}
-                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12px] hover:bg-tile text-text"
-              >
-                <Folder size={14} className="text-primary" />
-                <span className="truncate">{f.title || f.name}</span>
-              </button>
-            ))}
+        {chatKind === 'folders' && allFolders.length > 0 && (
+          <div className="p-2 space-y-1 overflow-y-auto max-h-48 border-b border-border bg-panel/30">
+            <div className="text-[11px] text-muted px-2 py-1 font-semibold uppercase flex items-center justify-between">
+              <span>Telegram Folders</span>
+              <span className="text-[10px] lowercase text-text-2">
+                {filteredChats.length} {filteredChats.length === 1 ? 'chat' : 'chats'}
+              </span>
+            </div>
+            {allFolders.map((f: any) => {
+              const activeFolder = (selectedFolderId ?? allFolders[0]?.id) === f.id
+              const countInFolder = allChats.filter((c) => Array.isArray(c.folders) && c.folders.includes(f.id)).length
+              return (
+                <button
+                  key={f.id}
+                  onClick={() => setSelectedFolderId(f.id)}
+                  className={`flex w-full items-center justify-between gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12px] transition-colors ${
+                    activeFolder ? 'bg-primary/20 text-primary font-semibold border border-primary/30' : 'hover:bg-tile text-text'
+                  }`}
+                >
+                  <div className="flex items-center gap-2 min-w-0">
+                    <Folder size={14} className={activeFolder ? 'text-primary' : 'text-muted'} />
+                    <span className="truncate">{f.title || f.name}</span>
+                  </div>
+                  <span className={`text-[10.5px] tabular-nums px-1.5 py-0.5 rounded ${activeFolder ? 'bg-primary/25 text-primary' : 'text-muted'}`}>
+                    {countInFolder}
+                  </span>
+                </button>
+              )
+            })}
           </div>
         )}
 
@@ -1042,7 +1209,7 @@ export default function Downloads() {
             </div>
           ) : filteredChats.length === 0 ? (
             <div className="py-8 text-center text-muted text-[12px]">
-              <p>No chats found</p>
+              <p>{chatKind === 'folders' ? 'No chats in this folder' : 'No chats found'}</p>
               <Button variant="secondary" className="mt-2 text-[11px] py-1 px-3" onClick={() => setOpenChat(true)}>Connect Channel</Button>
             </div>
           ) : (
@@ -1053,7 +1220,8 @@ export default function Downloads() {
                   key={c.id}
                   onClick={() => {
                     if (c.id !== activeChatId) {
-                      setView('files')
+                      const savedMode = chatViewModes[c.id] || 'files'
+                      setView(savedMode)
                     }
                     setChatId(c.id)
                     setSelectedIds([])
@@ -1115,7 +1283,7 @@ export default function Downloads() {
         <div className="flex items-center gap-2">
           <Button
             variant={view === 'files' ? 'primary' : 'secondary'}
-            onClick={() => setView('files')}
+            onClick={() => handleSetView('files')}
             className="flex items-center gap-1.5"
           >
             <FileText size={15} />
@@ -1123,7 +1291,7 @@ export default function Downloads() {
           </Button>
           <Button
             variant={view === 'chat' ? 'primary' : 'secondary'}
-            onClick={() => setView('chat')}
+            onClick={() => handleSetView('chat')}
             className="flex items-center gap-1.5"
           >
             <MessageSquare size={15} />
@@ -1199,7 +1367,7 @@ export default function Downloads() {
               )}
             </div>
             {scan.state !== 'failed' && (
-              <div className="mt-1.5 h-1.5 w-full rounded-full bg-[#1e2a47] overflow-hidden">
+              <div className="mt-1.5 h-1.5 w-full rounded-full bg-border/60 overflow-hidden">
                 <div
                   className={`h-full rounded-full transition-all duration-300 ${scan.total ? 'bg-primary' : 'w-1/2 animate-pulse bg-primary/70'}`}
                   style={scan.total ? { width: `${scanPct}%` } : undefined}
@@ -1240,7 +1408,7 @@ export default function Downloads() {
                 <div className="relative">
                   <button
                     onClick={() => setChannelMenuOpen(!channelMenuOpen)}
-                    className="flex size-8 items-center justify-center rounded-lg border border-border bg-tile text-muted hover:text-white hover:border-primary transition-colors"
+                    className="flex size-8 items-center justify-center rounded-lg border border-border bg-tile text-muted hover:text-text hover:border-primary transition-colors cursor-pointer"
                     title="Channel Actions"
                   >
                     <MoreVertical size={16} />
@@ -1249,7 +1417,7 @@ export default function Downloads() {
                     <>
                       <div className="fixed inset-0 z-40" onClick={() => setChannelMenuOpen(false)} />
                       <div
-                        className="absolute right-0 top-full mt-1.5 z-50 w-48 rounded-xl border border-border bg-[#182533] p-1.5 shadow-2xl backdrop-blur-xl space-y-0.5"
+                        className="absolute right-0 top-full mt-1.5 z-50 w-48 rounded-xl border border-border bg-panel p-1.5 shadow-2xl backdrop-blur-xl space-y-0.5"
                         onClick={() => setChannelMenuOpen(false)}
                       >
                         {activeChat.username && (
@@ -1414,10 +1582,10 @@ export default function Downloads() {
               ) : (
                 <div className="overflow-x-auto">
                   <table className="w-full text-[13px]">
-                    <thead className="border-b border-white/[0.08] text-[12px] text-muted">
+                    <thead className="border-b border-border text-[12px] text-muted">
                       <tr>
                         <th className="py-2.5 px-1 text-center w-10">
-                          <button onClick={toggleSelectAll} className="text-muted hover:text-white">
+                          <button onClick={toggleSelectAll} className="text-muted hover:text-text">
                             {selectedIds.length === mediaItems.length && mediaItems.length > 0 ? (
                               <CheckSquare size={15} className="text-primary" />
                             ) : (
@@ -1435,13 +1603,13 @@ export default function Downloads() {
                         <th className="py-2.5 px-3 text-right w-24 font-medium">Action</th>
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-white/[0.05]">
+                    <tbody className="divide-y divide-border">
                       {mediaItems.map((m: any, i: number) => {
                         const isSelected = selectedIds.includes(m.messageId)
                         return (
-                          <tr key={m.messageId} className={`hover:bg-white/[0.03] transition-colors ${isSelected ? 'bg-primary/10' : ''}`}>
+                          <tr key={m.messageId} className={`hover:bg-tile/70 transition-colors ${isSelected ? 'bg-primary/10' : ''}`}>
                             <td className="py-2.5 px-1 text-center">
-                              <button onClick={() => toggleSelect(m.messageId)} className="text-muted hover:text-white">
+                              <button onClick={() => toggleSelect(m.messageId)} className="text-muted hover:text-text">
                                 {isSelected ? <CheckSquare size={15} className="text-primary" /> : <Square size={15} />}
                               </button>
                             </td>
@@ -1449,6 +1617,11 @@ export default function Downloads() {
                             <td
                               className="py-2.5 px-2 text-center cursor-pointer hover:opacity-80 transition-opacity"
                               title="Click for preview"
+                              onMouseEnter={() => {
+                                if ((m.type === 'video' || m.type === 'video_note') && m.messageId && activeChatId) {
+                                  call('media.prepare', { chatId: activeChatId, messageId: m.messageId }).catch(() => {})
+                                }
+                              }}
                               onClick={() => setPreviewItem({ name: m.name, path: m.path, thumb: m.thumb, type: m.type, size: m.size, duration: m.duration, chatId: activeChatId || m.chatId, messageId: m.messageId })}
                             >
                               <div className="flex justify-center">
@@ -1459,6 +1632,11 @@ export default function Downloads() {
                               <div
                                 className="font-medium truncate text-text cursor-pointer hover:text-primary transition-colors text-[13px]"
                                 title={m.name}
+                                onMouseEnter={() => {
+                                  if ((m.type === 'video' || m.type === 'video_note') && m.messageId && activeChatId) {
+                                    call('media.prepare', { chatId: activeChatId, messageId: m.messageId }).catch(() => {})
+                                  }
+                                }}
                                 onClick={() => setPreviewItem({ name: m.name, path: m.path, thumb: m.thumb, type: m.type, size: m.size, duration: m.duration, chatId: activeChatId || m.chatId, messageId: m.messageId })}
                               >
                                 {m.name}
@@ -1490,7 +1668,7 @@ export default function Downloads() {
                                   )}
                                   <button
                                     onClick={() => downloadItems([{ chatId: activeChatId!, messageId: m.messageId }], true)}
-                                    className="rounded p-1.5 text-muted hover:text-primary hover:bg-white/10 transition-colors"
+                                    className="rounded p-1.5 text-muted hover:text-primary hover:bg-tile transition-colors"
                                     title="Download again"
                                   >
                                     <RotateCcw size={15} />
@@ -1499,7 +1677,7 @@ export default function Downloads() {
                               ) : (
                                   <button
                                     onClick={(e) => downloadItems([{ chatId: activeChatId!, messageId: m.messageId }], false, e)}
-                                    className="rounded p-1.5 text-muted hover:text-primary hover:bg-white/10 transition-colors"
+                                    className="rounded p-1.5 text-muted hover:text-primary hover:bg-tile transition-colors"
                                     title="Download"
                                   >
                                   <Download size={16} />
@@ -1531,6 +1709,7 @@ export default function Downloads() {
           <ChatView
             chatId={activeChatId!}
             activeChat={activeChat}
+            allChats={allChats}
             me={me}
             messages={msgData?.messages ?? []}
             hasMore={Boolean(msgData?.more)}

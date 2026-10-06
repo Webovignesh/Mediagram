@@ -8,7 +8,7 @@ import { Panel, SearchInput, Chip, Button, Empty, ErrorState, Skeleton, Paginati
 function Sparkline({ data }: { data: number[] }) {
   if (!data || data.length < 2) {
     return (
-      <div className="flex h-12 w-full items-center justify-center rounded-lg border border-dashed border-white/10 bg-white/[0.02] text-[11px] text-muted">
+      <div className="flex h-12 w-full items-center justify-center rounded-lg border border-dashed border-border bg-tile/40 text-[11px] text-muted">
         Awaiting transfer activity…
       </div>
     )
@@ -23,16 +23,16 @@ function Sparkline({ data }: { data: number[] }) {
   }).join(' ')
 
   return (
-    <div className="relative h-12 w-full overflow-hidden rounded-lg bg-black/20 p-1">
+    <div className="relative h-12 w-full overflow-hidden rounded-lg bg-bg/50 border border-border p-1">
       <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" className="h-full w-full overflow-visible">
         <defs>
           <linearGradient id="sparkGrad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#38bdf8" stopOpacity="0.4" />
-            <stop offset="100%" stopColor="#38bdf8" stopOpacity="0.0" />
+            <stop offset="0%" stopColor="var(--color-primary, #0284c7)" stopOpacity="0.4" />
+            <stop offset="100%" stopColor="var(--color-primary, #0284c7)" stopOpacity="0.0" />
           </linearGradient>
         </defs>
         <polygon points={`0,${height} ${points} ${width},${height}`} fill="url(#sparkGrad)" />
-        <polyline points={points} fill="none" stroke="#38bdf8" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+        <polyline points={points} fill="none" stroke="var(--color-primary, #0284c7)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
       </svg>
     </div>
   )
@@ -137,7 +137,7 @@ export default function Queue() {
       <div className="flex-1 p-6 space-y-4 overflow-y-auto">
         <div className="flex items-center justify-between pr-40">
           <div>
-            <h1 className="text-[26px] font-bold text-white tracking-wide">Queue</h1>
+            <h1 className="text-[26px] font-bold text-text tracking-wide">Queue</h1>
             <p className="mt-0.5 text-[13px] text-text-2">What is running now, and what is waiting in line</p>
           </div>
         </div>
@@ -153,10 +153,10 @@ export default function Queue() {
             <button
               key={value}
               onClick={() => { setTab(value as any); setStatus('open'); setPage(1); setSelectedIds([]) }}
-              className={`flex items-center gap-2 rounded-xl px-4 py-2 text-[13px] font-medium transition-all ${
+              className={`flex items-center gap-2 rounded-xl px-4 py-2 text-[13px] font-medium transition-all cursor-pointer ${
                 tab === value
                   ? 'bg-primary text-white shadow-sm ring-1 ring-primary/40'
-                  : 'border border-white/[0.08] bg-[#0c142b]/60 text-text-2 hover:border-white/20 hover:text-white hover:bg-white/[0.04]'
+                  : 'border border-border bg-tile text-text-2 hover:border-primary/40 hover:text-text hover:bg-tile/80'
               }`}
             >
               <Icon size={15} />
@@ -199,13 +199,13 @@ export default function Queue() {
               <Button variant="secondary" onClick={() => jobAction('resume', selectedIds)} className="py-1 px-3 text-[12px]">Resume</Button>
               <Button variant="secondary" onClick={() => jobAction('retry', selectedIds)} className="py-1 px-3 text-[12px]">Retry</Button>
               <Button variant="tint" tone="danger" onClick={() => jobAction('cancel', selectedIds)} className="py-1 px-3 text-[12px]">Cancel</Button>
-              <button onClick={() => setSelectedIds([])} className="text-[12px] text-muted hover:text-white ml-2 underline">Clear</button>
+              <button onClick={() => setSelectedIds([])} className="text-[12px] text-muted hover:text-text ml-2 underline cursor-pointer">Clear</button>
             </div>
           </div>
         )}
 
         {/* Table Panel */}
-        <div className="rounded-xl border border-white/[0.08] bg-[#0c1530]/85 backdrop-blur-md p-4 shadow-sm">
+        <div className="rounded-xl border border-border bg-panel backdrop-blur-md p-4 shadow-sm">
           {jobsErr ? (
             <ErrorState error={jobsErr} onRetry={reloadJobs} />
           ) : !jobs ? (
@@ -221,10 +221,10 @@ export default function Queue() {
           ) : (
             <div className="space-y-3 overflow-x-auto">
               <table className="w-full text-[13px] table-fixed">
-                <thead className="border-b border-white/[0.08] text-[12px] text-muted">
+                <thead className="border-b border-border text-[12px] text-muted">
                   <tr>
                     <th className="py-2.5 px-1 text-center w-10">
-                      <button onClick={toggleSelectAll} className="text-muted hover:text-white">
+                      <button onClick={toggleSelectAll} className="text-muted hover:text-text cursor-pointer">
                         {selectedIds.length === jobList.length && jobList.length > 0 ? (
                           <CheckSquare size={15} className="text-primary" />
                         ) : (
@@ -241,13 +241,13 @@ export default function Queue() {
                     <th className="py-2.5 px-3 text-right w-28">Actions</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-white/[0.05]">
+                <tbody className="divide-y divide-border/30">
                   {jobList.map((j: any, i: number) => {
                     const isSelected = selectedIds.includes(j.id)
                     return (
-                      <tr key={j.id} className={`hover:bg-white/[0.03] transition-colors ${isSelected ? 'bg-primary/10' : ''}`}>
+                      <tr key={j.id} className={`hover:bg-tile/50 transition-colors ${isSelected ? 'bg-primary/10' : ''}`}>
                         <td className="py-2.5 px-1 text-center">
-                          <button onClick={() => toggleSelect(j.id)} className="text-muted hover:text-white">
+                          <button onClick={() => toggleSelect(j.id)} className="text-muted hover:text-text cursor-pointer">
                             {isSelected ? <CheckSquare size={15} className="text-primary" /> : <Square size={15} />}
                           </button>
                         </td>
@@ -276,33 +276,33 @@ export default function Queue() {
                         </td>
                         <td className="py-2.5 px-2 text-right tabular-nums text-[12px]">
                           {j.status === 'active' && j.speed > 0 && (
-                            <span className="text-cyan block text-[11px] font-semibold">{fmtSpeed(j.speed)}</span>
+                            <span className="text-primary block text-[11px] font-semibold">{fmtSpeed(j.speed)}</span>
                           )}
                           <span className="text-muted">{j.eta ? fmtEta(j.eta) : '-'}</span>
                         </td>
                         <td className="py-2.5 px-3 text-right">
                           <div className="flex items-center justify-end gap-1">
                             {j.status === 'active' && (
-                              <button onClick={() => jobAction('pause', [j.id])} className="rounded p-1.5 hover:bg-white/10 text-muted hover:text-white transition-colors" title="Pause">
+                              <button onClick={() => jobAction('pause', [j.id])} className="rounded p-1.5 hover:bg-tile text-muted hover:text-text transition-colors cursor-pointer" title="Pause">
                                 <Pause size={14} />
                               </button>
                             )}
                             {j.status === 'paused' && (
-                              <button onClick={() => jobAction('resume', [j.id])} className="rounded p-1.5 hover:bg-white/10 text-muted hover:text-white transition-colors" title="Resume">
+                              <button onClick={() => jobAction('resume', [j.id])} className="rounded p-1.5 hover:bg-tile text-muted hover:text-text transition-colors cursor-pointer" title="Resume">
                                 <Play size={14} />
                               </button>
                             )}
                             {j.status === 'failed' && (
-                              <button onClick={() => jobAction('retry', [j.id])} className="rounded p-1.5 hover:bg-warning/20 text-warning transition-colors" title="Retry">
+                              <button onClick={() => jobAction('retry', [j.id])} className="rounded p-1.5 hover:bg-warning/20 text-warning transition-colors cursor-pointer" title="Retry">
                                 <RotateCcw size={14} />
                               </button>
                             )}
                             {j.status === 'completed' && j.path && (
-                              <button onClick={() => revealFile(j.path)} className="rounded p-1.5 text-primary hover:bg-primary/20 transition-colors" title="Show in folder">
+                              <button onClick={() => revealFile(j.path)} className="rounded p-1.5 text-primary hover:bg-primary/20 transition-colors cursor-pointer" title="Show in folder">
                                 <FolderOpen size={14} />
                               </button>
                             )}
-                            <button onClick={() => jobAction('cancel', [j.id])} className="rounded p-1.5 hover:bg-danger/20 text-muted hover:text-danger transition-colors" title="Remove">
+                            <button onClick={() => jobAction('cancel', [j.id])} className="rounded p-1.5 hover:bg-danger/20 text-muted hover:text-danger transition-colors cursor-pointer" title="Remove">
                               <X size={14} />
                             </button>
                           </div>
@@ -314,7 +314,7 @@ export default function Queue() {
               </table>
 
               {jobs.total > 25 && (
-                <div className="pt-3 border-t border-white/[0.08]">
+                <div className="pt-3 border-t border-border">
                   <Pagination page={page} pageSize={25} total={jobs.total} onPage={setPage} />
                 </div>
               )}
@@ -324,22 +324,22 @@ export default function Queue() {
       </div>
 
       {/* Right column (~290px) */}
-      <div className="w-[300px] shrink-0 border-l border-white/[0.08] bg-[#070d1d]/60 p-4 space-y-4 overflow-y-auto">
+      <div className="w-[300px] shrink-0 border-l border-border bg-sidebar/50 p-4 space-y-4 overflow-y-auto">
         <Panel title="Queue Overview">
           <div className="grid grid-cols-2 gap-2">
-            <div className="flex flex-col justify-between rounded-xl border border-white/[0.08] bg-[#0c142b]/80 p-3 hover:border-white/20 transition-colors">
+            <div className="flex flex-col justify-between rounded-xl border border-border bg-tile p-3 hover:border-primary/40 transition-colors">
               <div className="flex items-center justify-between text-muted">
                 <span className="text-[10px] font-bold tracking-wider uppercase">Total</span>
-                <span className="grid size-6 place-items-center rounded-md bg-cyan/15 text-cyan">
+                <span className="grid size-6 place-items-center rounded-md bg-primary/15 text-primary">
                   <FileText size={13} />
                 </span>
               </div>
-              <div className="mt-2 text-[20px] font-bold tabular-nums text-white">
+              <div className="mt-2 text-[20px] font-bold tabular-nums text-text">
                 {Object.values(currentCounts).reduce((a, b) => a + b, 0)}
               </div>
             </div>
 
-            <div className="flex flex-col justify-between rounded-xl border border-white/[0.08] bg-[#0c142b]/80 p-3 hover:border-white/20 transition-colors">
+            <div className="flex flex-col justify-between rounded-xl border border-border bg-tile p-3 hover:border-primary/40 transition-colors">
               <div className="flex items-center justify-between text-muted">
                 <span className="text-[10px] font-bold tracking-wider uppercase">{tab === 'uploads' ? 'Uploading' : 'Active'}</span>
                 <span className="grid size-6 place-items-center rounded-md bg-success/15 text-success">
@@ -351,7 +351,7 @@ export default function Queue() {
               </div>
             </div>
 
-            <div className="flex flex-col justify-between rounded-xl border border-white/[0.08] bg-[#0c142b]/80 p-3 hover:border-white/20 transition-colors">
+            <div className="flex flex-col justify-between rounded-xl border border-border bg-tile p-3 hover:border-primary/40 transition-colors">
               <div className="flex items-center justify-between text-muted">
                 <span className="text-[10px] font-bold tracking-wider uppercase">Queued</span>
                 <span className="grid size-6 place-items-center rounded-md bg-upload/15 text-upload">
@@ -363,7 +363,7 @@ export default function Queue() {
               </div>
             </div>
 
-            <div className="flex flex-col justify-between rounded-xl border border-white/[0.08] bg-[#0c142b]/80 p-3 hover:border-white/20 transition-colors">
+            <div className="flex flex-col justify-between rounded-xl border border-border bg-tile p-3 hover:border-primary/40 transition-colors">
               <div className="flex items-center justify-between text-muted">
                 <span className="text-[10px] font-bold tracking-wider uppercase">Paused</span>
                 <span className="grid size-6 place-items-center rounded-md bg-warning/15 text-warning">
@@ -381,30 +381,30 @@ export default function Queue() {
           {liveStats && (
             <div className="space-y-3.5">
               <Sparkline data={liveStats.history || []} />
-              <div className="rounded-xl border border-white/[0.06] bg-[#0c142b]/60 p-3 text-center">
+              <div className="rounded-xl border border-border bg-tile p-3 text-center">
                 <div className="flex items-center justify-center gap-2">
-                  <span className={`size-2 rounded-full ${((liveStats.speed?.download || 0) + (liveStats.speed?.upload || 0)) > 0 ? 'bg-cyan animate-pulse' : 'bg-muted'}`} />
-                  <span className="text-[22px] font-bold tabular-nums text-cyan tracking-tight">
+                  <span className={`size-2 rounded-full ${((liveStats.speed?.download || 0) + (liveStats.speed?.upload || 0)) > 0 ? 'bg-primary animate-pulse' : 'bg-muted'}`} />
+                  <span className="text-[22px] font-bold tabular-nums text-primary tracking-tight">
                     {fmtSpeed((liveStats.speed?.download || 0) + (liveStats.speed?.upload || 0))}
                   </span>
                 </div>
                 <div className="mt-0.5 text-[11px] text-muted font-medium">Network throughput</div>
               </div>
 
-              <div className="flex items-center justify-around gap-1 rounded-lg border border-white/[0.06] bg-black/20 p-2 text-[11px]">
+              <div className="flex items-center justify-around gap-1 rounded-lg border border-border bg-bg/60 p-2 text-[11px]">
                 <span className="flex items-center gap-1.5 font-medium text-text-2">
                   <span className="size-2 rounded-full bg-success" />
-                  <span className="tabular-nums font-bold text-white">{(counts.download?.active || 0) + (counts.upload?.active || 0)}</span> Active
+                  <span className="tabular-nums font-bold text-text">{(counts.download?.active || 0) + (counts.upload?.active || 0)}</span> Active
                 </span>
-                <span className="text-white/10">|</span>
+                <span className="text-border">|</span>
                 <span className="flex items-center gap-1.5 font-medium text-text-2">
                   <span className="size-2 rounded-full bg-upload" />
-                  <span className="tabular-nums font-bold text-white">{(counts.download?.queued || 0) + (counts.upload?.queued || 0)}</span> Queued
+                  <span className="tabular-nums font-bold text-text">{(counts.download?.queued || 0) + (counts.upload?.queued || 0)}</span> Queued
                 </span>
-                <span className="text-white/10">|</span>
+                <span className="text-border">|</span>
                 <span className="flex items-center gap-1.5 font-medium text-text-2">
                   <span className="size-2 rounded-full bg-warning" />
-                  <span className="tabular-nums font-bold text-white">{(counts.download?.paused || 0) + (counts.upload?.paused || 0)}</span> Paused
+                  <span className="tabular-nums font-bold text-text">{(counts.download?.paused || 0) + (counts.upload?.paused || 0)}</span> Paused
                 </span>
               </div>
             </div>
@@ -415,28 +415,28 @@ export default function Queue() {
           <div className="grid grid-cols-2 gap-2">
             <button
               onClick={() => jobAction('pause')}
-              className="flex items-center justify-center gap-2 rounded-lg border border-white/[0.08] bg-[#0f1a38] px-3 py-2 text-[12px] font-medium text-text-2 hover:border-warning/40 hover:text-warning hover:bg-warning/10 transition-colors"
+              className="flex items-center justify-center gap-2 rounded-lg border border-border bg-tile px-3 py-2 text-[12px] font-medium text-text-2 hover:border-warning/40 hover:text-warning hover:bg-warning/10 transition-colors cursor-pointer"
             >
               <Pause size={13} className="text-warning" />
               <span>Pause All</span>
             </button>
             <button
               onClick={() => jobAction('resume')}
-              className="flex items-center justify-center gap-2 rounded-lg border border-white/[0.08] bg-[#0f1a38] px-3 py-2 text-[12px] font-medium text-text-2 hover:border-success/40 hover:text-success hover:bg-success/10 transition-colors"
+              className="flex items-center justify-center gap-2 rounded-lg border border-border bg-tile px-3 py-2 text-[12px] font-medium text-text-2 hover:border-success/40 hover:text-success hover:bg-success/10 transition-colors cursor-pointer"
             >
               <Play size={13} className="text-success" />
               <span>Resume All</span>
             </button>
             <button
               onClick={() => jobAction('clear-completed')}
-              className="flex items-center justify-center gap-2 rounded-lg border border-white/[0.08] bg-[#0f1a38] px-3 py-2 text-[12px] font-medium text-text-2 hover:border-white/20 hover:text-white hover:bg-white/[0.06] transition-colors"
+              className="flex items-center justify-center gap-2 rounded-lg border border-border bg-tile px-3 py-2 text-[12px] font-medium text-text-2 hover:border-border hover:text-text hover:bg-tile/80 transition-colors cursor-pointer"
             >
               <CheckCircle2 size={13} className="text-muted" />
               <span>Clear Done</span>
             </button>
             <button
               onClick={clearAll}
-              className="flex items-center justify-center gap-2 rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-[12px] font-medium text-danger hover:border-danger hover:bg-danger/20 transition-colors"
+              className="flex items-center justify-center gap-2 rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-[12px] font-medium text-danger hover:border-danger hover:bg-danger/20 transition-colors cursor-pointer"
             >
               <Trash2 size={13} className="text-danger" />
               <span>Clear All</span>

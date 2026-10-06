@@ -199,7 +199,7 @@ export default function Library() {
           <span className="block truncate">
             Scanning the download folder…{lib ? ` ${lib.stats.files.toLocaleString()} files indexed so far` : ''}
           </span>
-          <div className="mt-1.5 h-1.5 w-full rounded-full bg-[#1e2a47] overflow-hidden">
+          <div className="mt-1.5 h-1.5 w-full rounded-full bg-border/60 overflow-hidden">
             <div className="h-full w-1/2 animate-pulse rounded-full bg-primary/70" />
           </div>
         </div>

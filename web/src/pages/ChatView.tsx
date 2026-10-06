@@ -3,11 +3,18 @@ import { createPortal } from 'react-dom'
 import {
   Send, Paperclip, Smile, Reply, Edit3, Pin, Trash2, Copy, Check, Clock, AlertCircle,
   MoreVertical, X, ChevronDown, Download, FolderOpen, Film, Play, FileText, CornerDownRight,
-  ExternalLink, Sparkles, Music
+  ExternalLink, Sparkles, Music, CornerUpRight, Eye, Volume2, Search
 } from 'lucide-react'
-import { call } from '../api.ts'
-import { Avatar, Dialog, toast, fmtBytes, fmtDuration, MediagramLogo, CheckDuplicatesModal } from '../ui.tsx'
+import { call, on } from '../api.ts'
+import { Avatar, Dialog, toast, fmtBytes, fmtDuration, MediagramLogo, CheckDuplicatesModal, ChatMediaThumb } from '../ui.tsx'
 import type { Message, TextEntity, ReactionItem } from '../../../core/shapes.ts'
+
+function fmtViews(views?: number | null): string {
+  if (!views || views <= 0) return ''
+  if (views >= 1_000_000) return (views / 1_000_000).toFixed(1).replace(/\.0$/, '') + 'M'
+  if (views >= 1000) return (views / 1000).toFixed(1).replace(/\.0$/, '') + 'K'
+  return String(views)
+}
 
 const QUICK_REACTIONS = ['👍', '❤️', '🔥', '🎉', '😂', '👏', '😢', '😍']
 
@@ -121,10 +128,10 @@ export function FormattedMessageText({
             )
           }
           if (part.startsWith('**') && part.endsWith('**')) {
-            return <strong key={i} className="font-bold text-white">{part.slice(2, -2)}</strong>
+            return <strong key={i} className="font-bold text-text">{part.slice(2, -2)}</strong>
           }
           if (part.startsWith('*') && part.endsWith('*')) {
-            return <em key={i} className="italic text-slate-200">{part.slice(1, -1)}</em>
+            return <em key={i} className="italic text-text/90">{part.slice(1, -1)}</em>
           }
           if (part.startsWith('__') && part.endsWith('__')) {
             return <u key={i} className="underline underline-offset-2">{part.slice(2, -2)}</u>
@@ -180,10 +187,10 @@ export function FormattedMessageText({
 
     switch (entity.type) {
       case 'bold':
-        segments.push(<strong key={key} className="font-bold text-white">{content}</strong>)
+        segments.push(<strong key={key} className="font-bold text-text">{content}</strong>)
         break
       case 'italic':
-        segments.push(<em key={key} className="italic text-slate-200">{content}</em>)
+        segments.push(<em key={key} className="italic text-text/90">{content}</em>)
         break
       case 'underline':
         segments.push(<u key={key} className="underline underline-offset-2">{content}</u>)
@@ -291,6 +298,7 @@ export function FormattedMessageText({
 interface ChatViewProps {
   chatId: number
   activeChat: any
+  allChats?: any[]
   me: any
   messages: any[]
   hasMore: boolean
@@ -308,6 +316,7 @@ interface ChatViewProps {
 export function ChatView({
   chatId,
   activeChat,
+  allChats = [],
   me,
   messages,
   hasMore,
@@ -325,6 +334,10 @@ export function ChatView({
   const [sending, setSending] = useState(false)
   const [replyingTo, setReplyingTo] = useState<any | null>(null)
   const [editingMessage, setEditingMessage] = useState<any | null>(null)
+  const [forwardingMessage, setForwardingMessage] = useState<any | null>(null)
+  const [forwardSearch, setForwardSearch] = useState('')
+  const [sendAsCopy, setSendAsCopy] = useState(false)
+  const [forwardingTargetId, setForwardingTargetId] = useState<number | null>(null)
   const [chatMsgSearch, setChatMsgSearch] = useState('')
   const [mediaOnly, setMediaOnly] = useState(false)
   const [showScrollBottom, setShowScrollBottom] = useState(false)
@@ -332,6 +345,23 @@ export function ChatView({
   const [emojiCategory, setEmojiCategory] = useState<'smileys' | 'gestures' | 'hearts'>('smileys')
   const [optimisticReactions, setOptimisticReactions] = useState<Record<number, ReactionItem[]>>({})
   const [chatUploads, setChatUploads] = useState<ChatUploadItem[]>([])
+
+  // Reconcile optimistic reactions on messages update or chat switch
+  useEffect(() => {
+    setOptimisticReactions({})
+  }, [messages, chatId])
+
+  // Direct subscription to live messages invalidation for instant update
+  useEffect(() => {
+    if (!chatId) return
+    const targetTopic = `messages:${chatId}`
+    const unsub = on((event) => {
+      if (event.type === 'invalidate' && event.topics.includes(targetTopic)) {
+        onReload()
+      }
+    })
+    return unsub
+  }, [chatId, onReload])
 
   // Live in-chat upload progress polling
   useEffect(() => {
@@ -384,16 +414,42 @@ export function ChatView({
   const emojiPickerRef = useRef<HTMLDivElement | null>(null)
   const lastTypingTime = useRef<number>(0)
 
-  // Reset reply/edit state on chat change
+  // Reset reply/edit/forward state on chat change
   useEffect(() => {
     setReplyingTo(null)
     setEditingMessage(null)
+    setForwardingMessage(null)
     setInputText('')
     setContextMenu(null)
     setEmojiPickerOpen(false)
     setOptimisticReactions({})
     setChatUploads([])
   }, [chatId])
+
+  function handleSelectForward(m: any) {
+    setForwardingMessage(m)
+    setForwardSearch('')
+    setSendAsCopy(false)
+  }
+
+  async function handleConfirmForward(targetChat: any) {
+    if (!forwardingMessage) return
+    setForwardingTargetId(targetChat.id)
+    try {
+      await call('messages.forward', {
+        fromChatId: chatId,
+        toChatId: targetChat.id,
+        messageIds: [forwardingMessage.id],
+        sendCopy: sendAsCopy,
+      })
+      toast(`Message forwarded to ${targetChat.title}`)
+      setForwardingMessage(null)
+    } catch (err: any) {
+      toast(err?.message || 'Failed to forward message', 'danger')
+    } finally {
+      setForwardingTargetId(null)
+    }
+  }
 
   // Click outside to close emoji picker
   useEffect(() => {
@@ -532,7 +588,8 @@ export function ChatView({
     setTimeout(() => scrollToBottom('smooth'), 50)
 
     try {
-      const paths = fileList.map((f) => (window as any).teleflow?.pathOf?.(f) || (f as any).path || f.name).filter(Boolean)
+      const bridge = (window as any).mediagram || (window as any).teleflow
+      const paths = fileList.map((f) => bridge?.pathOf?.(f) || (f as any).path || f.name).filter(Boolean)
       if (!paths.length) {
         toast('Could not read file path for upload', 'danger')
         setChatUploads((prev) => prev.filter((item) => !newItems.some((n) => n.id === item.id)))
@@ -690,9 +747,9 @@ export function ChatView({
     const el = document.getElementById(`msg-${msgId}`)
     if (el) {
       el.scrollIntoView({ behavior: 'smooth', block: 'center' })
-      el.classList.add('ring-2', 'ring-cyan', 'ring-offset-2', 'ring-offset-[#0c1424]')
+      el.classList.add('ring-2', 'ring-primary', 'ring-offset-2', 'ring-offset-panel')
       setTimeout(() => {
-        el.classList.remove('ring-2', 'ring-cyan', 'ring-offset-2', 'ring-offset-[#0c1424]')
+        el.classList.remove('ring-2', 'ring-primary', 'ring-offset-2', 'ring-offset-panel')
       }, 1500)
     } else {
       toast(`Message #${msgId} is further up in history`, 'info')
@@ -718,6 +775,7 @@ export function ChatView({
     }
   }, [])
 
+  const isChannel = activeChat?.kind === 'channel'
   const canPost = activeChat?.canPost !== false
 
   return (
@@ -732,12 +790,12 @@ export function ChatView({
       />
 
       {/* Chat View Header */}
-      <div className="flex items-center justify-between gap-3 pb-3 border-b border-white/[0.08] mb-2 flex-wrap bg-[#0c1424]/90 z-20">
+      <div className="flex items-center justify-between gap-3 pb-3 border-b border-border mb-2 flex-wrap bg-panel/90 z-20">
         <div className="flex items-center gap-3 min-w-0">
           <Avatar src={activeChat?.photo} name={activeChat?.title || 'Chat'} size={40} />
           <div className="min-w-0">
             <div className="flex items-center gap-2">
-              <span className="text-[14.5px] font-bold text-white truncate leading-tight tracking-wide">
+              <span className="text-[14.5px] font-bold text-text truncate leading-tight tracking-wide">
                 {activeChat?.title || 'Chat'}
               </span>
               {activeChat?.pinnedMessageId && (
@@ -819,7 +877,7 @@ export function ChatView({
           const isNearBottom = target.scrollHeight - target.scrollTop - target.clientHeight < 120
           setShowScrollBottom(!isNearBottom)
         }}
-        className="flex-1 overflow-y-auto space-y-3.5 pr-2 select-text"
+        className="flex-1 overflow-y-auto overflow-x-hidden space-y-3.5 pr-2 select-text"
       >
         {/* Load older messages button */}
         {hasMore && (
@@ -859,7 +917,7 @@ export function ChatView({
                   <React.Fragment key={m.id}>
                     {showDateDivider && (
                       <div className="flex justify-center my-4 select-none">
-                        <span className="rounded-full bg-[#182533] px-3.5 py-1 text-[11px] font-semibold text-slate-300 shadow border border-white/10">
+                        <span className="rounded-full bg-tile/90 px-3.5 py-1 text-[11px] font-semibold text-text-2 shadow border border-border">
                           {currentDateGroup}
                         </span>
                       </div>
@@ -872,8 +930,7 @@ export function ChatView({
                       <div className={`relative flex flex-col ${isOut ? 'items-end' : 'items-start'} max-w-[85%]`}>
                         <div className="relative inline-flex flex-col items-center">
                           <div
-                            className="animate-emoji-standalone cursor-pointer transition-transform hover:scale-125 active:scale-95 text-[68px] leading-none select-none filter drop-shadow-[0_8px_18px_rgba(0,0,0,0.65)] my-1"
-                            title="Animated Emoji"
+                            className="animate-emoji-standalone cursor-pointer active:scale-95 text-[68px] leading-none select-none filter drop-shadow-[0_8px_18px_rgba(0,0,0,0.65)] my-1"
                           >
                             <span className="emoji-glyph">{m.text}</span>
                           </div>
@@ -883,7 +940,7 @@ export function ChatView({
                             {m.editDate && <span className="italic text-[9px] text-muted">edited</span>}
                             <span>{getMessageTime(m.date)}</span>
                             {isOut && (
-                              <span className="flex items-center leading-none text-cyan font-bold text-[10.5px]">
+                              <span className="flex items-center leading-none text-primary font-bold text-[10.5px]">
                                 {m.deliveryStatus === 'read' ? '✓✓' : '✓'}
                               </span>
                             )}
@@ -899,114 +956,270 @@ export function ChatView({
                 <React.Fragment key={m.id}>
                   {showDateDivider && (
                     <div className="flex justify-center my-4 select-none">
-                      <span className="rounded-full bg-[#182533] px-3.5 py-1 text-[11px] font-semibold text-slate-300 shadow border border-white/10">
+                      <span className="rounded-full bg-tile/90 px-3.5 py-1 text-[11px] font-semibold text-text-2 shadow border border-border">
                         {currentDateGroup}
                       </span>
                     </div>
                   )}
 
-                  <div
-                    id={`msg-${m.id}`}
-                    onContextMenu={(e) => openContextMenu(e, m)}
-                    className={`flex w-full ${isOut ? 'justify-end' : 'justify-start'} transition-all`}
-                  >
-                    <div className={`flex flex-col ${isOut ? 'items-end' : 'items-start'} ${m.media ? 'max-w-[480px] w-full' : 'max-w-[85%] w-fit'} group/msg`}>
-                      <div className={`relative rounded-2xl ${
-                        isOut
-                          ? 'rounded-tr-sm bg-[#224467] border-primary/30 shadow-md'
-                          : 'rounded-tl-sm bg-[#182533] border-white/[0.08] shadow-md'
-                      } border p-3 hover:border-white/20 transition-all text-text w-full`}>
+                  {(() => {
+                    const isVisualMedia = Boolean(
+                      m.media && (
+                        m.media.type === 'video' ||
+                        m.media.type === 'photo' ||
+                        m.media.type === 'animation' ||
+                        m.media.type === 'video_note'
+                      )
+                    )
+                    const reactionsList: ReactionItem[] = optimisticReactions[m.id] !== undefined
+                      ? optimisticReactions[m.id]
+                      : (m.reactions ?? [])
 
-                        {/* Sender Header Line + Quick Context Trigger */}
-                        {!isOut ? (
-                          <div className="flex items-center justify-between text-[11.5px] mb-1.5">
-                            <span className="font-semibold text-cyan tracking-wide truncate max-w-[240px]">
-                              {m.sender || activeChat?.title || 'Unknown'}
-                            </span>
-                            <div className="opacity-0 group-hover/msg:opacity-100 transition-opacity flex items-center gap-1 ml-2">
-                              <button
-                                type="button"
-                                onClick={(e) => openContextMenu(e, m)}
-                                className="p-1 text-muted hover:text-white rounded hover:bg-white/10 transition-colors"
-                                title="Message Options"
-                              >
-                                <MoreVertical size={13} />
-                              </button>
-                            </div>
-                          </div>
-                        ) : (
-                          <div className="absolute top-1.5 right-1.5 opacity-0 group-hover/msg:opacity-100 transition-opacity flex items-center gap-1 z-10">
-                            <button
-                              type="button"
-                              onClick={(e) => openContextMenu(e, m)}
-                              className="p-1 text-slate-300 hover:text-white rounded-full bg-black/40 hover:bg-black/60 transition-colors"
-                              title="Message Options"
-                            >
-                              <MoreVertical size={13} />
-                            </button>
-                          </div>
-                        )}
+                    return (
+                      <div
+                        id={`msg-${m.id}`}
+                        onContextMenu={(e) => openContextMenu(e, m)}
+                        className={`flex w-full ${isOut ? 'justify-end' : 'justify-start'} my-1 transition-all group/msg`}
+                      >
+                        <div className={`flex items-end gap-1.5 ${isOut ? 'flex-row-reverse' : 'flex-row'} ${isVisualMedia ? 'max-w-[480px] w-full' : 'max-w-[85%] w-fit'}`}>
+                          {/* Message Bubble Content */}
+                          {isVisualMedia ? (
+                            m.text ? (
+                              /* Case 1: Single Visual Media WITH Caption (Telegram Card Layout) */
+                              <div className={`relative overflow-hidden rounded-2xl ${
+                                isOut
+                                  ? 'rounded-tr-sm bg-primary/20 border-primary/35 shadow-md'
+                                  : 'rounded-tl-sm bg-tile border-border shadow-md'
+                              } border p-0 hover:border-primary/40 transition-all text-text w-full`}>
+                                {/* Top Overlay Message Options Menu Trigger */}
+                                <div className="absolute top-2.5 right-12 z-20 opacity-0 group-hover/msg:opacity-100 transition-opacity">
+                                  <button
+                                    type="button"
+                                    onClick={(e) => openContextMenu(e, m)}
+                                    className="size-8 rounded-full bg-black/60 hover:bg-black/80 text-white backdrop-blur-md border border-white/20 flex items-center justify-center transition-colors"
+                                    title="Message Options"
+                                  >
+                                    <MoreVertical size={13} />
+                                  </button>
+                                </div>
 
-                        {/* Forwarded Header */}
-                        {m.forwardFrom && (
-                          <div className="flex items-center gap-1.5 text-[11.5px] text-cyan/90 mb-1.5 italic select-none">
-                            <CornerDownRight size={12} className="shrink-0" />
-                            <span>Forwarded from {m.forwardFrom.name || m.forwardFrom.chatTitle || 'Channel'}</span>
-                          </div>
-                        )}
-
-                        {/* Reply Quote Banner Inside Bubble */}
-                        {m.replyTo && (
-                          <div
-                            onClick={(e) => {
-                              e.stopPropagation()
-                              jumpToMessage(m.replyTo.id)
-                            }}
-                            className="flex items-center gap-2 rounded-lg border-l-2 border-cyan bg-black/25 px-2.5 py-1.5 text-[11.5px] mb-2 cursor-pointer hover:bg-black/35 transition-colors select-none"
-                            title="Jump to replied message"
-                          >
-                            <Reply size={12} className="text-cyan shrink-0" />
-                            <div className="min-w-0 flex-1">
-                              <div className="font-semibold text-cyan leading-tight truncate">{m.replyTo.sender}</div>
-                              <div className="text-slate-300 truncate leading-tight mt-0.5">{m.replyTo.text}</div>
-                            </div>
-                          </div>
-                        )}
-
-                        {/* Media Box (Video, Photo, Audio, Document) */}
-                        {m.media && (
-                          <div className="my-1.5 w-full">
-                            {m.media.type === 'video' || m.media.type === 'photo' || m.media.type === 'animation' || m.media.type === 'video_note' ? (
-                              <div
-                                className="relative w-full max-w-[440px] overflow-hidden rounded-2xl bg-[#090f19] cursor-pointer group/media select-none shadow-xl border border-white/10 hover:border-white/20 transition-all"
-                                onClick={() => onOpenViewer({ name: m.media.name, path: m.media.path, thumb: m.media.thumb, type: m.media.type, size: m.media.size, duration: m.media.duration, chatId, messageId: m.id })}
-                              >
-                                {m.media.thumb ? (
-                                  <img
-                                    src={`teleflow://thumb/${m.media.thumb}`}
-                                    alt={m.media.name}
-                                    className="w-full h-auto min-h-[170px] max-h-[380px] object-cover rounded-2xl transition-transform duration-300 group-hover/media:scale-[1.02]"
-                                    loading="eager"
-                                  />
-                                ) : (
-                                  <div className="flex h-48 w-full flex-col items-center justify-center gap-2 bg-gradient-to-br from-slate-900 via-[#101b2b] to-slate-900 text-muted rounded-2xl">
-                                    <div className="size-12 rounded-2xl bg-white/5 border border-white/10 flex items-center justify-center text-primary shadow-inner">
-                                      <Film size={26} />
-                                    </div>
-                                    <span className="text-[11px] text-muted tracking-wide font-medium">Video Preview</span>
+                                {/* Forward Header */}
+                                {m.forwardFrom && (
+                                  <div className="flex items-center gap-1.5 text-[11.5px] text-cyan/90 px-3.5 pt-2.5 pb-1 italic select-none">
+                                    <CornerDownRight size={12} className="shrink-0" />
+                                    <span>Forwarded from {m.forwardFrom.name || m.forwardFrom.chatTitle || 'Channel'}</span>
                                   </div>
                                 )}
 
-                                {/* Top & Bottom Gradient Vignettes */}
-                                <div className="absolute inset-x-0 top-0 h-16 bg-gradient-to-b from-black/75 via-black/30 to-transparent pointer-events-none" />
-                                <div className="absolute inset-x-0 bottom-0 h-20 bg-gradient-to-t from-black/85 via-black/35 to-transparent pointer-events-none" />
+                                {/* Reply Quote Banner */}
+                                {m.replyTo && (
+                                  <div className="px-3.5 pt-2 pb-1">
+                                    <div
+                                      onClick={(e) => {
+                                        e.stopPropagation()
+                                        jumpToMessage(m.replyTo.id)
+                                      }}
+                                      className="flex items-center gap-2 rounded-lg border-l-2 border-cyan bg-black/25 px-2.5 py-1.5 text-[11.5px] cursor-pointer hover:bg-black/35 transition-colors select-none"
+                                      title="Jump to replied message"
+                                    >
+                                      <Reply size={12} className="text-cyan shrink-0" />
+                                      <div className="min-w-0 flex-1">
+                                        <div className="font-semibold text-cyan leading-tight truncate">{m.replyTo.sender}</div>
+                                        <div className="text-slate-300 truncate leading-tight mt-0.5">{m.replyTo.text}</div>
+                                      </div>
+                                    </div>
+                                  </div>
+                                )}
 
-                                {/* Top-Left Metadata Badge */}
+                                {/* Sender Header for Groups */}
+                                {!isOut && !isChannel && (m.sender || activeChat?.title) && (
+                                  <div className="flex items-center justify-between text-[11.5px] px-3.5 pt-2 pb-1">
+                                    <span className="font-semibold text-cyan tracking-wide truncate max-w-[240px]">
+                                      {m.sender || activeChat?.title}
+                                    </span>
+                                  </div>
+                                )}
+
+                                {/* Flush Edge-to-Edge Media Container (NO frames, NO double borders!) */}
+                                <div
+                                  className="relative w-full overflow-hidden bg-black/40 cursor-pointer group/media select-none"
+                                  onMouseEnter={() => {
+                                    if (m.media?.type === 'video' || m.media?.type === 'photo') {
+                                      call('media.prepare', { chatId, messageId: m.id }).catch(() => {})
+                                    }
+                                  }}
+                                  onClick={() => onOpenViewer({ name: m.media.name, path: m.media.path, thumb: m.media.thumb, type: m.media.type, size: m.media.size, duration: m.media.duration, chatId, messageId: m.id })}
+                                >
+                                  <ChatMediaThumb
+                                    src={m.media.thumb}
+                                    alt={m.media.name}
+                                    minHeight="180px"
+                                    maxHeight="460px"
+                                    className="transition-transform duration-300 group-hover/media:scale-[1.01]"
+                                  />
+
+                                  {/* Top & Bottom Vignettes */}
+                                  <div className="absolute inset-x-0 top-0 h-16 bg-gradient-to-b from-black/70 via-black/20 to-transparent pointer-events-none" />
+                                  <div className="absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-black/70 via-black/20 to-transparent pointer-events-none" />
+
+                                  {/* Floating Duration Pill (Telegram 0:03 🔊 or duration • size) */}
+                                  <div className="absolute top-2.5 left-2.5 flex items-center gap-1.5 rounded-full bg-black/60 backdrop-blur-md px-2.5 py-1 text-[11px] font-semibold text-white/95 border border-white/15 shadow-md pointer-events-none">
+                                    {m.media.duration ? (
+                                      <>
+                                        <span className="tabular-nums">{fmtDuration(m.media.duration)}</span>
+                                        <Volume2 size={12} className="text-white/80 shrink-0" />
+                                      </>
+                                    ) : (
+                                      <>
+                                        <Film size={11} className="text-cyan shrink-0" />
+                                        <span>{fmtBytes(m.media.size)}</span>
+                                      </>
+                                    )}
+                                    {m.media.duration && m.media.size ? (
+                                      <>
+                                        <span className="opacity-40">•</span>
+                                        <span className="text-[10px] opacity-80 tabular-nums">{fmtBytes(m.media.size)}</span>
+                                      </>
+                                    ) : null}
+                                  </div>
+
+                                  {/* Center Frosted Glass Glowing Play Disc */}
+                                  {(m.media.type === 'video' || m.media.type === 'animation' || m.media.type === 'video_note') && (
+                                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                                      <div className="size-14 rounded-full bg-black/45 backdrop-blur-md border border-white/35 flex items-center justify-center shadow-[0_8px_32px_rgba(0,0,0,0.6)] group-hover/media:scale-110 group-hover/media:bg-primary group-hover/media:border-primary/80 group-hover/media:shadow-[0_0_28px_rgba(56,189,248,0.55)] transition-all duration-300">
+                                        <Play size={22} className="ml-0.5 fill-white text-white drop-shadow" />
+                                      </div>
+                                    </div>
+                                  )}
+
+                                  {/* Top-Right Quick Action Button */}
+                                  <div className="absolute top-2.5 right-2.5 flex items-center gap-1.5 z-10 opacity-90 group-hover/media:opacity-100 transition-opacity">
+                                    {m.media.status === 'downloaded' && m.media.path ? (
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation()
+                                          onRevealFile(m.media.path)
+                                        }}
+                                        className="size-8 rounded-full bg-black/60 hover:bg-cyan/40 text-cyan backdrop-blur-md border border-white/20 flex items-center justify-center shadow-lg transition-transform hover:scale-110 active:scale-95"
+                                        title="Show in folder"
+                                      >
+                                        <FolderOpen size={14} />
+                                      </button>
+                                    ) : (
+                                      <button
+                                        type="button"
+                                        onClick={(ev) => {
+                                          ev.stopPropagation()
+                                          onDownloadItem({ chatId, messageId: m.id }, false, ev)
+                                        }}
+                                        className="size-8 rounded-full bg-black/60 hover:bg-primary text-white backdrop-blur-md border border-white/20 flex items-center justify-center shadow-lg transition-transform hover:scale-110 active:scale-95"
+                                        title="Download media"
+                                      >
+                                        <Download size={14} />
+                                      </button>
+                                    )}
+                                  </div>
+                                </div>
+
+                                {/* Caption Content Seamless Under Media */}
+                                <div className="px-3.5 pt-2.5 pb-2.5">
+                                  <FormattedMessageText
+                                    text={m.text}
+                                    entities={m.entities}
+                                    onOpenLink={onOpenLink}
+                                  />
+
+                                  {/* Telegram Bottom Bar: Reactions on left, Views + Time on right */}
+                                  <div className="flex items-center justify-between gap-2 mt-2 pt-1 select-none">
+                                    <div className="flex flex-wrap gap-1.5 items-center">
+                                      {reactionsList.map((r: ReactionItem, rIdx: number) => {
+                                        const displayEmoji = r.emoji === '\u2764' ? '❤️' : r.emoji
+                                        return (
+                                          <button
+                                            key={`r-${rIdx}`}
+                                            type="button"
+                                            onClick={() => handleAddReaction(m, r.emoji)}
+                                            className={`flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11.5px] font-medium border transition-all cursor-pointer ${
+                                              r.chosen
+                                                ? 'bg-primary/25 border-primary/60 ring-1 ring-primary/40 shadow-sm'
+                                                : 'bg-black/30 border-white/10 text-slate-300 hover:bg-black/50 hover:text-white'
+                                            }`}
+                                            title={`Reaction ${displayEmoji}${r.chosen ? ' (click to remove)' : ''}`}
+                                          >
+                                            <span className="emoji-glyph text-[13px] leading-none select-none">{displayEmoji}</span>
+                                            <span className={`text-[10.5px] tabular-nums font-semibold ${r.chosen ? 'text-cyan' : 'text-slate-300'}`}>
+                                              {r.count}
+                                            </span>
+                                          </button>
+                                        )
+                                      })}
+                                    </div>
+
+                                    <div className="flex items-center gap-1.5 text-[11px] text-muted/75 tabular-nums ml-auto shrink-0">
+                                      {m.views ? (
+                                        <span className="flex items-center gap-1 text-muted/75 font-medium" title={`${m.views.toLocaleString()} views`}>
+                                          <span>{fmtViews(m.views)}</span>
+                                          <Eye size={12} className="opacity-75" />
+                                        </span>
+                                      ) : null}
+                                      {m.editDate && (
+                                        <span className="italic text-[10px] text-muted/60">edited</span>
+                                      )}
+                                      <span>{getMessageTime(m.date)}</span>
+                                      {isOut && (
+                                        <span className="flex items-center leading-none">
+                                          {m.deliveryStatus === 'sending' ? (
+                                            <span title="Sending…"><Clock size={11} className="animate-spin text-muted/70" /></span>
+                                          ) : m.deliveryStatus === 'failed' ? (
+                                            <span title="Message failed to send"><AlertCircle size={12} className="text-danger" /></span>
+                                          ) : m.deliveryStatus === 'read' ? (
+                                            <span className="text-cyan font-bold text-[11px]" title="Read">✓✓</span>
+                                          ) : (
+                                            <span title="Sent to server"><Check size={12} className="text-muted/70" /></span>
+                                          )}
+                                        </span>
+                                      )}
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            ) : (
+                              /* Case 2: Single Visual Media WITHOUT Caption (Borderless Flush Media) */
+                              <div
+                                className="relative rounded-2xl overflow-hidden shadow-xl max-w-[460px] w-full group/media cursor-pointer select-none"
+                                onMouseEnter={() => {
+                                  if (m.media?.type === 'video' || m.media?.type === 'photo') {
+                                    call('media.prepare', { chatId, messageId: m.id }).catch(() => {})
+                                  }
+                                }}
+                                onClick={() => onOpenViewer({ name: m.media.name, path: m.media.path, thumb: m.media.thumb, type: m.media.type, size: m.media.size, duration: m.media.duration, chatId, messageId: m.id })}
+                              >
+                                <ChatMediaThumb
+                                  src={m.media.thumb}
+                                  alt={m.media.name}
+                                  minHeight="180px"
+                                  maxHeight="480px"
+                                  className="rounded-2xl transition-transform duration-300 group-hover/media:scale-[1.01]"
+                                />
+
+                                {/* Top & Bottom Vignettes */}
+                                <div className="absolute inset-x-0 top-0 h-16 bg-gradient-to-b from-black/70 via-black/20 to-transparent pointer-events-none" />
+                                <div className="absolute inset-x-0 bottom-0 h-20 bg-gradient-to-t from-black/70 via-black/20 to-transparent pointer-events-none" />
+
+                                {/* Top-Left Duration Pill */}
                                 <div className="absolute top-2.5 left-2.5 flex items-center gap-1.5 rounded-full bg-black/60 backdrop-blur-md px-2.5 py-1 text-[11px] font-semibold text-white/95 border border-white/15 shadow-md pointer-events-none">
-                                  {m.media.type === 'video' || m.media.type === 'animation' || m.media.type === 'video_note' ? (
-                                    <Film size={11} className="text-cyan shrink-0" />
-                                  ) : null}
-                                  <span>{m.media.duration ? fmtDuration(m.media.duration) : fmtBytes(m.media.size)}</span>
+                                  {m.media.duration ? (
+                                    <>
+                                      <span className="tabular-nums">{fmtDuration(m.media.duration)}</span>
+                                      <Volume2 size={12} className="text-white/80 shrink-0" />
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Film size={11} className="text-cyan shrink-0" />
+                                      <span>{fmtBytes(m.media.size)}</span>
+                                    </>
+                                  )}
                                   {m.media.duration && m.media.size ? (
                                     <>
                                       <span className="opacity-40">•</span>
@@ -1015,7 +1228,7 @@ export function ChatView({
                                   ) : null}
                                 </div>
 
-                                {/* Center Frosted Glass Glowing Play Disc (for Video/Animation) */}
+                                {/* Center Frosted Glass Glowing Play Disc */}
                                 {(m.media.type === 'video' || m.media.type === 'animation' || m.media.type === 'video_note') && (
                                   <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                                     <div className="size-14 rounded-full bg-black/45 backdrop-blur-md border border-white/35 flex items-center justify-center shadow-[0_8px_32px_rgba(0,0,0,0.6)] group-hover/media:scale-110 group-hover/media:bg-primary group-hover/media:border-primary/80 group-hover/media:shadow-[0_0_28px_rgba(56,189,248,0.55)] transition-all duration-300">
@@ -1024,7 +1237,7 @@ export function ChatView({
                                   </div>
                                 )}
 
-                                {/* Top-Right Hover Quick Action */}
+                                {/* Top-Right Quick Action Button */}
                                 <div className="absolute top-2.5 right-2.5 flex items-center gap-1.5 z-10 opacity-90 group-hover/media:opacity-100 transition-opacity">
                                   {m.media.status === 'downloaded' && m.media.path ? (
                                     <button
@@ -1053,215 +1266,335 @@ export function ChatView({
                                   )}
                                 </div>
 
-                                {/* Bottom Filename Overlay */}
-                                {m.media.name && (
-                                  <div className="absolute bottom-2.5 inset-x-3 pointer-events-none">
-                                    <div className="text-[12px] font-medium text-white/95 truncate drop-shadow-md">
-                                      {m.media.name}
-                                    </div>
-                                  </div>
-                                )}
-                              </div>
-                            ) : m.media.type === 'audio' || m.media.type === 'voice' ? (
-                              /* Telegram Audio / Voice Note Waveform Card */
-                              <div className={`flex items-center gap-3.5 p-3 rounded-2xl ${
-                                isOut
-                                  ? 'bg-gradient-to-r from-[#214368]/90 to-[#19324e]/95 border-primary/25'
-                                  : 'bg-gradient-to-r from-[#172535]/95 to-[#101a26]/95 border-white/[0.08]'
-                              } border shadow-lg hover:border-white/20 transition-all select-none w-full max-w-[420px]`}>
-                                <div
-                                  onClick={() => onOpenViewer({ name: m.media.name, path: m.media.path, thumb: m.media.thumb, type: m.media.type, size: m.media.size, duration: m.media.duration, chatId, messageId: m.id })}
-                                  className="size-11 rounded-full bg-gradient-to-tr from-primary to-cyan text-white shadow-glow flex items-center justify-center shrink-0 cursor-pointer hover:scale-105 active:scale-95 transition-all"
-                                  title="Play audio"
-                                >
-                                  <Play size={18} className="ml-0.5 fill-white text-white" />
-                                </div>
-
-                                <div className="min-w-0 flex-1">
-                                  <div className="flex items-center justify-between gap-2">
-                                    <span className="text-[13px] font-semibold text-white truncate" title={m.media.name}>
-                                      {m.media.name || 'Voice Message'}
-                                    </span>
-                                    <span className="text-[11px] font-medium text-cyan tabular-nums shrink-0">
-                                      {m.media.duration ? fmtDuration(m.media.duration) : fmtBytes(m.media.size)}
-                                    </span>
-                                  </div>
-
-                                  {/* Visual Waveform Bars */}
-                                  <div className="flex items-center gap-[2.5px] h-5 my-1 overflow-hidden opacity-85">
-                                    {[6, 12, 18, 14, 8, 20, 16, 10, 22, 15, 7, 13, 19, 12, 16, 20, 11, 8, 17, 14, 9, 18, 12, 6].map((h, i) => (
-                                      <div
-                                        key={i}
-                                        style={{ height: `${h}px` }}
-                                        className={`w-[2.5px] rounded-full ${i < 8 ? 'bg-cyan' : 'bg-white/25'} transition-all`}
-                                      />
+                                {/* Floating Bottom-Left Reactions (if any) */}
+                                {reactionsList.length > 0 && (
+                                  <div className="absolute bottom-2.5 left-2.5 flex flex-wrap gap-1 z-10">
+                                    {reactionsList.map((r: ReactionItem, rIdx: number) => (
+                                      <button
+                                        key={`r-${rIdx}`}
+                                        type="button"
+                                        onClick={(e) => { e.stopPropagation(); handleAddReaction(m, r.emoji) }}
+                                        className={`flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11px] font-medium backdrop-blur-md border shadow transition-all cursor-pointer ${
+                                          r.chosen
+                                            ? 'bg-primary/50 border-primary text-white'
+                                            : 'bg-black/60 border-white/15 text-white/90 hover:bg-black/80'
+                                        }`}
+                                      >
+                                        <span className="emoji-glyph text-[12px]">{r.emoji === '\u2764' ? '❤️' : r.emoji}</span>
+                                        <span className="tabular-nums font-semibold">{r.count}</span>
+                                      </button>
                                     ))}
                                   </div>
+                                )}
 
-                                  <div className="flex items-center justify-between text-[10.5px] text-muted">
-                                    <span>{fmtBytes(m.media.size)}</span>
-                                    <span className="capitalize">{m.media.type === 'voice' ? 'Voice Message' : 'Audio Track'}</span>
-                                  </div>
-                                </div>
-
-                                <div className="shrink-0 flex items-center">
-                                  {m.media.status === 'downloaded' && m.media.path ? (
-                                    <button
-                                      type="button"
-                                      onClick={() => onRevealFile(m.media.path)}
-                                      className="size-8 rounded-full hover:bg-white/10 text-cyan flex items-center justify-center transition-colors"
-                                      title="Show in folder"
-                                    >
-                                      <FolderOpen size={15} />
-                                    </button>
-                                  ) : (
-                                    <button
-                                      type="button"
-                                      onClick={(ev) => onDownloadItem({ chatId, messageId: m.id }, false, ev)}
-                                      className="size-8 rounded-full hover:bg-white/10 text-muted hover:text-white flex items-center justify-center transition-colors"
-                                      title="Download audio"
-                                    >
-                                      <Download size={15} />
-                                    </button>
+                                {/* Floating Bottom-Right Pill: Views + Time + Status */}
+                                <div className="absolute bottom-2.5 right-2.5 flex items-center gap-1.5 rounded-full bg-black/60 backdrop-blur-md px-2.5 py-1 text-[11px] font-semibold text-white/95 border border-white/15 shadow-md pointer-events-none tabular-nums">
+                                  {m.views ? (
+                                    <span className="flex items-center gap-1 opacity-90" title={`${m.views.toLocaleString()} views`}>
+                                      <span>{fmtViews(m.views)}</span>
+                                      <Eye size={11} className="opacity-75" />
+                                    </span>
+                                  ) : null}
+                                  {m.editDate && (
+                                    <span className="italic text-[9.5px] opacity-75">edited</span>
+                                  )}
+                                  <span>{getMessageTime(m.date)}</span>
+                                  {isOut && (
+                                    <span className="flex items-center leading-none">
+                                      {m.deliveryStatus === 'sending' ? (
+                                        <Clock size={11} className="animate-spin opacity-80" />
+                                      ) : m.deliveryStatus === 'failed' ? (
+                                        <AlertCircle size={12} className="text-rose-400" />
+                                      ) : m.deliveryStatus === 'read' ? (
+                                        <span className="text-cyan font-bold text-[11px]">✓✓</span>
+                                      ) : (
+                                        <Check size={12} className="opacity-80" />
+                                      )}
+                                    </span>
                                   )}
                                 </div>
                               </div>
-                            ) : (
-                              /* Telegram Document / Attachment Bubble with Colored Extension Squircle */
-                              (() => {
-                                const ext = (m.media.ext || m.media.name?.split('.').pop() || 'FILE').toUpperCase()
-                                let colorClasses = 'from-primary/25 to-cyan/20 border-primary/30 text-cyan'
-                                if (['PDF'].includes(ext)) {
-                                  colorClasses = 'from-rose-500/25 to-rose-600/15 border-rose-500/30 text-rose-400'
-                                } else if (['ZIP', 'RAR', '7Z', 'TAR', 'GZ'].includes(ext)) {
-                                  colorClasses = 'from-amber-500/25 to-amber-600/15 border-amber-500/30 text-amber-400'
-                                } else if (['DOC', 'DOCX', 'TXT', 'MD', 'XLS', 'XLSX'].includes(ext)) {
-                                  colorClasses = 'from-sky-500/25 to-blue-600/15 border-sky-500/30 text-sky-400'
-                                } else if (['EXE', 'MSI', 'DMG', 'APK', 'ISO'].includes(ext)) {
-                                  colorClasses = 'from-purple-500/25 to-indigo-600/15 border-purple-500/30 text-purple-400'
-                                }
-
-                                return (
-                                  <div className={`flex items-center gap-3 p-3 rounded-2xl ${
-                                    isOut
-                                      ? 'bg-gradient-to-r from-[#1d3958]/85 to-[#172e48]/90 border-white/[0.08]'
-                                      : 'bg-gradient-to-r from-[#142030]/90 to-[#0e1724]/90 border-white/[0.06]'
-                                  } border shadow-md select-none w-full max-w-[400px] hover:border-white/20 transition-all`}>
-                                    <div className={`size-12 rounded-2xl bg-gradient-to-br ${colorClasses} border flex flex-col items-center justify-center shrink-0 shadow-inner`}>
-                                      <FileText size={18} className="opacity-75 mb-0.5" />
-                                      <span className="text-[9px] font-black tracking-wider leading-none">{ext.slice(0, 4)}</span>
-                                    </div>
-
-                                    <div className="min-w-0 flex-1">
-                                      <div className="text-[13px] font-semibold text-white truncate hover:text-cyan transition-colors" title={m.media.name}>
-                                        {m.media.name}
-                                      </div>
-                                      <div className="flex items-center gap-2 text-[11px] text-muted mt-0.5 tabular-nums">
-                                        <span>{fmtBytes(m.media.size)}</span>
-                                        <span>•</span>
-                                        <span className={m.media.status === 'downloaded' ? 'text-emerald-400 font-medium' : 'text-slate-400'}>
-                                          {m.media.status === 'downloaded' ? 'Saved' : ext}
-                                        </span>
-                                      </div>
-                                    </div>
-
-                                    <div className="shrink-0 flex items-center">
-                                      {m.media.status === 'downloaded' && m.media.path ? (
-                                        <button
-                                          type="button"
-                                          onClick={() => onRevealFile(m.media.path)}
-                                          className="size-9 rounded-xl bg-white/5 hover:bg-cyan/20 text-cyan border border-cyan/20 flex items-center justify-center transition-all hover:scale-105 active:scale-95 shadow"
-                                          title="Show in folder"
-                                        >
-                                          <FolderOpen size={15} />
-                                        </button>
-                                      ) : (
-                                        <button
-                                          type="button"
-                                          onClick={(ev) => onDownloadItem({ chatId, messageId: m.id }, false, ev)}
-                                          className="size-9 rounded-xl bg-primary/20 hover:bg-primary text-primary hover:text-white border border-primary/30 flex items-center justify-center transition-all hover:scale-105 active:scale-95 shadow"
-                                          title="Download file"
-                                        >
-                                          <Download size={15} />
-                                        </button>
-                                      )}
-                                    </div>
+                            )
+                          ) : (
+                            /* Case 3: Audio, Voice Note, Document, or Text Bubble */
+                            <div className={`relative rounded-2xl ${
+                              isOut
+                                ? 'rounded-tr-sm bg-primary/20 border-primary/35 shadow-md'
+                                : 'rounded-tl-sm bg-tile border-border shadow-md'
+                            } border p-3 hover:border-primary/40 transition-all text-text w-full`}>
+                              {/* Sender Header Line + Quick Context Trigger */}
+                              {!isOut ? (
+                                <div className="flex items-center justify-between text-[11.5px] mb-1.5">
+                                  <span className="font-semibold text-primary tracking-wide truncate max-w-[240px]">
+                                    {m.sender || activeChat?.title || 'Unknown'}
+                                  </span>
+                                  <div className="opacity-0 group-hover/msg:opacity-100 transition-opacity flex items-center gap-1 ml-2">
+                                    <button
+                                      type="button"
+                                      onClick={(e) => openContextMenu(e, m)}
+                                      className="p-1 text-muted hover:text-text rounded hover:bg-tile transition-colors cursor-pointer"
+                                      title="Message Options"
+                                    >
+                                      <MoreVertical size={13} />
+                                    </button>
                                   </div>
-                                )
-                              })()
-                            )}
-                          </div>
-                        )}
-
-                        {/* Rich Message Text with Entities */}
-                        {m.text && (
-                          <div className="mt-1">
-                            <FormattedMessageText
-                              text={m.text}
-                              entities={m.entities}
-                              onOpenLink={onOpenLink}
-                            />
-                          </div>
-                        )}
-
-                        {/* Reactions Row */}
-                        {(() => {
-                          const reactionsList: ReactionItem[] = optimisticReactions[m.id] !== undefined
-                            ? optimisticReactions[m.id]
-                            : (m.reactions ?? [])
-                          if (!reactionsList || reactionsList.length === 0) return null
-                          return (
-                            <div className="flex flex-wrap gap-1.5 mt-2 pt-1">
-                              {reactionsList.map((r: ReactionItem, rIdx: number) => {
-                                const displayEmoji = r.emoji === '\u2764' ? '❤️' : r.emoji
-                                return (
-                                  <button
-                                    key={`r-${rIdx}`}
-                                    type="button"
-                                    onClick={() => handleAddReaction(m, r.emoji)}
-                                    className={`flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11.5px] font-medium border transition-all cursor-pointer ${
-                                      r.chosen
-                                        ? 'bg-primary/25 border-primary/60 ring-1 ring-primary/40 shadow-sm'
-                                        : 'bg-black/30 border-white/10 text-slate-300 hover:bg-black/50 hover:text-white'
-                                    }`}
-                                    title={`Reaction ${displayEmoji}${r.chosen ? ' (click to remove)' : ''}`}
-                                  >
-                                    <span className="emoji-glyph text-[13px] leading-none select-none">{displayEmoji}</span>
-                                    <span className={`text-[10.5px] tabular-nums font-semibold ${r.chosen ? 'text-cyan' : 'text-slate-300'}`}>
-                                      {r.count}
-                                    </span>
-                                  </button>
-                                )
-                              })}
-                            </div>
-                          )
-                        })()}
-
-                        {/* Message Footer: Timestamp, Edited label, and Delivery Checkmarks */}
-                        <div className="flex items-center justify-end gap-1.5 mt-1 text-[10.5px] text-muted/70 tabular-nums select-none">
-                          {m.editDate && (
-                            <span className="italic text-[10px] text-muted/60">edited</span>
-                          )}
-                          <span>{getMessageTime(m.date)}</span>
-
-                          {/* Real Telegram Delivery Status */}
-                          {isOut && (
-                            <span className="flex items-center leading-none">
-                              {m.deliveryStatus === 'sending' ? (
-                                <span title="Sending…"><Clock size={11} className="animate-spin text-muted/70" /></span>
-                              ) : m.deliveryStatus === 'failed' ? (
-                                <span title="Message failed to send"><AlertCircle size={12} className="text-danger" /></span>
-                              ) : m.deliveryStatus === 'read' ? (
-                                <span className="text-cyan font-bold text-[11px]" title="Read">✓✓</span>
+                                </div>
                               ) : (
-                                <span title="Sent to server"><Check size={12} className="text-muted/70" /></span>
+                                <div className="absolute top-1.5 right-1.5 opacity-0 group-hover/msg:opacity-100 transition-opacity flex items-center gap-1 z-10">
+                                  <button
+                                    type="button"
+                                    onClick={(e) => openContextMenu(e, m)}
+                                    className="p-1 text-slate-300 hover:text-white rounded-full bg-black/40 hover:bg-black/60 transition-colors"
+                                    title="Message Options"
+                                  >
+                                    <MoreVertical size={13} />
+                                  </button>
+                                </div>
                               )}
-                            </span>
+
+                              {/* Forwarded Header */}
+                              {m.forwardFrom && (
+                                <div className="flex items-center gap-1.5 text-[11.5px] text-cyan/90 mb-1.5 italic select-none">
+                                  <CornerDownRight size={12} className="shrink-0" />
+                                  <span>Forwarded from {m.forwardFrom.name || m.forwardFrom.chatTitle || 'Channel'}</span>
+                                </div>
+                              )}
+
+                              {/* Reply Quote Banner Inside Bubble */}
+                              {m.replyTo && (
+                                <div
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    jumpToMessage(m.replyTo.id)
+                                  }}
+                                  className="flex items-center gap-2 rounded-lg border-l-2 border-cyan bg-black/25 px-2.5 py-1.5 text-[11.5px] mb-2 cursor-pointer hover:bg-black/35 transition-colors select-none"
+                                  title="Jump to replied message"
+                                >
+                                  <Reply size={12} className="text-cyan shrink-0" />
+                                  <div className="min-w-0 flex-1">
+                                    <div className="font-semibold text-cyan leading-tight truncate">{m.replyTo.sender}</div>
+                                    <div className="text-slate-300 truncate leading-tight mt-0.5">{m.replyTo.text}</div>
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* Audio / Document Media */}
+                              {m.media && (
+                                <div className="my-1 w-full">
+                                  {m.media.type === 'audio' || m.media.type === 'voice' ? (
+                                    <div className={`flex items-center gap-3.5 p-3 rounded-2xl ${
+                                      isOut
+                                        ? 'bg-primary/10 border-primary/25'
+                                        : 'bg-tile/70 border-border'
+                                    } border shadow-sm hover:border-primary/40 transition-all select-none w-full max-w-[420px]`}>
+                                      <div
+                                        onClick={() => onOpenViewer({ name: m.media.name, path: m.media.path, thumb: m.media.thumb, type: m.media.type, size: m.media.size, duration: m.media.duration, chatId, messageId: m.id })}
+                                        className="size-11 rounded-full bg-gradient-to-tr from-primary to-cyan text-white shadow-glow flex items-center justify-center shrink-0 cursor-pointer hover:scale-105 active:scale-95 transition-all"
+                                        title="Play audio"
+                                      >
+                                        <Play size={18} className="ml-0.5 fill-white text-white" />
+                                      </div>
+
+                                      <div className="min-w-0 flex-1">
+                                        <div className="flex items-center justify-between gap-2">
+                                          <span className="text-[13px] font-semibold text-text truncate" title={m.media.name}>
+                                            {m.media.name || 'Voice Message'}
+                                          </span>
+                                          <span className="text-[11px] font-medium text-cyan tabular-nums shrink-0">
+                                            {m.media.duration ? fmtDuration(m.media.duration) : fmtBytes(m.media.size)}
+                                          </span>
+                                        </div>
+
+                                        <div className="flex items-center gap-[2.5px] h-5 my-1 overflow-hidden opacity-85">
+                                          {[6, 12, 18, 14, 8, 20, 16, 10, 22, 15, 7, 13, 19, 12, 16, 20, 11, 8, 17, 14, 9, 18, 12, 6].map((h, i) => (
+                                            <div
+                                              key={i}
+                                              style={{ height: `${h}px` }}
+                                              className={`w-[2.5px] rounded-full ${i < 8 ? 'bg-cyan' : 'bg-muted/30'} transition-all`}
+                                            />
+                                          ))}
+                                        </div>
+
+                                        <div className="flex items-center justify-between text-[10.5px] text-muted">
+                                          <span>{fmtBytes(m.media.size)}</span>
+                                          <span className="capitalize">{m.media.type === 'voice' ? 'Voice Message' : 'Audio Track'}</span>
+                                        </div>
+                                      </div>
+
+                                      <div className="shrink-0 flex items-center">
+                                        {m.media.status === 'downloaded' && m.media.path ? (
+                                          <button
+                                            type="button"
+                                            onClick={() => onRevealFile(m.media.path)}
+                                            className="size-8 rounded-full hover:bg-tile text-cyan flex items-center justify-center transition-colors"
+                                            title="Show in folder"
+                                          >
+                                            <FolderOpen size={15} />
+                                          </button>
+                                        ) : (
+                                          <button
+                                            type="button"
+                                            onClick={(ev) => onDownloadItem({ chatId, messageId: m.id }, false, ev)}
+                                            className="size-8 rounded-full hover:bg-tile text-muted hover:text-text flex items-center justify-center transition-colors"
+                                            title="Download audio"
+                                          >
+                                            <Download size={15} />
+                                          </button>
+                                        )}
+                                      </div>
+                                    </div>
+                                  ) : (
+                                    (() => {
+                                      const ext = (m.media.ext || m.media.name?.split('.').pop() || 'FILE').toUpperCase()
+                                      let colorClasses = 'from-primary/25 to-cyan/20 border-primary/30 text-cyan'
+                                      if (['PDF'].includes(ext)) {
+                                        colorClasses = 'from-rose-500/25 to-rose-600/15 border-rose-500/30 text-rose-400'
+                                      } else if (['ZIP', 'RAR', '7Z', 'TAR', 'GZ'].includes(ext)) {
+                                        colorClasses = 'from-amber-500/25 to-amber-600/15 border-amber-500/30 text-amber-400'
+                                      } else if (['DOC', 'DOCX', 'TXT', 'MD', 'XLS', 'XLSX'].includes(ext)) {
+                                        colorClasses = 'from-sky-500/25 to-blue-600/15 border-sky-500/30 text-sky-400'
+                                      } else if (['EXE', 'MSI', 'DMG', 'APK', 'ISO'].includes(ext)) {
+                                        colorClasses = 'from-purple-500/25 to-indigo-600/15 border-purple-500/30 text-purple-400'
+                                      }
+
+                                      return (
+                                        <div className={`flex items-center gap-3 p-3 rounded-2xl ${
+                                          isOut
+                                            ? 'bg-primary/10 border-primary/25'
+                                            : 'bg-tile/70 border-border'
+                                        } border shadow-sm select-none w-full max-w-[400px] hover:border-primary/40 transition-all`}>
+                                          <div className={`size-12 rounded-2xl bg-gradient-to-br ${colorClasses} border flex flex-col items-center justify-center shrink-0 shadow-inner`}>
+                                            <FileText size={18} className="opacity-75 mb-0.5" />
+                                            <span className="text-[9px] font-black tracking-wider leading-none">{ext.slice(0, 4)}</span>
+                                          </div>
+
+                                          <div className="min-w-0 flex-1">
+                                            <div className="text-[13px] font-semibold text-text truncate hover:text-primary transition-colors" title={m.media.name}>
+                                              {m.media.name}
+                                            </div>
+                                            <div className="flex items-center gap-2 text-[11px] text-muted mt-0.5 tabular-nums">
+                                              <span>{fmtBytes(m.media.size)}</span>
+                                              <span>•</span>
+                                              <span className={m.media.status === 'downloaded' ? 'text-emerald-400 font-medium' : 'text-slate-400'}>
+                                                {m.media.status === 'downloaded' ? 'Saved' : ext}
+                                              </span>
+                                            </div>
+                                          </div>
+
+                                          <div className="shrink-0 flex items-center">
+                                            {m.media.status === 'downloaded' && m.media.path ? (
+                                              <button
+                                                type="button"
+                                                onClick={() => onRevealFile(m.media.path)}
+                                                className="size-9 rounded-xl bg-white/5 hover:bg-cyan/20 text-cyan border border-cyan/20 flex items-center justify-center transition-all hover:scale-105 active:scale-95 shadow"
+                                                title="Show in folder"
+                                              >
+                                                <FolderOpen size={15} />
+                                              </button>
+                                            ) : (
+                                              <button
+                                                type="button"
+                                                onClick={(ev) => onDownloadItem({ chatId, messageId: m.id }, false, ev)}
+                                                className="size-9 rounded-xl bg-primary/20 hover:bg-primary text-primary hover:text-white border border-primary/30 flex items-center justify-center transition-all hover:scale-105 active:scale-95 shadow"
+                                                title="Download file"
+                                              >
+                                                <Download size={15} />
+                                              </button>
+                                            )}
+                                          </div>
+                                        </div>
+                                      )
+                                    })()
+                                  )}
+                                </div>
+                              )}
+
+                              {/* Rich Message Text with Entities */}
+                              {m.text && (
+                                <div className="mt-1">
+                                  <FormattedMessageText
+                                    text={m.text}
+                                    entities={m.entities}
+                                    onOpenLink={onOpenLink}
+                                  />
+                                </div>
+                              )}
+
+                              {/* Reactions Row */}
+                              {reactionsList.length > 0 && (
+                                <div className="flex flex-wrap gap-1.5 mt-2 pt-1">
+                                  {reactionsList.map((r: ReactionItem, rIdx: number) => {
+                                    const displayEmoji = r.emoji === '\u2764' ? '❤️' : r.emoji
+                                    return (
+                                      <button
+                                        key={`r-${rIdx}`}
+                                        type="button"
+                                        onClick={() => handleAddReaction(m, r.emoji)}
+                                        className={`flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11.5px] font-medium border transition-all cursor-pointer ${
+                                          r.chosen
+                                            ? 'bg-primary/25 border-primary/60 ring-1 ring-primary/40 shadow-sm'
+                                            : 'bg-black/30 border-white/10 text-slate-300 hover:bg-black/50 hover:text-white'
+                                        }`}
+                                        title={`Reaction ${displayEmoji}${r.chosen ? ' (click to remove)' : ''}`}
+                                      >
+                                        <span className="emoji-glyph text-[13px] leading-none select-none">{displayEmoji}</span>
+                                        <span className={`text-[10.5px] tabular-nums font-semibold ${r.chosen ? 'text-cyan' : 'text-slate-300'}`}>
+                                          {r.count}
+                                        </span>
+                                      </button>
+                                    )
+                                  })}
+                                </div>
+                              )}
+
+                              {/* Message Footer: Timestamp, Views, Edited, Checkmarks */}
+                              <div className="flex items-center justify-end gap-1.5 mt-1 text-[10.5px] text-muted/70 tabular-nums select-none">
+                                {m.views ? (
+                                  <span className="flex items-center gap-1 text-muted/70 font-medium mr-1" title={`${m.views.toLocaleString()} views`}>
+                                    <span>{fmtViews(m.views)}</span>
+                                    <Eye size={11} className="opacity-75" />
+                                  </span>
+                                ) : null}
+                                {m.editDate && (
+                                  <span className="italic text-[10px] text-muted/60">edited</span>
+                                )}
+                                <span>{getMessageTime(m.date)}</span>
+
+                                {isOut && (
+                                  <span className="flex items-center leading-none">
+                                    {m.deliveryStatus === 'sending' ? (
+                                      <span title="Sending…"><Clock size={11} className="animate-spin text-muted/70" /></span>
+                                    ) : m.deliveryStatus === 'failed' ? (
+                                      <span title="Message failed to send"><AlertCircle size={12} className="text-danger" /></span>
+                                    ) : m.deliveryStatus === 'read' ? (
+                                      <span className="text-cyan font-bold text-[11px]" title="Read">✓✓</span>
+                                    ) : (
+                                      <span title="Sent to server"><Check size={12} className="text-muted/70" /></span>
+                                    )}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
                           )}
+
+                          {/* Floating Telegram Forward Button Beside Bubble */}
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              handleSelectForward(m)
+                            }}
+                            className={`size-8 rounded-full bg-panel/90 hover:bg-primary text-muted hover:text-white border border-border shadow-lg flex items-center justify-center transition-all hover:scale-110 active:scale-95 cursor-pointer shrink-0 mb-1 ${
+                              isChannel ? 'opacity-85 hover:opacity-100' : 'opacity-0 group-hover/msg:opacity-100'
+                            }`}
+                            title="Forward message"
+                          >
+                            <CornerUpRight size={14} />
+                          </button>
                         </div>
                       </div>
-                    </div>
-                  </div>
+                    )
+                  })()}
                 </React.Fragment>
               )
             })}
@@ -1270,17 +1603,17 @@ export function ChatView({
             {chatUploads.map((u) => (
               <div key={u.id} className="flex w-full justify-end my-2">
                 <div className="flex flex-col items-end max-w-[420px] w-full">
-                  <div className="relative rounded-2xl rounded-tr-sm bg-gradient-to-br from-[#1c3858] to-[#142840] border border-cyan/30 shadow-xl p-3.5 text-white w-full animate-in fade-in slide-in-from-bottom-2 duration-200">
+                  <div className="relative rounded-2xl rounded-tr-sm bg-panel border border-primary/30 shadow-xl p-3.5 text-text w-full animate-in fade-in slide-in-from-bottom-2 duration-200">
                     <div className="flex items-center gap-3">
                       {/* Circular Progress Indicator with Cancel Button */}
                       <div className="relative size-12 shrink-0 flex items-center justify-center">
                         <svg className="size-12 -rotate-90">
-                          <circle cx="24" cy="24" r="20" className="stroke-white/15" strokeWidth="3" fill="none" />
+                          <circle cx="24" cy="24" r="20" className="stroke-border" strokeWidth="3" fill="none" />
                           <circle
                             cx="24"
                             cy="24"
                             r="20"
-                            className="stroke-cyan transition-all duration-300"
+                            className="stroke-primary transition-all duration-300"
                             strokeWidth="3"
                             fill="none"
                             strokeLinecap="round"
@@ -1291,7 +1624,7 @@ export function ChatView({
                         <button
                           type="button"
                           onClick={() => handleCancelUpload(u.id)}
-                          className="absolute inset-0 m-auto size-7 rounded-full bg-black/50 hover:bg-red-500/80 text-white flex items-center justify-center transition-all cursor-pointer shadow"
+                          className="absolute inset-0 m-auto size-7 rounded-full bg-panel/80 hover:bg-red-500/80 text-text hover:text-white flex items-center justify-center transition-all cursor-pointer shadow border border-border"
                           title="Cancel upload"
                         >
                           <X size={14} />
@@ -1301,33 +1634,33 @@ export function ChatView({
                       {/* File details and progress bar */}
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center justify-between gap-2">
-                          <span className="text-[13px] font-semibold text-white truncate" title={u.name}>
+                          <span className="text-[13px] font-semibold text-text truncate" title={u.name}>
                             {u.name}
                           </span>
-                          <span className="text-[11px] font-bold text-cyan tabular-nums shrink-0">
+                          <span className="text-[11px] font-bold text-primary tabular-nums shrink-0">
                             {u.progress}%
                           </span>
                         </div>
 
                         {/* Glowing progress bar */}
-                        <div className="h-1.5 w-full bg-black/40 rounded-full overflow-hidden my-1.5 border border-white/10">
+                        <div className="h-1.5 w-full bg-tile rounded-full overflow-hidden my-1.5 border border-border">
                           <div
                             style={{ width: `${Math.max(4, u.progress)}%` }}
-                            className="h-full bg-gradient-to-r from-primary to-cyan shadow-[0_0_10px_rgba(56,189,248,0.7)] transition-all duration-300 rounded-full"
+                            className="h-full bg-gradient-to-r from-primary to-primary-hover shadow-glow transition-all duration-300 rounded-full"
                           />
                         </div>
 
-                        <div className="flex items-center justify-between text-[10.5px] text-slate-300 tabular-nums">
+                        <div className="flex items-center justify-between text-[10.5px] text-muted tabular-nums">
                           <span>{fmtBytes(u.bytesUploaded)} of {fmtBytes(u.size)}</span>
-                          {u.speed > 0 && <span className="text-cyan">{fmtBytes(u.speed)}/s</span>}
+                          {u.speed > 0 && <span className="text-primary">{fmtBytes(u.speed)}/s</span>}
                         </div>
                       </div>
                     </div>
 
                     {/* Bubble footer with status */}
-                    <div className="flex items-center justify-end gap-1.5 mt-2 pt-1 border-t border-white/10 text-[10px] text-slate-400">
+                    <div className="flex items-center justify-end gap-1.5 mt-2 pt-1 border-t border-border text-[10px] text-muted">
                       <span>Uploading to chat…</span>
-                      <Clock size={10} className="animate-spin text-cyan" />
+                      <Clock size={10} className="animate-spin text-primary" />
                     </div>
                   </div>
                 </div>
@@ -1355,10 +1688,10 @@ export function ChatView({
         <div
           style={{ top: `${contextMenu.y}px`, left: `${contextMenu.x}px` }}
           onClick={(e) => e.stopPropagation()}
-          className="fixed z-50 w-52 rounded-2xl border border-white/10 bg-[#142032]/95 backdrop-blur-2xl p-2 shadow-2xl space-y-1 select-none animate-in fade-in zoom-in-95 duration-100"
+          className="fixed z-50 w-52 rounded-2xl border border-border bg-panel/95 backdrop-blur-2xl p-2 shadow-2xl space-y-1 select-none animate-in fade-in zoom-in-95 duration-100"
         >
           {/* Quick Reaction Emoji Strip */}
-          <div className="flex items-center justify-between gap-1 pb-2 border-b border-white/10 px-1">
+          <div className="flex items-center justify-between gap-1 pb-2 border-b border-border/50 px-1">
             {QUICK_REACTIONS.map((emoji) => {
               const norm = (s: string) => s.replace(/\uFE0F/g, '')
               const msgReactions = optimisticReactions[contextMenu.message.id] !== undefined
@@ -1370,7 +1703,7 @@ export function ChatView({
                   key={emoji}
                   type="button"
                   onClick={() => handleAddReaction(contextMenu.message, emoji)}
-                  className={`size-7 rounded-lg flex items-center justify-center text-[15px] transition-transform hover:scale-125 cursor-pointer ${
+                  className={`size-7 rounded-lg flex items-center justify-center text-[15px] transition-all cursor-pointer ${
                     isChosen ? 'bg-primary/30 ring-1 ring-primary' : 'hover:bg-white/15'
                   }`}
                   title={isChosen ? `Remove ${emoji}` : `React with ${emoji}`}
@@ -1389,6 +1722,18 @@ export function ChatView({
           >
             <Reply size={14} className="text-cyan" />
             <span>Reply</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              handleSelectForward(contextMenu.message)
+              setContextMenu(null)
+            }}
+            className="flex w-full items-center gap-2.5 rounded-xl px-2.5 py-1.5 text-left text-[12.5px] text-text hover:bg-white/10 transition-colors"
+          >
+            <CornerUpRight size={14} className="text-cyan" />
+            <span>Forward</span>
           </button>
 
           {Boolean(
@@ -1524,10 +1869,10 @@ export function ChatView({
             <div
               ref={emojiPickerRef}
               data-testid="emoji-picker-panel"
-              className="absolute bottom-12 left-0 z-40 w-80 rounded-2xl border border-white/10 bg-[#142032]/95 backdrop-blur-2xl p-2.5 shadow-2xl flex flex-col gap-2 select-none animate-in fade-in zoom-in-95 duration-100"
+              className="absolute bottom-12 left-0 z-40 w-80 rounded-2xl border border-border bg-panel/95 backdrop-blur-2xl p-2.5 shadow-2xl flex flex-col gap-2 select-none animate-in fade-in zoom-in-95 duration-100"
             >
               {/* Category Tabs */}
-              <div className="flex items-center gap-1 border-b border-white/10 pb-1.5 px-1">
+              <div className="flex items-center gap-1 border-b border-border/50 pb-1.5 px-1">
                 {(['smileys', 'gestures', 'hearts'] as const).map((cat) => (
                   <button
                     key={cat}
@@ -1536,7 +1881,7 @@ export function ChatView({
                     className={`px-2.5 py-1 rounded-lg text-[11.5px] font-medium transition-all cursor-pointer ${
                       emojiCategory === cat
                         ? 'bg-primary/25 text-primary border border-primary/40'
-                        : 'text-muted hover:text-white hover:bg-white/5'
+                        : 'text-muted hover:text-text hover:bg-tile'
                     }`}
                   >
                     {EMOJI_CATEGORIES[cat].name}
@@ -1551,7 +1896,7 @@ export function ChatView({
                     key={emoji}
                     type="button"
                     onClick={() => insertEmoji(emoji)}
-                    className="size-8 rounded-lg hover:bg-white/15 flex items-center justify-center text-[18px] transition-transform hover:scale-125 cursor-pointer leading-none"
+                    className="size-8 rounded-lg hover:bg-tile flex items-center justify-center text-[18px] transition-colors cursor-pointer leading-none"
                     title={emoji}
                   >
                     <span className="emoji-glyph">{emoji}</span>
@@ -1566,7 +1911,7 @@ export function ChatView({
             type="button"
             onClick={() => fileInputRef.current?.click()}
             disabled={!canPost || sending}
-            className="flex size-10 shrink-0 items-center justify-center rounded-xl border border-white/10 bg-[#111b2b] text-muted hover:text-white hover:border-primary disabled:opacity-40 disabled:cursor-not-allowed transition-all cursor-pointer"
+            className="flex size-10 shrink-0 items-center justify-center rounded-xl border border-border bg-tile text-muted hover:text-text hover:border-primary disabled:opacity-40 disabled:cursor-not-allowed transition-all cursor-pointer"
             title="Attach file or media"
           >
             <Paperclip size={17} />
@@ -1578,10 +1923,10 @@ export function ChatView({
             data-testid="emoji-picker-btn"
             onClick={() => setEmojiPickerOpen((prev) => !prev)}
             disabled={!canPost || sending}
-            className={`flex size-10 shrink-0 items-center justify-center rounded-xl border border-white/10 bg-[#111b2b] transition-all cursor-pointer ${
+            className={`flex size-10 shrink-0 items-center justify-center rounded-xl border border-border bg-tile transition-all cursor-pointer ${
               emojiPickerOpen
-                ? 'text-cyan border-cyan bg-cyan/10 shadow-glow'
-                : 'text-muted hover:text-white hover:border-primary disabled:opacity-40 disabled:cursor-not-allowed'
+                ? 'text-primary border-primary bg-primary/10 shadow-glow'
+                : 'text-muted hover:text-text hover:border-primary disabled:opacity-40 disabled:cursor-not-allowed'
             }`}
             title="Insert emoji"
           >
@@ -1613,7 +1958,7 @@ export function ChatView({
                 ? `Replying to ${replyingTo.sender}…`
                 : 'Write a message… (Shift+Enter for new line)'
             }
-            className="flex-1 resize-none rounded-xl border border-white/10 bg-[#111b2b] px-4 py-2.5 text-[13px] text-text placeholder:text-muted focus:border-primary outline-none transition-colors disabled:opacity-40 disabled:cursor-not-allowed leading-relaxed max-h-[160px]"
+            className="flex-1 resize-none rounded-xl border border-border bg-tile px-4 py-2.5 text-[13px] text-text placeholder:text-muted focus:border-primary outline-none transition-colors disabled:opacity-40 disabled:cursor-not-allowed leading-relaxed max-h-[160px]"
           />
 
           {/* Send / Save Button */}
@@ -1665,6 +2010,100 @@ export function ChatView({
                 className="px-3.5 py-1.5 rounded-lg bg-danger text-white text-[12.5px] font-medium hover:bg-danger/90"
               >
                 Delete
+              </button>
+            </div>
+          </div>
+        </Dialog>
+      )}
+
+      {/* Telegram Forward Message Modal */}
+      {forwardingMessage && (
+        <Dialog
+          title="Forward Message"
+          open={Boolean(forwardingMessage)}
+          onClose={() => setForwardingMessage(null)}
+        >
+          <div className="space-y-3.5">
+            {/* Forward Message Quote Preview */}
+            <div className="rounded-xl border-l-4 border-cyan bg-black/30 p-2.5 flex items-start gap-2.5">
+              <div className="min-w-0 flex-1">
+                <div className="text-[12px] font-semibold text-cyan truncate">
+                  {forwardingMessage.sender || activeChat?.title || 'Unknown'}
+                </div>
+                <div className="text-[12.5px] text-slate-200 truncate mt-0.5">
+                  {forwardingMessage.text || forwardingMessage.media?.name || (forwardingMessage.media?.type ? `[${forwardingMessage.media.type}]` : 'Message')}
+                </div>
+              </div>
+            </div>
+
+            {/* Send as copy toggle */}
+            <label className="flex items-center gap-2 text-[12.5px] text-slate-300 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={sendAsCopy}
+                onChange={(e) => setSendAsCopy(e.target.checked)}
+                className="size-4 rounded accent-primary cursor-pointer"
+              />
+              <span>Send without sender name (send as copy)</span>
+            </label>
+
+            {/* Search destination chats */}
+            <div className="relative">
+              <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+              <input
+                type="text"
+                value={forwardSearch}
+                onChange={(e) => setForwardSearch(e.target.value)}
+                placeholder="Search chats and channels..."
+                className="w-full rounded-xl bg-black/40 border border-white/10 pl-9 pr-3 py-2 text-[13px] text-text placeholder:text-muted focus:border-primary focus:outline-none"
+              />
+            </div>
+
+            {/* Target chats scrollable list */}
+            <div className="max-h-60 overflow-y-auto space-y-1 pr-1 custom-scrollbar">
+              {(allChats.length > 0 ? allChats : (activeChat ? [activeChat] : []))
+                .filter((c: any) => {
+                  if (!forwardSearch.trim()) return true
+                  const q = forwardSearch.toLowerCase()
+                  return c.title?.toLowerCase().includes(q) || c.username?.toLowerCase().includes(q)
+                })
+                .map((c: any) => (
+                  <button
+                    key={c.id}
+                    type="button"
+                    disabled={forwardingTargetId !== null}
+                    onClick={() => handleConfirmForward(c)}
+                    className="w-full flex items-center justify-between p-2 rounded-xl hover:bg-tile transition-colors text-left group cursor-pointer disabled:opacity-50"
+                  >
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <Avatar size={34} name={c.title} src={c.photo} />
+                      <div className="min-w-0 flex-1">
+                        <div className="text-[13px] font-medium text-text truncate group-hover:text-primary transition-colors">
+                          {c.title}
+                        </div>
+                        <div className="text-[11px] text-muted capitalize truncate">
+                          {c.kind === 'channel' ? 'Channel' : c.kind === 'saved' ? 'Saved Messages' : c.kind || 'Chat'}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="shrink-0 ml-2">
+                      {forwardingTargetId === c.id ? (
+                        <div className="size-4 rounded-full border-2 border-cyan border-t-transparent animate-spin" />
+                      ) : (
+                        <CornerUpRight size={15} className="text-muted group-hover:text-cyan transition-colors" />
+                      )}
+                    </div>
+                  </button>
+                ))}
+            </div>
+
+            <div className="flex justify-end pt-2 border-t border-white/10">
+              <button
+                type="button"
+                onClick={() => setForwardingMessage(null)}
+                className="px-4 py-1.5 rounded-xl border border-white/10 bg-white/5 text-[12.5px] text-text hover:bg-white/10 transition-colors cursor-pointer"
+              >
+                Cancel
               </button>
             </div>
           </div>

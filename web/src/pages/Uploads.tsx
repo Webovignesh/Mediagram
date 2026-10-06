@@ -75,7 +75,8 @@ export default function Uploads() {
     if (!selectedChatId || files.length === 0) return
     setBusy(true)
     try {
-      const paths = files.map((f) => window.teleflow?.pathOf?.(f) || (f as any).path || f.name).filter(Boolean)
+      const bridge = window.mediagram || window.teleflow
+      const paths = files.map((f) => bridge?.pathOf?.(f) || (f as any).path || f.name).filter(Boolean)
       const res = await call<{ added: number }>('uploads.add', {
         chatId: selectedChatId,
         paths,
@@ -160,7 +161,7 @@ export default function Uploads() {
       <div className="flex flex-1 flex-col overflow-y-auto p-6 space-y-4">
         <div className="flex items-center justify-between pr-40">
           <div>
-            <h1 className="text-[26px] font-bold text-white tracking-wide">Uploads</h1>
+            <h1 className="text-[26px] font-bold text-text tracking-wide">Uploads</h1>
             <p className="mt-1 text-[13px] text-text-2">
               Send media files directly to your Telegram channels, groups, and Saved Messages.
             </p>
