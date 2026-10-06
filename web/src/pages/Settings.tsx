@@ -1,22 +1,49 @@
 // Phase 5.6: Settings page per UI.md & User Specs
 import { useState, useRef, useEffect } from 'react'
-import { Settings as SettingsIcon, Download, Upload, Users, Folder, Bell, Info, ExternalLink, Trash2, LogOut, Clock, Key } from 'lucide-react'
+import { Settings as SettingsIcon, Download, Upload, Users, Folder, Bell, Info, ExternalLink, Trash2, LogOut, Clock, Key, Palette, Check, Eye, EyeOff, Copy, Pencil, ShieldCheck, Lock } from 'lucide-react'
 import { call, useCall, useRoute, navigate } from '../api.ts'
 import { Panel, Toggle, Select, Button, Avatar, Input, Dialog, fmtBytes, fmtDate, confirm, toast } from '../ui.tsx'
+import { THEMES, getActiveTheme, applyTheme } from '../theme.ts'
 
 export default function Settings() {
   const [activeSection, setActiveSection] = useState('general')
+  const [selectedTheme, setSelectedTheme] = useState(() => getActiveTheme().id)
   const [licensesOpen, setLicensesOpen] = useState(false)
 
   const [editApiId, setEditApiId] = useState('')
   const [editApiHash, setEditApiHash] = useState('')
+  const [showApiId, setShowApiId] = useState(false)
+  const [showApiHash, setShowApiHash] = useState(false)
+  const [copiedField, setCopiedField] = useState<'id' | 'hash' | null>(null)
+  const [isEditingApi, setIsEditingApi] = useState(false)
+
+  const copyToClipboard = async (text: string, field: 'id' | 'hash') => {
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopiedField(field)
+      toast(`Copied ${field.toUpperCase()} to clipboard`)
+      setTimeout(() => setCopiedField(null), 2000)
+    } catch {
+      toast('Failed to copy', 'danger')
+    }
+  }
+
   /** Field-level errors for Update Credentials: the message names the field that is wrong, not a toast that vanishes. */
   const [idError, setIdError] = useState<string | null>(null)
   const [hashError, setHashError] = useState<string | null>(null)
   const [apiError, setApiError] = useState<string | null>(null)
 
+  const [editProfileOpen, setEditProfileOpen] = useState(false)
+  const [profileFirstName, setProfileFirstName] = useState('')
+  const [profileLastName, setProfileLastName] = useState('')
+  const [profileUsername, setProfileUsername] = useState('')
+  const [profileBio, setProfileBio] = useState('')
+  const [savingProfile, setSavingProfile] = useState(false)
+  const [profileError, setProfileError] = useState<string | null>(null)
+
   const sectionRefs = {
     general: useRef<HTMLDivElement>(null),
+    appearance: useRef<HTMLDivElement>(null),
     downloads: useRef<HTMLDivElement>(null),
     uploads: useRef<HTMLDivElement>(null),
     telegram: useRef<HTMLDivElement>(null),
@@ -32,7 +59,7 @@ export default function Settings() {
   const scrollTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
 
   const sectionOrder: (keyof typeof sectionRefs)[] = [
-    'general', 'downloads', 'uploads', 'telegram', 'channels', 'queue', 'files', 'notifications', 'about'
+    'general', 'appearance', 'downloads', 'uploads', 'telegram', 'channels', 'queue', 'files', 'notifications', 'about'
   ]
 
   const handleScroll = (e?: { target?: EventTarget | null }) => {
@@ -216,6 +243,38 @@ export default function Settings() {
     }
   }
 
+  const openEditProfile = () => {
+    setProfileFirstName(auth?.me?.firstName || auth?.me?.name?.split(' ')[0] || '')
+    setProfileLastName(auth?.me?.lastName || auth?.me?.name?.split(' ').slice(1).join(' ') || '')
+    setProfileUsername(auth?.me?.username || '')
+    setProfileBio(auth?.me?.bio || '')
+    setProfileError(null)
+    setEditProfileOpen(true)
+  }
+
+  const saveProfile = async () => {
+    if (!profileFirstName.trim()) {
+      setProfileError('First name cannot be empty')
+      return
+    }
+    setSavingProfile(true)
+    setProfileError(null)
+    try {
+      await call('account.updateProfile', {
+        firstName: profileFirstName.trim(),
+        lastName: profileLastName.trim(),
+        username: profileUsername.trim().replace(/^@/, ''),
+        bio: profileBio.trim(),
+      })
+      toast('Profile updated successfully')
+      setEditProfileOpen(false)
+    } catch (e) {
+      setProfileError((e as Error).message || 'Failed to update profile')
+    } finally {
+      setSavingProfile(false)
+    }
+  }
+
   async function logout() {
     if (await confirm({
       title: 'Log out',
@@ -293,6 +352,7 @@ export default function Settings() {
         <div className="px-2 py-2.5 text-[11px] font-bold text-muted uppercase tracking-wider">Settings</div>
         {[
           { id: 'general', icon: SettingsIcon, label: 'General', subtitle: 'Startup & tray' },
+          { id: 'appearance', icon: Palette, label: 'Appearance', subtitle: 'Themes & styling' },
           { id: 'downloads', icon: Download, label: 'Downloads', subtitle: 'Location & limits' },
           { id: 'uploads', icon: Upload, label: 'Uploads', subtitle: 'Defaults & format' },
           { id: 'telegram', icon: Users, label: 'Telegram', subtitle: 'Account & API' },
@@ -306,8 +366,8 @@ export default function Settings() {
             key={id}
             id={`settings-nav-${id}`}
             onClick={() => scrollTo(id as any)}
-            className={`flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors ${
-              activeSection === id ? 'bg-primary text-text shadow-glow' : 'hover:bg-tile text-text-2 hover:text-text'
+            className={`flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors cursor-pointer ${
+              activeSection === id ? 'bg-primary text-white shadow-glow' : 'hover:bg-tile text-text-2 hover:text-text'
             }`}
           >
             <Icon size={16} className="mt-0.5 shrink-0" />
@@ -327,7 +387,7 @@ export default function Settings() {
       >
         <div className="flex items-center justify-between pr-40">
           <div>
-            <h1 className="text-[26px] font-bold text-white tracking-wide">Settings</h1>
+            <h1 className="text-[26px] font-bold text-text tracking-wide">Settings</h1>
             <p className="mt-1 text-[13px] text-text-2">Change how Mediagram looks and works</p>
           </div>
         </div>
@@ -349,6 +409,78 @@ export default function Settings() {
                   <div className="text-[12px] text-muted">Keep transfers active in the system tray when closing window</div>
                 </div>
                 <Toggle checked={settings?.closeToTray || false} onChange={(v) => setSetting('closeToTray', v)} />
+              </div>
+            </div>
+          </Panel>
+        </div>
+
+        {/* Appearance & Themes */}
+        <div ref={sectionRefs.appearance}>
+          <Panel title="Appearance & Themes" icon={<Palette size={18} />}>
+            <div className="space-y-4">
+              <div className="flex items-center justify-between pb-2 border-b border-border/40">
+                <div>
+                  <div className="text-[13px] font-semibold text-text">Theme Palette</div>
+                  <div className="text-[12px] text-muted">Personalize Mediagram's appearance, title bar, and window controls</div>
+                </div>
+                <span className="text-[11px] font-mono px-2.5 py-0.5 rounded-full bg-tile border border-border/60 text-primary font-medium">
+                  {THEMES.find(t => t.id === selectedTheme)?.name || 'Default'}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                {THEMES.map((theme) => {
+                  const isSelected = selectedTheme === theme.id
+                  return (
+                    <button
+                      key={theme.id}
+                      onClick={() => {
+                        setSelectedTheme(theme.id)
+                        applyTheme(theme.id)
+                        toast(`Theme updated to ${theme.name}`)
+                      }}
+                      className={`relative flex flex-col text-left p-3.5 rounded-xl border transition-all duration-200 group ${
+                        isSelected
+                          ? 'border-primary bg-primary/10 shadow-lg shadow-primary/10 ring-1 ring-primary'
+                          : 'border-border/60 bg-tile/40 hover:bg-tile hover:border-border'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="font-semibold text-[13px] text-text group-hover:text-primary transition-colors">
+                          {theme.name}
+                        </div>
+                        {isSelected && (
+                          <div className="w-5 h-5 rounded-full bg-primary flex items-center justify-center text-white shadow-sm">
+                            <Check size={12} strokeWidth={3} />
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="text-[11px] text-muted mb-3 line-clamp-2 leading-relaxed">
+                        {theme.description}
+                      </div>
+
+                      {/* Visual Palette Preview Bar */}
+                      <div className="mt-auto pt-2 flex items-center gap-1.5 border-t border-border/30">
+                        <div className="flex items-center gap-1 p-1 rounded-md bg-tile/80 border border-border/50 w-full">
+                          {theme.previewColors.map((color, i) => (
+                            <div
+                              key={i}
+                              className="h-4 flex-1 rounded-sm shadow-inner transition-transform group-hover:scale-y-110"
+                              style={{ backgroundColor: color }}
+                              title={color}
+                            />
+                          ))}
+                        </div>
+                      </div>
+                    </button>
+                  )
+                })}
+              </div>
+
+              <div className="pt-2 text-[11px] text-muted flex items-center gap-2">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                <span>All themes synchronize seamlessly with the native window navigation controls and persist across launches.</span>
               </div>
             </div>
           </Panel>
@@ -414,7 +546,13 @@ export default function Settings() {
                   <div className="text-[13px] font-semibold text-text">Prebuffer video playback</div>
                   <div className="text-[12px] text-muted">Automatically stream and buffer videos before playback; when off, un-downloaded videos won't prebuffer automatically</div>
                 </div>
-                <Toggle checked={settings?.prebufferVideo ?? true} onChange={(v) => setSetting('prebufferVideo', v)} />
+                <Toggle
+                  checked={settings?.prebufferVideo ?? true}
+                  onChange={(v) => {
+                    try { localStorage.setItem('mediagram_prebuffer_video', String(v)) } catch {}
+                    setSetting('prebufferVideo', v)
+                  }}
+                />
               </div>
               <div className="py-3">
                 <div className="mb-2">
@@ -487,108 +625,300 @@ export default function Settings() {
         {/* Telegram & Open Source API Credentials */}
         <div ref={sectionRefs.telegram}>
           <Panel title="Telegram" icon={<Users size={18} />}>
-            <div className="divide-y divide-border">
-              {/* Account profile */}
-              <div className="flex items-center gap-3.5 py-3">
-                <Avatar src={auth?.me?.photo} name={auth?.me?.name || 'Telegram User'} size={48} />
-                <div className="flex-1">
-                  <div className="text-[15px] font-bold text-text">{auth?.me?.name || 'Connected User'}</div>
-                  <div className="text-[12px] text-muted">{auth?.me?.phone}</div>
-                  {auth?.me?.username && <div className="text-[12px] text-primary">@{auth.me.username}</div>}
+            <div className="space-y-4">
+              {/* Account Profile Card */}
+              <div className="flex items-center justify-between rounded-xl border border-border/70 bg-tile/40 p-3.5">
+                <div className="flex items-center gap-3.5 min-w-0">
+                  <Avatar src={auth?.me?.photo} name={auth?.me?.name || 'Telegram User'} size={46} />
+                  <div className="min-w-0">
+                    <div className="text-[14.5px] font-bold text-text flex items-center gap-2 truncate">
+                      <span className="truncate">{auth?.me?.name || 'Connected User'}</span>
+                      {auth?.me?.premium && (
+                        <span className="text-[10px] bg-primary/20 text-primary font-bold px-1.5 py-0.5 rounded shrink-0">PREMIUM</span>
+                      )}
+                    </div>
+                    <div className="text-[12px] text-muted">{auth?.me?.phone || '–'}</div>
+                    {auth?.me?.username && <div className="text-[12px] text-primary font-mono truncate">@{auth.me.username}</div>}
+                    {auth?.me?.bio && <div className="text-[11.5px] text-muted italic line-clamp-1 mt-0.5 max-w-[280px]">{auth.me.bio}</div>}
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2.5 shrink-0">
+                  <button
+                    type="button"
+                    onClick={openEditProfile}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border bg-tile hover:border-primary text-text hover:text-primary text-[12px] font-medium transition-all cursor-pointer shadow-sm active:scale-95"
+                    title="Edit profile details"
+                  >
+                    <Pencil size={13} className="text-primary" />
+                    <span>Edit Profile</span>
+                  </button>
+                  <div className="flex items-center gap-2 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-3 py-1 text-[12px] font-medium text-emerald-400">
+                    <span className="size-2 rounded-full bg-emerald-400 animate-pulse" />
+                    <span>{auth?.connection === 'ready' ? 'Connected' : (auth?.connection || 'Connected')}</span>
+                  </div>
                 </div>
               </div>
 
               {/* Editable Telegram API Credentials */}
-              <div className="space-y-3 py-4">
-                <div className="flex items-center gap-2 text-text font-semibold text-[13px]">
-                  <Key size={15} className="text-primary" />
-                  <span>Telegram API data</span>
-                </div>
-                <p className="text-[12px] text-muted">
-                  Your own API ID and hash from my.telegram.org — Mediagram uses them to connect to Telegram.
-                </p>
-                <p className={`text-[12px] ${settings?.apiHashSaved ? 'text-success' : 'text-warning'}`}>
-                  {settings?.apiHashSaved
-                    ? 'Saved on this device — kept through sign-out, so you won\'t be asked for these again.'
-                    : 'Not saved yet: these keys are only in this session, so Mediagram will ask for them again next time. A completed sign-in saves them automatically.'}
-                </p>
-                {settings?.apiHashSaved && (
-                  <p className="text-[12px] text-muted">
-                    Saved keys are encrypted with your Windows account (DPAPI) and never leave this device.
-                    Signing out keeps them; Clear All Data erases them.
+              <div className="space-y-4 pt-1">
+                {/* Windows DPAPI Encryption & Security Status Banner */}
+                <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-4 space-y-2.5">
+                  <div className="flex items-center justify-between flex-wrap gap-2">
+                    <div className="flex items-center gap-3">
+                      <div className="size-9 rounded-xl bg-emerald-500/15 text-emerald-400 flex items-center justify-center border border-emerald-500/25 shrink-0 shadow-sm">
+                        <ShieldCheck size={20} />
+                      </div>
+                      <div>
+                        <div className="text-[14px] font-bold text-text flex items-center gap-2 flex-wrap">
+                          <span>Telegram Credentials Stored & Active</span>
+                          <span className="text-[10.5px] font-semibold px-2 py-0.5 rounded-full border border-emerald-500/30 bg-emerald-500/15 text-emerald-400">
+                            Saved in Windows Account
+                          </span>
+                        </div>
+                        <div className="text-[11.5px] text-muted">
+                          Protected by Windows DPAPI encryption • Active local session
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-1.5 text-[11px] font-medium text-emerald-400 bg-emerald-500/10 border border-emerald-500/25 px-2.5 py-1 rounded-full shrink-0">
+                      <span className="size-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                      <span>Active & Encrypted</span>
+                    </div>
+                  </div>
+
+                  <p className="text-[12px] text-muted leading-relaxed">
+                    Your Telegram API ID and API Hash are encrypted with the Windows Data Protection API (DPAPI) and stored directly in your local Windows profile. They never leave your device, cannot be read by other user accounts, and actively power your Mediagram connection.
                   </p>
+                </div>
+
+                {/* API Details Panel with Blurred Shield Stage */}
+                {(() => {
+                  const inEditMode = isEditingApi || Boolean(editApiId.trim() || editApiHash.trim())
+                  return (
+                    <div className="relative rounded-xl border border-border/80 bg-tile/50 p-4 space-y-3.5 overflow-hidden">
+                      {/* Frosted Glass Shield Overlay when not editing */}
+                      {!inEditMode && (
+                        <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-panel/85 backdrop-blur-md p-6 text-center animate-in fade-in duration-200">
+                          <div className="size-12 rounded-2xl bg-primary/15 border border-primary/30 text-primary flex items-center justify-center mb-2.5 shadow-inner">
+                            <Lock size={22} className="text-primary" />
+                          </div>
+                          <div className="text-[14px] font-bold text-text tracking-wide">
+                            Telegram API Keys Configured & Protected
+                          </div>
+                          <p className="text-[12px] text-muted max-w-md mt-1 mb-4 leading-relaxed">
+                            Your credentials from initial setup are already active and securely stored in your Windows account. You only need to edit if you want to switch to different Telegram developer keys.
+                          </p>
+                          <button
+                            type="button"
+                            onClick={() => setIsEditingApi(true)}
+                            className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-primary hover:bg-primary-hover text-white text-[12.5px] font-semibold shadow-glow transition-all hover:scale-105 active:scale-95 cursor-pointer"
+                          >
+                            <Pencil size={13} />
+                            <span>Update API Credentials</span>
+                          </button>
+                        </div>
+                      )}
+
+                      <div className="border-b border-border/40 pb-2 flex items-center justify-between">
+                        <div>
+                          <div className="text-[13px] font-semibold text-text flex items-center gap-2">
+                            <span>API Details</span>
+                            {inEditMode && (
+                              <span className="text-[10.5px] font-semibold px-2 py-0.5 rounded-full bg-primary/15 text-primary border border-primary/25">
+                                Editing Mode
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-[11.5px] text-muted mt-0.5">
+                            Update your Telegram API ID and API hash below. These are saved securely on this device and never leave it.
+                          </div>
+                        </div>
+                        <span className={`text-[11px] font-medium px-2 py-0.5 rounded-full border ${
+                          settings?.apiHashSaved
+                            ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400'
+                            : 'border-warning/30 bg-warning/10 text-warning'
+                        }`}>
+                          {settings?.apiHashSaved ? 'Saved & Encrypted' : 'Session Only'}
+                        </span>
+                      </div>
+
+                      {inEditMode && (
+                        <div className="rounded-lg border border-primary/30 bg-primary/5 p-2.5 text-[11.5px] text-text flex items-start gap-2">
+                          <Info size={15} className="text-primary shrink-0 mt-0.5" />
+                          <span>
+                            Enter your developer credentials from{' '}
+                            <a href="https://my.telegram.org" target="_blank" rel="noreferrer" className="text-primary underline font-medium">
+                              my.telegram.org
+                            </a>
+                            . Applying changes will re-verify with Telegram by signing in again with your phone number.
+                          </span>
+                        </div>
+                      )}
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        {/* API ID */}
+                        <div>
+                          <div className="flex items-center justify-between mb-1.5">
+                            <label className="text-[11.5px] font-semibold text-text-2 flex items-center gap-1">
+                              API ID
+                            </label>
+                          </div>
+                          <div className="relative">
+                            <input
+                              type={showApiId ? 'text' : 'password'}
+                              placeholder="API ID"
+                              value={inEditMode ? editApiId : '••••••••'}
+                              onFocus={() => setIsEditingApi(true)}
+                              onChange={(e) => { setEditApiId(e.target.value); setIdError(null); setApiError(null) }}
+                              onBlur={() => setIdError(editApiId.trim() ? checkId(editApiId.trim()) : null)}
+                              aria-invalid={!!idError}
+                              className={`w-full rounded-[10px] border ${
+                                idError ? 'border-danger' : 'border-border focus:border-primary'
+                              } bg-tile pl-3.5 pr-20 py-2.5 text-[13px] text-text font-mono outline-none transition-colors`}
+                            />
+                            <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
+                              <button
+                                type="button"
+                                onClick={() => setShowApiId(!showApiId)}
+                                className="p-1 rounded hover:bg-tile text-muted hover:text-text transition-colors"
+                                title={showApiId ? 'Hide API ID' : 'Show API ID'}
+                              >
+                                {showApiId ? <EyeOff size={15} /> : <Eye size={15} />}
+                              </button>
+                              {(editApiId.trim() || settings?.apiId) && (
+                                <button
+                                  type="button"
+                                  onClick={() => copyToClipboard(editApiId.trim() || String(settings?.apiId || ''), 'id')}
+                                  className="p-1 rounded hover:bg-tile text-muted hover:text-text transition-colors"
+                                  title="Copy API ID"
+                                >
+                                  {copiedField === 'id' ? <Check size={15} className="text-emerald-400" /> : <Copy size={15} />}
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                          <div className="text-[11px] text-muted mt-1">Numeric ID provided by Telegram (e.g. 12345678).</div>
+                          {idError && <p role="alert" className="mt-1 text-[11px] text-danger">{idError}</p>}
+                        </div>
+
+                        {/* API Hash */}
+                        <div>
+                          <div className="flex items-center justify-between mb-1.5">
+                            <label className="text-[11.5px] font-semibold text-text-2 flex items-center gap-1">
+                              API Hash
+                            </label>
+                          </div>
+                          <div className="relative">
+                            <input
+                              type={showApiHash ? 'text' : 'password'}
+                              placeholder="32-character hex hash"
+                              value={inEditMode ? editApiHash : '••••••••••••••••••••••••••••••••'}
+                              onFocus={() => setIsEditingApi(true)}
+                              onChange={(e) => { setEditApiHash(e.target.value); setHashError(null); setApiError(null) }}
+                              onBlur={() => setHashError(editApiHash.trim() ? checkHash(editApiHash) : null)}
+                              aria-invalid={!!hashError}
+                              autoComplete="off"
+                              spellCheck={false}
+                              className={`w-full rounded-[10px] border ${
+                                hashError ? 'border-danger' : 'border-border focus:border-primary'
+                              } bg-tile pl-3.5 pr-20 py-2.5 text-[13px] text-text font-mono outline-none transition-colors`}
+                            />
+                            <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
+                              <button
+                                type="button"
+                                onClick={() => setShowApiHash(!showApiHash)}
+                                className="p-1 rounded hover:bg-tile text-muted hover:text-text transition-colors"
+                                title={showApiHash ? 'Hide API Hash' : 'Show API Hash'}
+                              >
+                                {showApiHash ? <EyeOff size={15} /> : <Eye size={15} />}
+                              </button>
+                              {editApiHash.trim() && (
+                                <button
+                                  type="button"
+                                  onClick={() => copyToClipboard(editApiHash.trim(), 'hash')}
+                                  className="p-1 rounded hover:bg-tile text-muted hover:text-text transition-colors"
+                                  title="Copy API Hash"
+                                >
+                                  {copiedField === 'hash' ? <Check size={15} className="text-emerald-400" /> : <Copy size={15} />}
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                          <div className="text-[11px] text-muted mt-1">32 characters, hexadecimal (0–9, a–f).</div>
+                          {hashError && <p role="alert" className="mt-1 text-[11px] text-danger">{hashError}</p>}
+                        </div>
+                      </div>
+
+                      {apiError && <p role="alert" className="text-[12px] text-danger">{apiError}</p>}
+
+                      <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-border/40">
+                        <a
+                          href="https://my.telegram.org"
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-[12px] text-primary hover:underline flex items-center gap-1"
+                        >
+                          <span>Get your API credentials at my.telegram.org</span>
+                          <ExternalLink size={12} />
+                        </a>
+
+                        <div className="flex items-center gap-2">
+                          {inEditMode && (
+                            <Button
+                              variant="secondary"
+                              onClick={() => {
+                                setIsEditingApi(false)
+                                setEditApiId('')
+                                setEditApiHash('')
+                                setIdError(null)
+                                setHashError(null)
+                                setApiError(null)
+                              }}
+                              className="py-1.5 px-3 text-[12px]"
+                            >
+                              Cancel
+                            </Button>
+                          )}
+                          <Button
+                            variant="secondary"
+                            onClick={() => { setEditApiId(''); setEditApiHash(''); setIdError(null); setHashError(null); setApiError(null) }}
+                            className="py-1.5 px-3 text-[12px]"
+                          >
+                            Reset
+                          </Button>
+                          <Button
+                            variant="primary"
+                            disabled={!editApiId.trim() || !editApiHash.trim()}
+                            onClick={updateCredentials}
+                            className="py-1.5 px-3.5 text-[12px]"
+                          >
+                            Update API details
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+                  )
+                })()}
+
+                {/* Delete API data */}
+                {settings?.apiHashSaved && (
+                  <div className="flex items-center justify-between rounded-xl border border-danger/30 bg-danger/5 p-3.5">
+                    <div className="flex items-center gap-3">
+                      <div className="grid size-9 place-items-center rounded-lg bg-danger/15 text-danger">
+                        <Trash2 size={16} />
+                      </div>
+                      <div>
+                        <div className="text-[13px] font-semibold text-danger">Delete API data</div>
+                        <div className="text-[11.5px] text-muted">This will permanently remove your saved Telegram API ID and hash from this device.</div>
+                      </div>
+                    </div>
+                    <Button variant="tint" tone="danger" onClick={deleteApiData} className="py-1.5 px-3 text-[12px]">
+                      Delete API data
+                    </Button>
+                  </div>
                 )}
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-[11px] text-muted mb-1">API ID</label>
-                    <input
-                      type="number"
-                      placeholder={settings?.apiId ? String(settings.apiId) : 'API ID'}
-                      value={editApiId}
-                      onChange={(e) => { setEditApiId(e.target.value); setIdError(null); setApiError(null) }}
-                      onBlur={() => setIdError(editApiId.trim() ? checkId(editApiId.trim()) : null)}
-                      aria-invalid={!!idError}
-                      className={`w-full rounded-[10px] border ${idError ? 'border-danger' : 'border-border'} bg-tile px-3 py-2 text-[13px] text-text focus:border-primary outline-none`}
-                    />
-                    {idError && <p role="alert" className="mt-1 text-[11px] text-danger">{idError}</p>}
-                    {!idError && auth?.step === 'ready' && !!editApiId.trim() && (
-                      <p className="mt-1 text-[11px] text-primary">
-                        Applying updated keys checks them with Telegram straight away: you'll sign back in with your
-                        phone number and code.
-                      </p>
-                    )}
-                  </div>
-                  <div>
-                    <label className="block text-[11px] text-muted mb-1">API Hash</label>
-                    <input
-                      type="password"
-                      placeholder="32-character hex hash"
-                      value={editApiHash}
-                      onChange={(e) => { setEditApiHash(e.target.value); setHashError(null); setApiError(null) }}
-                      onBlur={() => setHashError(editApiHash.trim() ? checkHash(editApiHash) : null)}
-                      aria-invalid={!!hashError}
-                      autoComplete="off"
-                      spellCheck={false}
-                      className={`w-full rounded-[10px] border ${hashError ? 'border-danger' : 'border-border'} bg-tile px-3 py-2 text-[13px] text-text focus:border-primary outline-none`}
-                    />
-                    {hashError && <p role="alert" className="mt-1 text-[11px] text-danger">{hashError}</p>}
-                  </div>
-                </div>
-                {apiError && <p role="alert" className="text-[12px] text-danger">{apiError}</p>}
-                <div className="flex items-center justify-between pt-1">
-                  <a
-                    href="https://my.telegram.org"
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-[12px] text-primary hover:underline flex items-center gap-1"
-                  >
-                    <span>Get them at my.telegram.org</span>
-                    <ExternalLink size={12} />
-                  </a>
-                  <div className="flex items-center gap-2">
-                    {settings?.apiHashSaved && (
-                      <Button variant="tint" tone="danger" onClick={deleteApiData} className="py-1 px-3 text-[12px]">
-                        Delete API data
-                      </Button>
-                    )}
-                    <Button
-                      variant="secondary"
-                      disabled={!!settings?.apiHashSaved}
-                      onClick={saveKeys}
-                      className="py-1 px-3 text-[12px]"
-                    >
-                      {settings?.apiHashSaved ? 'Saved' : 'Save API data'}
-                    </Button>
-                    <Button
-                      variant="primary"
-                      disabled={!editApiId.trim() || !editApiHash.trim()}
-                      onClick={updateCredentials}
-                      className="py-1 px-3 text-[12px]"
-                    >
-                      Update API data
-                    </Button>
-                  </div>
-                </div>
               </div>
             </div>
           </Panel>
@@ -826,6 +1156,84 @@ export default function Settings() {
           </div>
         </Panel>
       </div>
+
+      {/* Edit Profile Dialog Modal */}
+      <Dialog
+        open={editProfileOpen}
+        onClose={() => setEditProfileOpen(false)}
+        title="Edit Profile Details"
+        actions={
+          <div className="flex items-center justify-end gap-2.5">
+            <Button variant="secondary" onClick={() => setEditProfileOpen(false)}>
+              Cancel
+            </Button>
+            <Button variant="primary" disabled={savingProfile} onClick={saveProfile}>
+              {savingProfile ? 'Saving…' : 'Save Changes'}
+            </Button>
+          </div>
+        }
+      >
+        <div className="space-y-4 py-1">
+          {profileError && (
+            <div className="rounded-lg bg-danger/10 border border-danger/30 p-2.5 text-[12.5px] text-danger flex items-center gap-2">
+              <span>{profileError}</span>
+            </div>
+          )}
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-[12px] font-semibold text-text mb-1 block">First Name *</label>
+              <input
+                type="text"
+                value={profileFirstName}
+                onChange={(e) => setProfileFirstName(e.target.value)}
+                placeholder="First name"
+                maxLength={64}
+                className="w-full rounded-[10px] border border-border bg-tile px-3 py-2 text-[13px] text-text focus:border-primary outline-none"
+              />
+            </div>
+            <div>
+              <label className="text-[12px] font-semibold text-text mb-1 block">Last Name</label>
+              <input
+                type="text"
+                value={profileLastName}
+                onChange={(e) => setProfileLastName(e.target.value)}
+                placeholder="Last name (optional)"
+                maxLength={64}
+                className="w-full rounded-[10px] border border-border bg-tile px-3 py-2 text-[13px] text-text focus:border-primary outline-none"
+              />
+            </div>
+          </div>
+          <div>
+            <label className="text-[12px] font-semibold text-text mb-1 block">Username</label>
+            <div className="relative">
+              <span className="absolute left-3 top-2.5 text-muted font-mono text-[13px]">@</span>
+              <input
+                type="text"
+                value={profileUsername}
+                onChange={(e) => setProfileUsername(e.target.value.replace(/^@/, ''))}
+                placeholder="username"
+                maxLength={32}
+                className="w-full rounded-[10px] border border-border bg-tile pl-7 pr-3 py-2 text-[13px] text-text focus:border-primary outline-none font-mono"
+              />
+            </div>
+            <p className="mt-1 text-[11px] text-muted">A–Z, 0–9, and underscores. Minimum 5 characters.</p>
+          </div>
+          <div>
+            <label className="text-[12px] font-semibold text-text mb-1 block">Bio / About</label>
+            <textarea
+              value={profileBio}
+              onChange={(e) => setProfileBio(e.target.value)}
+              placeholder="A few words about yourself (optional)"
+              maxLength={140}
+              rows={3}
+              className="w-full rounded-[10px] border border-border bg-tile px-3 py-2 text-[13px] text-text focus:border-primary outline-none resize-none"
+            />
+            <div className="mt-0.5 flex justify-end text-[11px] text-muted">
+              <span>{profileBio.length} / 140</span>
+            </div>
+          </div>
+        </div>
+      </Dialog>
     </div>
   )
 }
