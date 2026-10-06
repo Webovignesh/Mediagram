@@ -6,14 +6,18 @@ import type { AppEvent } from '../../core/db.ts'
 import type { LiveStats } from '../../core/transfers.ts'
 
 declare global {
-  interface Window { teleflow: Bridge }
+  interface Window { mediagram?: Bridge; teleflow: Bridge }
 }
+
+export const getBridge = (): Bridge =>
+  (typeof window !== 'undefined' ? (window.mediagram || window.teleflow) : undefined) as Bridge
 
 export type CallError = Error & { status: number, retryAfter?: number }
 
 /** Calls a main-process method; a failure throws an Error carrying `status` and the user-facing message. */
 export async function call<T>(method: string, args?: unknown): Promise<T> {
-  const res = await window.teleflow.call(method, args) as Envelope
+  const bridge = getBridge()
+  const res = await bridge.call(method, args) as Envelope
   if (!res.ok) throw Object.assign(new Error(res.error), { status: res.status, retryAfter: res.retryAfter }) as CallError
   return res.data as T
 }
@@ -97,9 +101,10 @@ export function useCall<T>(
         (event.type === 'stats' && topics.includes('stats'))
       if (match) {
         clearTimeout(timer)
+        const isMsg = event.type === 'invalidate' && event.topics.some((t) => t.startsWith('messages:'))
         timer = setTimeout(() => {
           reload()
-        }, 300)
+        }, isMsg ? 30 : 200)
       }
     })
     return () => {
@@ -118,10 +123,11 @@ const liveListeners = new Set<() => void>()
 let eventListenerInitialized = false
 
 function initEventListener() {
-  if (eventListenerInitialized || typeof window === 'undefined' || !window.teleflow?.on) return
+  const bridge = getBridge()
+  if (eventListenerInitialized || !bridge?.on) return
   eventListenerInitialized = true
 
-  window.teleflow.on((event: unknown) => {
+  bridge.on((event: unknown) => {
     const e = event as AppEvent
     let changed = false
     if (e.type === 'auth') {
@@ -200,7 +206,8 @@ function notifyTyping() {
 /** Subscribe to app events. */
 export function on(cb: (event: AppEvent) => void): () => void {
   initEventListener()
-  return window.teleflow.on((event: unknown) => cb(event as AppEvent))
+  const bridge = getBridge()
+  return bridge?.on ? bridge.on((event: unknown) => cb(event as AppEvent)) : () => {}
 }
 
 /** Hook for live auth and active transfer count. */
