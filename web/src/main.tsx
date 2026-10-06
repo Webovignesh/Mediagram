@@ -2,6 +2,7 @@ import { Component, type ReactNode } from 'react'
 import { createRoot } from 'react-dom/client'
 import App from './App.tsx'
 import { ConfirmHost, Toaster } from './ui.tsx'
+import { applyTheme, getActiveTheme } from './theme.ts'
 import './styles.css'
 
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
@@ -31,7 +32,19 @@ function fatal(message: string) {
 }
 
 try {
-  if (!window.teleflow) fatal('Error: window.teleflow is not defined. Preload script failed.')
+  applyTheme(getActiveTheme().id)
+
+  // Prevent default image drag ghost artifacts across the entire app
+  if (typeof window !== 'undefined') {
+    window.addEventListener('dragstart', (e) => {
+      const target = e.target as HTMLElement | null
+      if (target && (target.tagName === 'IMG' || target.closest('img'))) {
+        e.preventDefault()
+      }
+    })
+  }
+
+  if (!window.mediagram && !window.teleflow) fatal('Error: Mediagram preload script failed.')
   else {
     createRoot(document.getElementById('root')!).render(
       <ErrorBoundary>

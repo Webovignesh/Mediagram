@@ -22,11 +22,101 @@
   --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 }
 
+:root, [data-theme="dark"] {
+  --color-bg: #0f172a;
+  --color-sidebar: #111c35;
+  --color-panel: rgb(30 41 59 / 0.88);
+  --color-tile: #1e293b;
+  --color-border: rgb(148 163 184 / 0.16);
+  --color-text: #f8fafc;
+  --color-text-2: #cbd5e1;
+  --color-muted: #94a3b8;
+  --color-primary: #3b82f6;
+  --color-primary-hover: #60a5fa;
+  --color-cyan: #38bdf8;
+  --shadow-glow: 0 0 0 1px #3b82f6, 0 0 16px rgb(59 130 246 / 0.35);
+}
+
+[data-theme="telegram"] {
+  --color-bg: #17212b;
+  --color-sidebar: #0e1621;
+  --color-panel: rgb(24 37 51 / 0.95);
+  --color-tile: #242f3d;
+  --color-border: rgb(255 255 255 / 0.09);
+  --color-text: #f5f5f5;
+  --color-text-2: #a2b5c7;
+  --color-muted: #708499;
+  --color-primary: #5288c1;
+  --color-primary-hover: #6ba3de;
+  --color-cyan: #5288c1;
+  --shadow-glow: 0 0 0 1px #5288c1, 0 0 16px rgb(82 136 193 / 0.35);
+}
+
+[data-theme="ocean"] {
+  --color-bg: #070e1e;
+  --color-sidebar: #0b152d;
+  --color-panel: rgb(15 28 56 / 0.92);
+  --color-tile: #16274e;
+  --color-border: rgb(56 189 248 / 0.16);
+  --color-text: #f0f9ff;
+  --color-text-2: #bae6fd;
+  --color-muted: #7dd3fc;
+  --color-primary: #0ea5e9;
+  --color-primary-hover: #38bdf8;
+  --color-cyan: #38bdf8;
+  --shadow-glow: 0 0 0 1px #0ea5e9, 0 0 16px rgb(14 165 233 / 0.35);
+}
+
+[data-theme="light"] {
+  --color-bg: #f8fafc;
+  --color-sidebar: #f1f5f9;
+  --color-panel: #ffffff;
+  --color-tile: #ffffff;
+  --color-border: #e2e8f0;
+  --color-text: #0f172a;
+  --color-text-2: #334155;
+  --color-muted: #64748b;
+  --color-primary: #0284c7;
+  --color-primary-hover: #0369a1;
+  --color-cyan: #0284c7;
+  --shadow-glow: 0 0 0 1px #0284c7, 0 2px 10px rgb(2 132 199 / 0.2);
+}
+
+[data-theme="sunset"] {
+  --color-bg: #141013;
+  --color-sidebar: #1a1418;
+  --color-panel: rgb(34 26 31 / 0.95);
+  --color-tile: #2a1f26;
+  --color-border: rgb(245 158 11 / 0.18);
+  --color-text: #fffbeb;
+  --color-text-2: #fde68a;
+  --color-muted: #b45309;
+  --color-primary: #f59e0b;
+  --color-primary-hover: #fbbf24;
+  --color-cyan: #f59e0b;
+  --shadow-glow: 0 0 0 1px #f59e0b, 0 0 16px rgb(245 158 11 / 0.35);
+}
+
+[data-theme="tokyo"] {
+  --color-bg: #1a1b26;
+  --color-sidebar: #16161e;
+  --color-panel: rgb(36 40 59 / 0.95);
+  --color-tile: #2f354f;
+  --color-border: rgb(122 162 247 / 0.2);
+  --color-text: #c0caf5;
+  --color-text-2: #9aa5ce;
+  --color-muted: #565f89;
+  --color-primary: #7aa2f7;
+  --color-primary-hover: #bb9af7;
+  --color-cyan: #7dcfff;
+  --shadow-glow: 0 0 0 1px #7aa2f7, 0 0 16px rgb(122 162 247 / 0.35);
+}
+
 @layer base {
   html, body, #root { height: 100%; }
   body {
     margin: 0;
-    background: radial-gradient(ellipse 90% 60% at 50% 0%, rgb(59 130 246 / 0.14), transparent), var(--color-bg);
+    background: radial-gradient(ellipse 90% 60% at 50% 0%, color-mix(in srgb, var(--color-primary) 14%, transparent), transparent), var(--color-bg);
     color: var(--color-text);
     font-family: var(--font-sans);
     font-size: 13px;
@@ -215,4 +305,12 @@
   animation: emojiBounceIn 0.35s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards, emojiFloat 3.6s ease-in-out infinite 0.35s;
   will-change: transform;
   display: inline-block;
+}
+
+/* Prevent accidental ghost image drag overlays across the app */
+img {
+  -webkit-user-drag: none;
+  user-drag: none;
+  user-select: none;
+  -webkit-user-select: none;
 }

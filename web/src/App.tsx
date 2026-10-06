@@ -86,7 +86,7 @@ function Sidebar({
           <MediagramLogo size={32} className="rounded-lg shadow-md shrink-0" />
           {!collapsed && (
             <div className="overflow-hidden">
-              <div className="font-bold text-[13.5px] text-text leading-tight truncate tracking-wide">Workspace</div>
+              <div className="font-bold text-[13.5px] text-text leading-tight truncate tracking-wide">Mediagram</div>
               <div className="text-[10.5px] text-muted leading-tight truncate mt-0.5">Telegram Manager</div>
             </div>
           )}
@@ -105,8 +105,8 @@ function Sidebar({
               className={`flex w-full items-center gap-2.5 rounded-lg transition-all ${
                 collapsed ? 'justify-center p-2.5' : 'px-3 py-2 text-left'
               } ${
-                active ? 'bg-primary text-text shadow-glow font-medium' : 'text-text-2 hover:bg-tile hover:text-text'
-              } ${id === '/queue' && queueBumping ? 'scale-110 ring-2 ring-cyan shadow-glow' : ''}`}
+                active ? 'bg-primary text-white shadow-glow font-medium' : 'text-text-2 hover:bg-tile hover:text-text'
+              } ${id === '/queue' && queueBumping ? 'scale-110 ring-2 ring-primary shadow-glow' : ''}`}
             >
               <Icon size={18} className="shrink-0" />
               {!collapsed && <span className="flex-1 text-[13px] truncate">{label}</span>}
@@ -226,14 +226,14 @@ export default function App() {
   // Sustained Signing Out screen during logout pipeline (stays steadily visible until logout completes)
   if (isLoggingOut || auth?.step === 'logging-out') {
     return (
-      <div className="fade-enter relative flex h-screen w-screen flex-col items-center justify-center bg-[#0f172a] select-none overflow-hidden">
+      <div className="fade-enter relative flex h-screen w-screen flex-col items-center justify-center bg-bg select-none overflow-hidden">
         <WindowDragBar />
         <div className="flex flex-col items-center gap-4">
           <div className="logout-icon grid size-16 place-items-center rounded-2xl bg-danger/15 text-danger shadow-[0_0_35px_rgba(239,68,68,0.3)] border border-danger/30">
             <LogOut size={28} />
           </div>
           <div className="flex flex-col items-center gap-1.5 text-center">
-            <div className="text-[19px] font-bold text-white tracking-wide">Signing out…</div>
+            <div className="text-[19px] font-bold text-text tracking-wide">Signing out…</div>
             <div className="text-[12px] text-muted font-medium flex items-center gap-2">
               <span className="size-1.5 rounded-full bg-danger animate-pulse" />
               Closing Telegram session securely
@@ -247,7 +247,7 @@ export default function App() {
   // Sustained Splash screen on app launch: stays active until session check is complete and minSplashDone elapsed
   if (loading || !auth || auth.step === 'starting' || (!minSplashDone && auth.step === 'ready')) {
     return (
-      <div className="relative flex h-screen w-screen flex-col items-center justify-center bg-[#0f172a] select-none overflow-hidden">
+      <div className="relative flex h-screen w-screen flex-col items-center justify-center bg-bg select-none overflow-hidden">
         <WindowDragBar />
         <div className="flex flex-col items-center gap-4">
           <div className="splash-icon flex size-16 items-center justify-center rounded-2xl shadow-[0_0_40px_rgba(59,130,246,0.35)]">
@@ -279,12 +279,9 @@ export default function App() {
 
   const shell = (
     <div className="flex h-full w-full flex-col overflow-hidden bg-bg">
-      {/* Top Window Bar: Solid 36px bar holding native controls, drag region, and the app logo */}
-      <div className="drag flex h-9 shrink-0 items-center justify-between bg-[#0f172a] px-3 select-none z-30 border-b border-white/[0.06]">
-        <div className="no-drag flex items-center gap-2 text-[12px] font-semibold text-text tracking-wide">
-          <MediagramLogo size={18} className="rounded" />
-          <span>Mediagram</span>
-        </div>
+      {/* Top Window Bar: Solid 36px bar holding native controls and drag region */}
+      <div className="drag flex h-9 shrink-0 items-center justify-between bg-bg px-3 select-none z-30 border-b border-border/40">
+        <div />
 
         {/* Reserved slot for the OTA update pill (the top bar carries no status indicators otherwise) */}
         <div className="no-drag mr-36" aria-hidden="true" />
