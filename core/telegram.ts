@@ -1,19 +1,24 @@
 // TDLib client lifecycle, auth, chat cache, links, messages, thumbnails (ARCHITECTURE > Telegram). One TDLib client
 // per process, so this module is a singleton; the pure TDLib → shape mappings live in shapes.ts.
+import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import tdl, { type Client } from 'tdl'
 import type * as Td from 'tdlib-types'
 import { type AppError, type DB, deleteMedia, type Emit, fail, getScan, mediaCount, putMedia, putScan, type ScanRow } from './db.ts'
 import {
-  type AuthState, type Cache, type Chat, type Creds, extractMedia, type Folder, folderOf, mapAuth, mapConnection, type Me,
-  type Message, mediaRow, normalizeLink, rights, tdError, toChat, toMe,
+  type AuthState, type Cache, type Chat, type Creds, type DeliveryStatus, extractMedia, type Folder, folderOf,
+  mapAuth, mapConnection, mapEntities, type Me, type Message, mediaRow, normalizeLink, type ReactionItem,
+  type ReplyPreview, rights, tdError, type TextEntity, toChat, toMe,
 } from './shapes.ts'
 import { log } from './storage.ts'
 
 // ---- Client ----
 
-type Deps = { dir: string /* home\tdlib */, version: string, db: DB, emit: Emit, showArchived: () => boolean, forgetCredentials: () => void }
+type Deps = { dir: string /* home\tdlib */, version: string, db: DB, emit: Emit, showArchived: () => boolean, forgetCredentials: () => void,
+  /** Called with the keys a session reached `ready` under: the pair is kept on disk (encrypted) so the next sign-in skips the API-keys step. */
+  saveCredentials: (c: Creds) => void,
+  hasSavedCredentials?: boolean }
 let deps: Deps
 let client: Client | null = null
 let creds: Creds | null = null
@@ -21,6 +26,13 @@ let tdAuth: Td.AuthorizationState | null = null
 let connection: AuthState['connection'] = 'offline'
 let loggingOut = false
 let credError: string | undefined
+// Credentials gate: Telegram checks api_id/api_hash only while authorizing a NEW session, never when an existing
+// tdlib session resumes, so the keys that signed this session in are fingerprinted on disk (keysMatch) and compared
+// before they may open it. `loggingIn` marks a sign-in this run completed (phone sent), which is Telegram checking
+// the keys itself; `offerFresh` tells the renderer a fresh sign-in is the only way forward.
+let offerFresh = false
+let keysMatch = false
+let loggingIn = false
 let me: Me | null = null
 let auth: AuthState = { step: 'credentials', connection: 'offline' }
 const cache: Cache = { meId: 0, users: new Map(), basicGroups: new Map(), supergroups: new Map() }
@@ -32,14 +44,22 @@ const listeners = new Set<(u: Td.Update) => void>()
 const restarted: (() => void)[] = []
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 
-export const init = (d: Deps) => { deps = d }
+export const init = (d: Deps) => {
+  deps = d
+  if (d.hasSavedCredentials) {
+    auth = { step: 'starting', connection: 'connecting' }
+  }
+}
 export const authState = () => auth
+/** The keys this session is running on: the gate compares them, Settings and the ready callback keep them,
+ *  and logout restarts the app with them. */
+export const credentials = (): Creds | null => creds
 /** Raw TDLib updates for the transfer engine (updateFile, send results). Returns unsubscribe. */
 export const onUpdate = (fn: (u: Td.Update) => void) => { listeners.add(fn); return () => { listeners.delete(fn) } }
 
 function changed() {
   const next: AuthState = client ? { connection, ...mapAuth(tdAuth, me) }
-    : { connection: 'offline', step: 'credentials', ...(credError && { error: credError }) }
+    : { connection: 'offline', step: 'credentials', ...(credError && { error: credError }), ...(offerFresh && { needsFresh: true }) }
   if (JSON.stringify(next) === JSON.stringify(auth)) return
   if (next.step !== auth.step) log('info', `Telegram: ${next.step}`)
   auth = next
@@ -52,7 +72,6 @@ const chatsChanged = () => deps.emit({ type: 'invalidate', topics: ['chats'] })
 function setConnection(c: AuthState['connection']) {
   if (c === 'ready' && connection !== 'ready') {
     failedScans.clear()
-    if (client) void client.invoke({ _: 'setNetworkType', type: { _: 'networkTypeWiFi' } }).catch(() => {})
     if (wanted !== null) mediaChanged(wanted, true) // the refetch re-asks chats.media, which restarts the scan
   }
   if (c !== 'ready' && connection === 'ready') current.clear()
@@ -64,7 +83,6 @@ function setConnection(c: AuthState['connection']) {
 export function networkChanged(online: boolean) {
   if (!online) return
   failedScans.clear()
-  if (client) void client.invoke({ _: 'setNetworkType', type: { _: 'networkTypeWiFi' } }).catch(() => {})
   if (auth.step !== 'ready') return
   if (wanted !== null) mediaChanged(wanted, true)
   chatsChanged()
@@ -85,18 +103,45 @@ export const invoke: Td.Invoke = (req) => {
   return call(req)
 }
 
+// ---- Credentials gate ----
+// Telegram checks api_id/api_hash only while authorizing a NEW session; an existing tdlib session resumes without
+// them (the Telethon #1569 behaviour). So the pair that signed this session in is fingerprinted on disk the moment
+// the session reaches `ready`, and every later pair must match it before TDLib is even created. Anything that cannot
+// be accounted for is refused (409) with an offer to start fresh, where the OTP step is where Telegram really checks.
+const fingerprintFile = () => path.join(deps.dir, 'session.fingerprint')
+/** Pure: `<apiId>:<sha256 of the lowercased hash>`; the hash is one-way, so the file never holds the keys themselves. */
+export const fingerprint = (c: Creds) => `${c.apiId}:${createHash('sha256').update(c.apiHash.toLowerCase()).digest('hex')}`
+const readFingerprint = (): string | null => {
+  try { return fs.readFileSync(fingerprintFile(), 'utf8').trim() || null } catch { return null }
+}
+const writeFingerprint = (c: Creds) => {
+  try { fs.mkdirSync(deps.dir, { recursive: true }); fs.writeFileSync(fingerprintFile(), fingerprint(c)) }
+  catch (e) { log('warn', `Recording the session's API keys failed: ${(e as Error).message}`) }
+}
+const dropFingerprint = () => { try { fs.rmSync(fingerprintFile(), { force: true }) } catch {} }
+const MISMATCH = "These API keys don't match the session saved on this device. Correct them, or start a fresh sign-in to use different keys."
+const UNVERIFIABLE = "These API keys can't be checked against the session saved on this device. Start a fresh sign-in to have Telegram check them."
+
+/** An existing session the keys cannot be accounted for: close it before it shows anything, and ask for a fresh sign-in. */
+async function blockSession() {
+  await close()
+  creds = null
+  credError = UNVERIFIABLE
+  offerFresh = true
+  changed()
+}
+
 let starting = Promise.resolve()
 /** Creates the client, closing any previous one. Calls run one after another, so overlapping starts (a double submit)
- *  never leave a second client locking tdlib\db, and the last credentials win. */
-export function start(c: Creds) {
-  const run = starting.then(() => launch(c))
+ *  never leave a second client locking tdlib\db, and the last credentials win. `fresh` deletes the saved session first,
+ *  so the keys go through a real Telegram sign-in instead of reopening what is already here. */
+export function start(c: Creds, fresh = false) {
+  const run = starting.then(() => launch(c, fresh))
   starting = run.catch(() => {})
   return run
 }
 
 async function applySpeedOptimizations(cl: Client) {
-  // Inform TDLib of unmetered high-speed WiFi/LAN connection to open multi-connection socket pool
-  await cl.invoke({ _: 'setNetworkType', type: { _: 'networkTypeWiFi' } }).catch(() => {})
   // Enable Quick ACK for low-latency outgoing message & packet acknowledgments (accelerates upload window scaling)
   await cl.invoke({ _: 'setOption', name: 'use_quick_ack', value: { _: 'optionValueBoolean', value: true } }).catch(() => {})
   // Enable Perfect Forward Secrecy for faster and robust session crypto
@@ -111,10 +156,23 @@ async function applySpeedOptimizations(cl: Client) {
 }
 
 // tdl answers WaitTdlibParameters with these options.
-async function launch(c: Creds) {
+async function launch(c: Creds, fresh = false) {
+  // Fresh sign-in: the local session and its fingerprint go first, so Telegram will really check this pair at the
+  // code step. Otherwise the stored fingerprint must match the keys before TDLib is allowed to open the session.
+  if (fresh) { await close(); await removeSession() }
+  const stored = fresh ? null : readFingerprint()
+  keysMatch = stored !== null && stored === fingerprint(c)
+  if (stored !== null && !keysMatch) {
+    credError = MISMATCH
+    offerFresh = true
+    changed()
+    throw fail(409, MISMATCH)
+  }
   await close()
   creds = c
   credError = undefined
+  offerFresh = false
+  loggingIn = false
   loggingOut = false
   for (const m of [chats, cache.users, cache.basicGroups, cache.supergroups]) m.clear()
   folders = []
@@ -151,7 +209,7 @@ export async function close() {
 
 /** Clear All Data: closes the client and forgets the credentials, so auth returns to the API Keys step. */
 export function reset() {
-  const run = starting.then(async () => { await close(); creds = null; credError = undefined; changed() })
+  const run = starting.then(async () => { await close(); creds = null; credError = undefined; offerFresh = false; changed() })
   starting = run.catch(() => {})
   return run
 }
@@ -167,8 +225,11 @@ async function rejectCredentials(code: string) {
   return fail(400, credError)
 }
 
-const removeSession = () => Promise.all(['db', 'files'].map((d) => fs.promises.rm(path.join(deps.dir, d), { recursive: true, force: true, maxRetries: 5 })
-  .catch((e) => log('warn', `Could not delete tdlib\\${d}: ${(e as Error).message}`))))
+const removeSession = () => {
+  dropFingerprint() // the keys on record belong to the session being deleted
+  return Promise.all(['db', 'files'].map((d) => fs.promises.rm(path.join(deps.dir, d), { recursive: true, force: true, maxRetries: 5 })
+    .catch((e) => log('warn', `Could not delete tdlib\\${d}: ${(e as Error).message}`))))
+}
 
 // A closed TDLib client cannot be reused: drop it, delete the session after a logout, and start a fresh one.
 async function onClosed() {
@@ -218,13 +279,57 @@ function patch(id: number, fn: (c: Td.chat) => void) {
   if (c) { fn(c); chatsChanged() }
 }
 
+const senderName = (s: Td.MessageSender) => s._ === 'messageSenderUser'
+  ? [cache.users.get(s.user_id)?.first_name, cache.users.get(s.user_id)?.last_name].filter(Boolean).join(' ')
+  : chats.get(s.chat_id)?.title ?? ''
+
+const typingState = new Map<number, { text: string, timer: NodeJS.Timeout }>()
+
+function formatChatAction(sender: string, action: Td.ChatAction): string | null {
+  const name = sender || 'Someone'
+  switch (action._) {
+    case 'chatActionTyping': return `${name} is typing…`
+    case 'chatActionRecordingVideo': return `${name} is recording a video…`
+    case 'chatActionUploadingVideo': return `${name} is sending a video…`
+    case 'chatActionRecordingVoiceNote': return `${name} is recording a voice message…`
+    case 'chatActionUploadingVoiceNote': return `${name} is sending a voice message…`
+    case 'chatActionUploadingPhoto': return `${name} is sending a photo…`
+    case 'chatActionUploadingDocument': return `${name} is sending a file…`
+    case 'chatActionRecordingVideoNote': return `${name} is recording a video message…`
+    case 'chatActionUploadingVideoNote': return `${name} is sending a video message…`
+    case 'chatActionChoosingSticker': return `${name} is choosing a sticker…`
+    case 'chatActionChoosingLocation': return `${name} is sharing a location…`
+    case 'chatActionChoosingContact': return `${name} is sharing a contact…`
+    case 'chatActionStartPlayingGame': return `${name} is playing a game…`
+    case 'chatActionCancel': return null
+    default: return null
+  }
+}
+
+export function getChatAction(chatId: number): string | null {
+  return typingState.get(chatId)?.text ?? null
+}
+
+export function getAllChatActions(): Record<number, string> {
+  const res: Record<number, string> = {}
+  for (const [id, entry] of typingState.entries()) {
+    res[id] = entry.text
+  }
+  return res
+}
+
 function onTdUpdate(cl: Client, u: Td.Update) {
   switch (u._) {
     case 'updateAuthorizationState':
       tdAuth = u.authorization_state
       if (tdAuth._ === 'authorizationStateLoggingOut') loggingOut = true
-      if (tdAuth._ === 'authorizationStateReady') void onReady(cl)
-      else me = null
+      if (tdAuth._ === 'authorizationStateReady') {
+        // The gate: a session resuming under keys it was never signed in with (or never recorded) is closed before
+        // onReady can read a single chat. A sign-in this run completed is proof Telegram checked the pair itself.
+        if (creds && !(keysMatch || loggingIn)) { void blockSession(); break }
+        if (creds) { writeFingerprint(creds); deps.saveCredentials(creds) } // session, fingerprint, and saved keys are one pair
+        void onReady(cl)
+      } else me = null
       changed()
       break
     case 'updateConnectionState': setConnection(mapConnection(u.state)); changed(); break
@@ -232,6 +337,28 @@ function onTdUpdate(cl: Client, u: Td.Update) {
     case 'updateDeleteMessages':
       if (!u.is_permanent || u.from_cache) break // TDLib cache evictions are not deletions (FileGram lesson)
       if (deleteMedia(deps.db, u.chat_id, u.message_ids)) mediaChanged(u.chat_id)
+      deps.emit({ type: 'invalidate', topics: [`messages:${u.chat_id}`] })
+      break
+    case 'updateMessageContent':
+      deps.emit({ type: 'invalidate', topics: [`messages:${u.chat_id}`] })
+      break
+    case 'updateMessageEdited':
+      deps.emit({ type: 'invalidate', topics: [`messages:${u.chat_id}`] })
+      break
+    case 'updateMessageSendSucceeded':
+      deps.emit({ type: 'invalidate', topics: [`messages:${u.message.chat_id}`] })
+      break
+    case 'updateMessageSendFailed':
+      deps.emit({ type: 'invalidate', topics: [`messages:${u.message.chat_id}`] })
+      break
+    case 'updateChatReadOutbox':
+      patch(u.chat_id, (c) => { c.last_read_outbox_message_id = u.last_read_outbox_message_id })
+      deps.emit({ type: 'invalidate', topics: [`messages:${u.chat_id}`] })
+      break
+    case 'updateMessageInteractionInfo':
+      deps.emit({ type: 'invalidate', topics: [`messages:${u.chat_id}`] })
+      break
+    case 'updateMessageIsPinned':
       deps.emit({ type: 'invalidate', topics: [`messages:${u.chat_id}`] })
       break
     case 'updateOption':
@@ -259,14 +386,71 @@ function onTdUpdate(cl: Client, u: Td.Update) {
       chatsChanged()
       if (auth.step === 'ready') void loadLists()
       break
+    case 'updateChatAction': {
+      const existing = typingState.get(u.chat_id)
+      if (existing) {
+        clearTimeout(existing.timer)
+        typingState.delete(u.chat_id)
+      }
+      const sName = senderName(u.sender_id)
+      const text = formatChatAction(sName, u.action)
+      if (text) {
+        const timer = setTimeout(() => {
+          typingState.delete(u.chat_id)
+          deps.emit({ type: 'typing', chatId: u.chat_id, text: null })
+        }, 5000)
+        typingState.set(u.chat_id, { text, timer })
+        deps.emit({ type: 'typing', chatId: u.chat_id, text })
+      } else {
+        deps.emit({ type: 'typing', chatId: u.chat_id, text: null })
+      }
+      break
+    }
+    case 'updateFile': {
+      const localPath = (u.file.local.path && fs.existsSync(u.file.local.path)) ? u.file.local.path : null
+      deps.emit({
+        type: 'fileProgress',
+        fileId: u.file.id,
+        downloaded: u.file.local.downloaded_size,
+        total: u.file.size || u.file.expected_size,
+        completed: u.file.local.is_downloading_completed,
+        path: localPath,
+      })
+      break
+    }
   }
   for (const fn of listeners) fn(u)
 }
 
-// Valid from the phone, code, and password steps ("use a different number" sends a new phone).
-export const sendPhone = async (phone: string) => { await call({ _: 'setAuthenticationPhoneNumber', phone_number: phone }) }
-export const sendCode = async (code: string) => { await call({ _: 'checkAuthenticationCode', code }) }
-export const sendPassword = async (password: string) => { await call({ _: 'checkAuthenticationPassword', password }) }
+// Valid from the phone, code, and password steps ("use a different number" sends a new phone). Sending the phone is
+// the sign-in Telegram performs with these keys, so it marks the pair as checked by Telegram (the credentials gate).
+// TDLib answers a duplicate setAuthenticationPhoneNumber by failing the *older* query ("Another authorization query
+// has started"), so a Continue click landing while the same number is still in flight shares that one request.
+let sending: { phone: string, done: Promise<void> } | null = null
+export const sendPhone = async (phone: string) => {
+  if (sending?.phone === phone) return sending.done
+  loggingIn = true
+  const done = (async () => {
+    await Promise.race([
+      call({ _: 'setAuthenticationPhoneNumber', phone_number: phone }),
+      sleep(60_000).then(() => { throw fail(504, 'Telegram took too long to send your code. Please check your internet connection and API keys.') }),
+    ])
+  })()
+  sending = { phone, done }
+  try { await done } finally { if (sending?.done === done) sending = null }
+}
+export const sendCode = async (code: string) => {
+  await Promise.race([
+    call({ _: 'checkAuthenticationCode', code }),
+    sleep(60_000).then(() => { throw fail(504, 'Checking your code took too long. Please try again.') }),
+  ])
+}
+export const sendPassword = async (password: string) => {
+  await Promise.race([
+    call({ _: 'checkAuthenticationPassword', password }),
+    sleep(60_000).then(() => { throw fail(504, 'Checking your password took too long. Please try again.') }),
+  ])
+}
 
 /** Logs out; with Telegram unreachable for 15 s the local session is deleted anyway (`local: true`).
  *  ponytail: the queue is kept and jobs are not tied to an account; upgrade: store me.id on jobs and pause other accounts' jobs. */
@@ -294,7 +478,12 @@ export function chatList() {
   const archived = deps.showArchived()
   const listed = [...chats.values()].filter((c) => opened.has(c.id) || (c.type._ === 'chatTypePrivate' && c.type.user_id === cache.meId)
     || c.positions.some((p) => p.list._ === 'chatListMain' || (archived && p.list._ === 'chatListArchive')))
-  listed.sort((a, b) => cmp(order(b, 'chatListMain'), order(a, 'chatListMain')) || cmp(order(b, 'chatListArchive'), order(a, 'chatListArchive')))
+  // Telegram's own order first: `positions.order` already ranks a list by recency (pinned chats outrank the rest),
+  // so date-first would sink a pinned chat and a chat whose last message TDLib does not know yet. The date only
+  // breaks the tie for the chats that have no position at all (Saved Messages, a chat opened this session).
+  listed.sort((a, b) => cmp(order(b, 'chatListMain'), order(a, 'chatListMain'))
+    || cmp(order(b, 'chatListArchive'), order(a, 'chatListArchive'))
+    || (b.last_message?.date ?? 0) - (a.last_message?.date ?? 0))
   return { chats: listed.map((c) => toChat(c, cache)).filter((c) => c !== null), folders }
 }
 export const chat = (id: number) => { const c = chats.get(id); return c ? toChat(c, cache) : null }
@@ -315,23 +504,94 @@ const getChat = async (id: number) => {
   return c
 }
 
-/** Opens a public chat, invite link, or message link; an unjoined invite returns a preview unless `join`. */
+/** Membership, the TDLib way: every chat the account belongs to has a position in at least one chat list. */
+const isMember = (c: Td.chat) => c.positions.length > 0 || c.chat_lists.length > 0
+
+/** `joinChat` for a public group or channel, with the same answers the invite path gives.
+ *  ponytail: a chat the user left is joined again if its link is opened once more; upgrade: remember left ids. */
+async function joinPublic(c: Td.chat) {
+  try {
+    const r = await invoke({ _: 'joinChat', chat_id: c.id })
+    if (r._ === 'chatJoinResultRequestSent') throw fail(409, 'Your request to join was sent. You can open the chat once an admin approves it.')
+    if (r._ === 'chatJoinResultGuardBotApprovalRequired') throw fail(409, 'A guard bot has to approve your join request before you can open the chat.')
+    if (r._ !== 'chatJoinResultSuccess') throw fail(403, "This chat didn't let you join. Try it in the official Telegram app.")
+  } catch (e) {
+    if ((e as AppError).status === 400 && /already/i.test((e as Error).message)) return // already a member
+    throw e
+  }
+}
+
+/** Opens a public chat, bot, invite link, or message link; an unjoined invite returns a preview unless `join`.
+ *  A public group or channel is joined for real here: only Telegram's own membership makes it show up in the
+ *  official clients, while the `opened` set below is local to this session. */
 export async function openChat(link: string, join: boolean) {
-  const t = await linkType(link)
+  const clean = normalizeLink(link)
+  let t: any = null
+  try {
+    t = await linkType(clean)
+  } catch (e) {
+    const tgResolve = clean.match(/^tg:\/\/resolve\?(?:.*&)?domain=([a-zA-Z0-9_]{4,32})/i)
+    const m = clean.match(/(?:https?:\/\/)?(?:www\.)?(?:t\.me|telegram\.me|telegram\.dog)\/([a-zA-Z0-9_]{4,32})(?:\/|\?|$)/i)
+    const uname = tgResolve ? tgResolve[1] : (m ? m[1] : null)
+    if (uname && !['joinchat', 'addstickers', 'share', 'login'].includes(uname.toLowerCase())) {
+      t = { _: 'internalLinkTypePublicChat', chat_username: uname }
+    } else {
+      throw e
+    }
+  }
+
   let c: Td.chat
-  if (t._ === 'internalLinkTypePublicChat') c = await invoke({ _: 'searchPublicChat', username: t.chat_username })
+  if (t._ === 'internalLinkTypePublicChat' || t._ === 'internalLinkTypeBotStart' || t._ === 'internalLinkTypeBotStartInGroup' || t._ === 'internalLinkTypeBotAddToChannel' || t._ === 'internalLinkTypeMainWebApp') {
+    const username = t.chat_username || t.bot_username
+    c = await invoke({ _: 'searchPublicChat', username })
+    chats.set(c.id, c)
+    // Resolving a public channel or group is not membership: join it, or the chat lives only in this session.
+    // A private chat (a user or bot profile) has nothing to join.
+    if (t._ === 'internalLinkTypePublicChat' && !isMember(c)
+      && (c.type._ === 'chatTypeBasicGroup' || c.type._ === 'chatTypeSupergroup')) {
+      await joinPublic(c)
+      c = await invoke({ _: 'getChat', chat_id: c.id }).catch(() => c) // the positions the join just earned
+      chats.set(c.id, c)
+    }
+  }
   else if (t._ === 'internalLinkTypeMessage') c = await getChat((await invoke({ _: 'getMessageLinkInfo', url: t.url })).chat_id)
+  else if (t._ === 'internalLinkTypeUserPhoneNumber') {
+    c = await invoke({ _: 'searchPublicChat', username: t.phone_number })
+    chats.set(c.id, c)
+  }
+  else if (t._ === 'internalLinkTypeSavedMessages') {
+    c = await getChat(cache.meId)
+  }
   else if (t._ === 'internalLinkTypeChatInvite') {
     const info = await invoke({ _: 'checkChatInviteLink', invite_link: t.invite_link })
     if (info.chat_id) c = await getChat(info.chat_id)
-    else if (!join) return { invite: { title: info.title, members: info.member_count, photo: info.photo?.small.remote.id || null } }
+    else if (!join) {
+      const inv: any = {
+        title: info.title,
+        members: info.member_count,
+        photo: info.photo?.small.remote.id || null,
+      }
+      if ((info as any).description || (info as any).about) inv.about = (info as any).description || (info as any).about
+      if ((info as any).creates_join_request) inv.createsJoinRequest = true
+      if ((info as any).is_public) inv.isPublic = true
+      return { invite: inv }
+    }
     else {
       const r = await invoke({ _: 'joinChatByInviteLink', invite_link: t.invite_link })
       if (r._ === 'chatJoinResultRequestSent') throw fail(409, 'Your request to join was sent. You can open the chat once an admin approves it.')
       if (r._ !== 'chatJoinResultSuccess') throw fail(403, "This chat didn't let you join. Try it in the official Telegram app.")
       c = await getChat(r.chat_id)
     }
-  } else throw notALink()
+  } else {
+    const possibleUser = (t as any).chat_username || (t as any).bot_username
+    if (possibleUser) {
+      c = await invoke({ _: 'searchPublicChat', username: possibleUser })
+      chats.set(c.id, c)
+    } else {
+      throw notALink()
+    }
+  }
+  chats.set(c.id, c)
   opened.add(c.id)
   c.unread_count = 0
   void invoke({ _: 'openChat', chat_id: c.id }).catch(() => {})
@@ -339,53 +599,243 @@ export async function openChat(link: string, join: boolean) {
   return { chat: toChat(chats.get(c.id) ?? c, cache) as Chat }
 }
 
-const senderName = (s: Td.MessageSender) => s._ === 'messageSenderUser'
-  ? [cache.users.get(s.user_id)?.first_name, cache.users.get(s.user_id)?.last_name].filter(Boolean).join(' ')
-  : chats.get(s.chat_id)?.title ?? ''
-const toMessage = (m: Td.message): Message => ({
-  id: m.id, date: m.date, sender: senderName(m.sender_id), media: extractMedia(m),
-  text: m.content._ === 'messageText' ? m.content.text.text : 'caption' in m.content ? m.content.caption.text : '',
-})
+const recentMessages = new Map<string, Td.message>()
 
-/** The newest `limit` messages, paging getChatHistory by 100 (TDLib returns short first pages).
- *  ponytail: capped at the newest 1000 messages (chats.messages limit); older media are reachable in Files View;
- *  upgrade: cursor paging with an `until` bound. */
-export async function messages(chatId: number, limit: number) {
+function previewText(m: Td.message): string {
+  if (m.content._ === 'messageText') return m.content.text.text
+  if ('caption' in m.content && m.content.caption.text) return m.content.caption.text
+  if (m.content._ === 'messageAnimatedEmoji') return m.content.emoji
+  if (m.content._ === 'messageDice') return m.content.emoji
+  if (m.content._ === 'messageSticker') return (m.content as any).sticker?.emoji || '[Sticker]'
+  const media = extractMedia(m)
+  if (media) return `[${media.type}: ${media.name}]`
+  return '[Attachment]'
+}
+
+function extractForward(m: Td.message): { name: string, chatTitle?: string } | null {
+  if (!m.forward_info) return null
+  const origin = m.forward_info.origin
+  switch (origin._) {
+    case 'messageOriginUser': {
+      const u = cache.users.get(origin.sender_user_id)
+      return { name: u ? [u.first_name, u.last_name].filter(Boolean).join(' ') : 'User' }
+    }
+    case 'messageOriginChannel': {
+      const c = chats.get(origin.chat_id)
+      return { name: c?.title || 'Channel', chatTitle: origin.author_signature || undefined }
+    }
+    case 'messageOriginChat': {
+      const c = chats.get(origin.sender_chat_id)
+      return { name: c?.title || origin.author_signature || 'Group' }
+    }
+    case 'messageOriginHiddenUser':
+      return { name: origin.sender_name }
+    default:
+      return null
+  }
+}
+
+function extractReactions(m: Td.message): ReactionItem[] {
+  const rList = (m as any).interaction_info?.reactions?.reactions
+  if (!rList || !rList.length) return []
+  const out: ReactionItem[] = []
+  for (const r of rList) {
+    if (r.type?._ === 'reactionTypeEmoji' && r.type.emoji) {
+      const emoji = r.type.emoji === '\u2764' ? '❤️' : r.type.emoji
+      out.push({
+        emoji,
+        count: r.total_count ?? 1,
+        chosen: Boolean(r.is_chosen),
+      })
+    }
+  }
+  return out
+}
+
+function getSenderPhoto(s: Td.MessageSender): string | null {
+  if (s._ === 'messageSenderUser') {
+    return cache.users.get(s.user_id)?.profile_photo?.small.remote.id || null
+  }
+  return chats.get(s.chat_id)?.photo?.small.remote.id || null
+}
+
+function getSenderId(s: Td.MessageSender): number {
+  return s._ === 'messageSenderUser' ? s.user_id : s.chat_id
+}
+
+function getReplyPreview(m: Td.message): ReplyPreview | null {
+  const replyId = m.reply_to?._ === 'messageReplyToMessage'
+    ? m.reply_to.message_id
+    : (m as any).reply_to_message_id ?? null
+  if (!replyId) return null
+  const target = recentMessages.get(`${m.chat_id}:${replyId}`)
+  if (target) {
+    const targetMedia = extractMedia(target)
+    return {
+      id: target.id,
+      sender: senderName(target.sender_id),
+      text: previewText(target),
+      thumb: targetMedia?.thumb || null,
+    }
+  }
+  return {
+    id: replyId,
+    sender: 'Reply',
+    text: 'Click to view',
+    thumb: null,
+  }
+}
+
+function getDeliveryStatus(m: Td.message, chat?: Td.chat): DeliveryStatus {
+  if (m.sending_state) {
+    return m.sending_state._ === 'messageSendingStateFailed' ? 'failed' : 'sending'
+  }
+  if (!m.is_outgoing) return 'read'
+  if (chat && chat.last_read_outbox_message_id >= m.id) return 'read'
+  return 'sent'
+}
+
+const toMessage = (m: Td.message, chat?: Td.chat): Message => {
+  if (m.chat_id && m.id) {
+    recentMessages.set(`${m.chat_id}:${m.id}`, m)
+    if (recentMessages.size > 2000) {
+      const firstKey = recentMessages.keys().next().value
+      if (firstKey) recentMessages.delete(firstKey)
+    }
+  }
+
+  const rawEntities = m.content._ === 'messageText'
+    ? m.content.text.entities
+    : 'caption' in m.content
+    ? m.content.caption.entities
+    : undefined
+  const entities = mapEntities(rawEntities)
+
+  const replyId = m.reply_to?._ === 'messageReplyToMessage'
+    ? m.reply_to.message_id
+    : (m as any).reply_to_message_id ?? null
+  const replyTo = getReplyPreview(m)
+  const forwardFrom = extractForward(m)
+  const reactions = extractReactions(m)
+  const senderPhoto = m.sender_id ? getSenderPhoto(m.sender_id) : null
+
+  let text = ''
+  let isAnimatedEmoji = false
+  if (m.content._ === 'messageText') {
+    text = m.content.text.text
+  } else if ('caption' in m.content && m.content.caption.text) {
+    text = m.content.caption.text
+  } else if (m.content._ === 'messageAnimatedEmoji') {
+    text = m.content.emoji
+    isAnimatedEmoji = true
+  } else if (m.content._ === 'messageDice') {
+    text = m.content.emoji
+  } else if (m.content._ === 'messageSticker') {
+    text = (m.content as any).sticker?.emoji || '🎭'
+  } else if (m.content._ === 'messagePoll') {
+    text = `📊 Poll: ${(m.content as any).poll?.question?.text || 'Poll'}`
+  } else if (m.content._ === 'messageContact') {
+    const cont = (m.content as any).contact
+    text = `👤 Contact: ${cont?.first_name || ''} ${cont?.last_name || ''} (${cont?.phone_number || ''})`.trim()
+  } else if (m.content._ === 'messageLocation') {
+    const loc = (m.content as any).location
+    text = `📍 Location: ${loc?.latitude?.toFixed(4)}, ${loc?.longitude?.toFixed(4)}`
+  } else if (m.content._ === 'messageVenue') {
+    const v = (m.content as any).venue
+    text = `📍 ${v?.title || 'Venue'}${v?.address ? ` (${v.address})` : ''}`
+  } else if (m.content._ === 'messageGame') {
+    text = `🎮 Game: ${(m.content as any).game?.title || 'Game'}`
+  }
+
+  return {
+    id: m.id,
+    date: m.date,
+    sender: senderName(m.sender_id),
+    text,
+    media: extractMedia(m),
+    isOutgoing: Boolean(m.is_outgoing),
+    ...(isAnimatedEmoji ? { isAnimatedEmoji: true } : {}),
+    ...(m.chat_id ? {
+      chatId: m.chat_id,
+      senderId: getSenderId(m.sender_id),
+      deliveryStatus: getDeliveryStatus(m, chat),
+    } : {}),
+    ...(m.edit_date && m.edit_date > 0 ? { editDate: m.edit_date } : {}),
+    ...(entities.length ? { entities } : {}),
+    ...(replyTo ? { replyTo, replyToMessageId: replyId } : {}),
+    ...(forwardFrom ? { forwardFrom } : {}),
+    ...(reactions.length ? { reactions } : {}),
+    ...(m.is_pinned ? { isPinned: true } : {}),
+    ...(m.media_album_id && m.media_album_id !== '0' ? { albumId: m.media_album_id } : {}),
+    ...(m.interaction_info?.view_count ? { views: m.interaction_info.view_count } : {}),
+    ...(((m as any).can_be_deleted_only_for_self !== undefined || (m as any).can_be_deleted_for_all_users !== undefined) ? {
+      canBeDeleted: Boolean((m as any).can_be_deleted_only_for_self || (m as any).can_be_deleted_for_all_users),
+    } : {}),
+  }
+}
+
+/** The newest `limit` messages, paging getChatHistory by 100 (TDLib returns short first pages). */
+export async function messages(chatId: number, limit: number, fromMessageId = 0) {
   if (auth.step !== 'ready') throw fail(503, 'Telegram is not connected yet')
   if (!chats.has(chatId)) throw fail(404, 'Chat not found')
+  const c = chats.get(chatId)
   const out: Td.message[] = []
-  for (let from = 0; out.length < limit;) {
+  for (let from = fromMessageId; out.length < limit;) {
     const page = await invoke({ _: 'getChatHistory', chat_id: chatId, from_message_id: from, offset: 0, limit: Math.min(100, limit - out.length), only_local: false })
     const got = page.messages.filter((m) => m !== null)
     if (!got.length) {
-      const msgs = out.map(toMessage)
+      const msgs = out.map((m) => toMessage(m, c))
       prefetchThumbs(msgs.map((m) => m.media?.thumb))
       if (out.length) {
-        void invoke({ _: 'viewMessages', chat_id: chatId, message_ids: out.map((m) => m.id), force_read: true }).catch(() => {})
+        void invoke({ _: 'viewMessages', chat_id: chatId, message_ids: out.map((m) => m.id), force_read: false }).catch(() => {})
         void invoke({ _: 'openChat', chat_id: chatId }).catch(() => {})
-        const c = chats.get(chatId)
-        if (c && c.unread_count > 0) {
-          c.unread_count = 0
-          chatsChanged()
-        }
       }
       return { messages: msgs, more: false }
     }
     out.push(...got)
     from = got[got.length - 1].id
   }
-  const msgs = out.map(toMessage)
+  const msgs = out.map((m) => toMessage(m, c))
   prefetchThumbs(msgs.map((m) => m.media?.thumb))
   if (out.length) {
-    void invoke({ _: 'viewMessages', chat_id: chatId, message_ids: out.map((m) => m.id), force_read: true }).catch(() => {})
+    void invoke({ _: 'viewMessages', chat_id: chatId, message_ids: out.map((m) => m.id), force_read: false }).catch(() => {})
     void invoke({ _: 'openChat', chat_id: chatId }).catch(() => {})
-    const c = chats.get(chatId)
-    if (c && c.unread_count > 0) {
-      c.unread_count = 0
-      chatsChanged()
-    }
   }
   return { messages: msgs, more: true }
+}
+
+/** Prepares media for fast instant playback: checks if already in TDLib cache, or starts downloading with priority 32 */
+export async function prepareMedia(chatId: number, messageId: number) {
+  if (auth.step !== 'ready') throw fail(503, 'Telegram is not connected yet')
+  const m = await invoke({ _: 'getMessage', chat_id: chatId, message_id: messageId })
+  const media = extractMedia(m)
+  if (!media) throw fail(404, 'No media found in this message')
+  let f = await invoke({ _: 'getFile', file_id: media.file.id })
+  if (f.local.is_downloading_completed && f.local.path && fs.existsSync(f.local.path)) {
+    return {
+      path: f.local.path,
+      fileId: f.id,
+      completed: true,
+      size: f.size,
+      downloaded: f.size,
+      name: media.name,
+      type: media.type,
+      duration: media.duration,
+    }
+  }
+  // Download with priority 32 (maximum speed)
+  f = await invoke({ _: 'downloadFile', file_id: f.id, priority: 32, offset: 0, limit: 0, synchronous: false })
+  const localExists = Boolean(f.local.path && fs.existsSync(f.local.path))
+  return {
+    path: (f.local.is_downloading_completed || localExists) && f.local.path && fs.existsSync(f.local.path) ? f.local.path : null,
+    fileId: f.id,
+    completed: f.local.is_downloading_completed,
+    size: f.size || f.expected_size,
+    downloaded: f.local.downloaded_size,
+    name: media.name,
+    type: media.type,
+    duration: media.duration,
+  }
 }
 
 /** Leave a channel or supergroup, or delete chat from list */
@@ -422,32 +872,188 @@ export async function clearChat(chatId: number) {
 }
 
 /** Send a text message to a chat */
-export async function sendMessage(chatId: number, textMsg: string) {
+/** Send a text message to a chat */
+export async function sendMessage(chatId: number, textMsg: string, replyToMessageId?: number) {
   if (auth.step !== 'ready') throw fail(503, 'Telegram is not connected yet')
   const content = textMsg.trim()
   if (!content) throw fail(400, 'Message cannot be empty')
+
+  let formatted: Td.formattedText = { _: 'formattedText', text: content, entities: [] }
+  try {
+    const parsed = await invoke({
+      _: 'parseTextEntities',
+      text: content,
+      parse_mode: { _: 'textParseModeMarkdown', version: 2 },
+    })
+    if (parsed?.text) formatted = parsed
+  } catch {
+    formatted = { _: 'formattedText', text: content, entities: [] }
+  }
+
+  const reply_to = replyToMessageId ? {
+    _: 'inputMessageReplyToMessage' as const,
+    message_id: replyToMessageId,
+    quote: null as never,
+  } : null
+
   await invoke({
     _: 'sendMessage',
     chat_id: chatId,
+    reply_to: reply_to as any,
     input_message_content: {
       _: 'inputMessageText',
-      text: { _: 'formattedText', text: content, entities: [] },
+      text: formatted,
       clear_draft: true,
     },
   })
 }
 
-/** Fetch/download a playable file for preview and return its local path */
-export async function getPlayableFile(chatId: number, messageId: number) {
+/** Edit a text message in a chat */
+export async function editMessage(chatId: number, messageId: number, textMsg: string) {
   if (auth.step !== 'ready') throw fail(503, 'Telegram is not connected yet')
-  const m = await invoke({ _: 'getMessage', chat_id: chatId, message_id: messageId })
-  const x = extractMedia(m)
-  if (!x) throw fail(404, 'No media found in message')
-  let f = x.file
-  if (!f.local.is_downloading_completed) {
-    f = await invoke({ _: 'downloadFile', file_id: f.id, priority: 32, offset: 0, limit: 0, synchronous: true })
+  const content = textMsg.trim()
+  if (!content) throw fail(400, 'Message cannot be empty')
+
+  let formatted: Td.formattedText = { _: 'formattedText', text: content, entities: [] }
+  try {
+    const parsed = await invoke({
+      _: 'parseTextEntities',
+      text: content,
+      parse_mode: { _: 'textParseModeMarkdown', version: 2 },
+    })
+    if (parsed?.text) formatted = parsed
+  } catch {
+    formatted = { _: 'formattedText', text: content, entities: [] }
   }
-  return { path: f.local.path, name: x.name, size: f.size || f.expected_size, type: x.type }
+
+  await invoke({
+    _: 'editMessageText',
+    chat_id: chatId,
+    message_id: messageId,
+    input_message_content: {
+      _: 'inputMessageText',
+      text: formatted,
+      clear_draft: true,
+    },
+  })
+  deps.emit({ type: 'invalidate', topics: [`messages:${chatId}`] })
+}
+
+/** Delete messages in a chat */
+export async function deleteMessages(chatId: number, messageIds: number[], revoke = true) {
+  if (auth.step !== 'ready') throw fail(503, 'Telegram is not connected yet')
+  if (!messageIds.length) return
+  await invoke({
+    _: 'deleteMessages',
+    chat_id: chatId,
+    message_ids: messageIds,
+    revoke,
+  })
+  deps.emit({ type: 'invalidate', topics: [`messages:${chatId}`] })
+}
+
+/** Pin or unpin a message in a chat */
+export async function pinChatMessage(chatId: number, messageId: number, unpin = false) {
+  if (auth.step !== 'ready') throw fail(503, 'Telegram is not connected yet')
+  if (unpin) {
+    await invoke({ _: 'unpinChatMessage', chat_id: chatId, message_id: messageId })
+  } else {
+    await invoke({ _: 'pinChatMessage', chat_id: chatId, message_id: messageId, disable_notification: false, only_for_self: false })
+  }
+  deps.emit({ type: 'invalidate', topics: [`messages:${chatId}`] })
+}
+
+/** Add or remove an emoji reaction to a message */
+export async function reactMessage(chatId: number, messageId: number, reaction: string, remove = false) {
+  if (auth.step !== 'ready') throw fail(503, 'Telegram is not connected yet')
+  const cleanEmoji = reaction.replace(/\uFE0F/g, '')
+  if (remove) {
+    try {
+      await invoke({
+        _: 'removeMessageReaction',
+        chat_id: chatId,
+        message_id: messageId,
+        reaction_type: { _: 'reactionTypeEmoji', emoji: cleanEmoji },
+      })
+    } catch {
+      await invoke({
+        _: 'removeMessageReaction',
+        chat_id: chatId,
+        message_id: messageId,
+        reaction_type: { _: 'reactionTypeEmoji', emoji: reaction },
+      })
+    }
+  } else {
+    try {
+      await invoke({
+        _: 'addMessageReaction',
+        chat_id: chatId,
+        message_id: messageId,
+        reaction_type: { _: 'reactionTypeEmoji', emoji: cleanEmoji },
+        is_big: false,
+        update_recent_reactions: true,
+      })
+    } catch {
+      await invoke({
+        _: 'addMessageReaction',
+        chat_id: chatId,
+        message_id: messageId,
+        reaction_type: { _: 'reactionTypeEmoji', emoji: reaction },
+        is_big: false,
+        update_recent_reactions: true,
+      })
+    }
+  }
+  setTimeout(() => {
+    deps.emit({ type: 'invalidate', topics: [`messages:${chatId}`] })
+  }, 350)
+}
+
+/** Mark messages as read */
+export async function markMessagesRead(chatId: number, messageIds: number[]) {
+  if (auth.step !== 'ready' || !messageIds.length) return
+  await invoke({
+    _: 'viewMessages',
+    chat_id: chatId,
+    message_ids: messageIds,
+    force_read: true,
+  }).catch(() => {})
+  const c = chats.get(chatId)
+  if (c && c.unread_count > 0) {
+    c.unread_count = 0
+    chatsChanged()
+  }
+}
+
+/** Send an outgoing chat action (typing indicator) */
+export async function sendChatAction(chatId: number, action = 'typing') {
+  if (auth.step !== 'ready') return
+  const chatAction: Td.ChatAction = action === 'cancel'
+    ? { _: 'chatActionCancel' }
+    : { _: 'chatActionTyping' }
+  await invoke({
+    _: 'sendChatAction',
+    chat_id: chatId,
+    action: chatAction,
+  }).catch(() => {})
+}
+
+/** Search messages in a chat */
+export async function searchMessages(chatId: number, query: string, fromMessageId = 0, limit = 50) {
+  if (auth.step !== 'ready') throw fail(503, 'Telegram is not connected yet')
+  const r = await invoke({
+    _: 'searchChatMessages',
+    chat_id: chatId,
+    query,
+    sender_id: null as never,
+    topic_id: null as never,
+    from_message_id: fromMessageId,
+    offset: 0,
+    limit,
+    filter: { _: 'searchMessagesFilterEmpty' },
+  })
+  const msgs = r.messages.filter((m): m is Td.message => m !== null).map((m) => toMessage(m, chats.get(chatId)))
+  return { messages: msgs, nextFromMessageId: r.next_from_message_id }
 }
 
 /** downloads.add `{ link }`: the linked message, or its whole album when the link points at one. */
@@ -729,6 +1335,9 @@ export function prefetchThumbs(remoteIds: (string | null | undefined)[]) {
   for (const id of remoteIds) {
     if (!id || typeof id !== 'string' || thumbPathCache.has(id)) continue
     void invoke({ _: 'getRemoteFile', remote_file_id: id }).then((f) => {
+      // Same 2 MB ceiling as thumbFile: an id whose file is not a thumbnail is left alone (ARCHITECTURE > teleflow://
+      // protocol), so a poisoned index cannot pull an arbitrary file down in the background.
+      if ((f.expected_size || f.size) > 2 * 2 ** 20) return
       if (!f.local.is_downloading_completed) {
         return invoke({ _: 'downloadFile', file_id: f.id, priority: 1, offset: 0, limit: 0, synchronous: false })
       } else if (f.local.path && fs.existsSync(f.local.path)) {

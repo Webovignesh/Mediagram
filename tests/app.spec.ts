@@ -21,7 +21,7 @@ test.afterAll(() => {
   for (const home of homes) fs.rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 500 })
 })
 
-test('packaged exe boots, loads TDLib, and shows the API Keys step', async () => {
+test('packaged exe boots, loads TDLib, and opens Login on the phone screen', async () => {
   test.setTimeout(120_000)
   const home = tempHome()
   fs.mkdirSync(path.join(home, 'thumbs'))
@@ -29,12 +29,18 @@ test('packaged exe boots, loads TDLib, and shows the API Keys step', async () =>
   const app = await launch(home)
   try {
     const win = await app.firstWindow()
-    await expect(win.getByLabel('API ID')).toBeVisible()
-    await expect(win.getByLabel('API hash')).toBeVisible()
-    await expect(win.getByRole('link', { name: 'Get them at my.telegram.org' })).toHaveAttribute('href', 'https://my.telegram.org')
+    // Nothing is stored yet, so Login opens on the phone number and the API fields are not on that screen.
+    await expect(win.getByPlaceholder('98765 43210')).toBeVisible()
+    await expect(win.getByLabel('API ID')).toHaveCount(0)
 
     const info = await win.evaluate(() => window.teleflow.call('app.info'))
     expect(info).toMatchObject({ ok: true, data: { tdlib: '1.8.66', home, repository: 'https://github.com/Webovignesh/tele' } })
+
+    // Continue has no TDLib client to send the code with yet, so the one-time API step appears for the keys.
+    await win.getByPlaceholder('98765 43210').fill('98765 43210')
+    await win.getByRole('button', { name: 'Continue' }).click()
+    await expect(win.getByLabel('API ID')).toBeVisible()
+    await expect(win.getByRole('link', { name: 'Open my.telegram.org' })).toHaveAttribute('href', 'https://my.telegram.org')
 
     // Continue reaches main and shows its 400 inline. The hash is malformed, so no TDLib client starts and nothing goes to Telegram.
     await win.getByLabel('API ID').fill('12345')
@@ -83,7 +89,7 @@ test('packaged exe boots, loads TDLib, and shows the API Keys step', async () =>
     // The lock is keyed by userData (= home), so a run with another home stays up next to this one.
     const other = await launch(tempHome())
     try {
-      await expect((await other.firstWindow()).getByLabel('API ID')).toBeVisible()
+      await expect((await other.firstWindow()).getByPlaceholder('98765 43210')).toBeVisible()
     } finally {
       await other.close()
     }
@@ -107,7 +113,7 @@ test('Start with Windows writes the Run value, reads back on after a relaunch, a
   let app = await launch(home)
   try {
     let win = await app.firstWindow()
-    await expect(win.getByLabel('API ID')).toBeVisible()
+    await expect(win.getByPlaceholder('98765 43210')).toBeVisible()
     expect(await win.evaluate(() => window.teleflow.call('settings.set', { startWithSystem: true }))).toMatchObject({ ok: true, data: { startWithSystem: true } })
     expect(runValue()).toBe(0)
     await app.close()

@@ -3,9 +3,9 @@
 Transcribed from four mockups: Overview, Downloads, Queue, Settings. Uploads, Media Library, and Login are not in the mockups and follow the same patterns. There is no Analytics page.
 
 Where mockups disagree, this file decides:
-- Brand is TeleFlow everywhere (two mockups say "TG Manager").
-- Sidebar nav is: Overview, Downloads, Uploads, Queue, Media Library, Settings (6 items).
-- The global search bar from the Settings mockup appears in the top bar on every page.
+- The app is Mediagram everywhere in the UI (the spec keeps the TeleFlow project name; two mockups say "TG Manager").
+- Sidebar nav is: Overview, Downloads, Uploads, Queue, Settings (5 items). Media Library exists as a page (`#/library`) but has no sidebar entry.
+- Each page carries its own search; there is no global search bar in the top bar (the mockup's top-bar search is not built).
 
 ## No hardcoded data
 
@@ -92,35 +92,25 @@ Dark navy, glassy panels, thin blue-tinted borders, soft blue glow on active ele
 ## Shell
 
 - Electron window with the native title bar hidden; the native min/max/close buttons are drawn by Windows over the top-right of the top bar (`titleBarOverlay`). The top bar is the drag region (`app-region: drag`); its inputs and buttons are `no-drag`, and it reserves the overlay width with `env(titlebar-area-width)`.
-- Sidebar 170px fixed: logo (blue paper-plane mark, "TeleFlow" bold, tagline "Download. Upload. Organize." 11px `muted`), then nav. Queue badge = open jobs (`<live.counts.*.queued + active + paused>`), hidden at 0.
-- Top bar: 40px tall (matches the `titleBarOverlay` height), background `bg`. Global search input (left, max ~670px): "Search channels, chats, files, or paste a Telegram link…". Results popover: Chats (`<chat.title>`, `<chat.username>`), Downloaded files (`<item.name>`, `<item.chat>`), and, when the text is a Telegram link, "Download media from this link" and "Open chat". Right side: user menu (avatar from `<me.photo>` or initial of `<me.firstName>`, `<me.name>`, chevron). Menu: account (`<me.name>`, `<me.phone>`, `@<me.username>`), Settings, Log out.
+- Sidebar (200px, 64px collapsed): logo block (blue paper-plane mark, "Workspace" bold, "Telegram Manager" 10.5px `muted`), then nav: Overview, Downloads, Uploads, Queue, Settings. Queue badge = open jobs (`<live.counts.*.queued + active + paused>`), hidden at 0.
+- Top bar: 36px (`h-9`) drag bar, background `#0f172a` with a hairline bottom border. Left (`no-drag`): paper-plane mark + "Mediagram" (12px semibold). Middle: a reserved `no-drag` slot for the OTA update pill. Right: the native min/max/close buttons drawn by Windows (`titleBarOverlay`). No global search and no user menu in v1 — Log out lives in Settings > Danger Zone.
 - Content: page title + subtitle, optional page action top-right, then a grid. Pages with a side column use main + 290px right column.
-- Routes: `#/overview` (default), `#/downloads?chat=<id>&view=files|chat` (`view` defaults to `files`), `#/uploads?chat=<id>`, `#/queue?tab=downloads|uploads|completed|failed` (default `downloads`), `#/library?q=`, `#/settings?section=<id>`. Any auth step other than `ready` shows Login instead.
+- Routes: `#/overview` (default), `#/downloads?chat=<id>&view=files|chat` (`view` defaults to `files`), `#/uploads?chat=<id>`, `#/queue?tab=downloads|uploads|completed|failed` (default `downloads`), `#/library?q=`, `#/settings?section=<id>` (Settings scrolls to it on mount). Any auth step other than `ready` shows Login instead.
 - Target 1440×900; must stay usable at 1280×720. Minimum window 1024×640. Below 1280px wide, the right column moves under the main area.
 
-Data needs: `auth.get` + `auth` events (user menu, auth gate), `stats.live` + `stats` events (Queue badge), `search.global({ q })` (popover).
+Data needs: `auth.get` + `auth` events (auth gate), `stats.live` + `stats` events (Queue badge).
 
 ### Control inventory
 
 | Control | Behavior | Call |
 |---------|----------|------|
 | Sidebar item | Navigate | `#/<page>` |
-| Search input | Debounced 250 ms; popover opens at 1+ characters; ↑/↓ move through results, Enter activates, Escape closes and keeps the text | `search.global({ q })` |
-| Chat result | Opens the chat | `#/downloads?chat=<id>` |
-| File result | Shows it in the Library | `#/library?q=<item.name>` |
-| Download media from this link | Queues the message's media (whole album); toast "Added `<added>`, skipped `<skipped>`" | `downloads.add({ link })` |
-| Open chat (link) | Invite link not joined → `OpenChatDialog` at its join step; else navigate | `chats.open({ link })` → `#/downloads?chat=<id>` |
-| User menu button | Opens the menu (`Menu`) | – |
-| User menu > Settings | Navigate | `#/settings` |
-| User menu > Log out | Confirm "Log out of Telegram?"; toast "Logged out" (+ Devices hint when `local`) | `auth.logout()` |
 
 ### Data bindings
 
 | Element | Source | Empty | Loading | Error |
 |---------|--------|-------|---------|-------|
 | Queue badge | `<live.counts.*.queued + active + paused>` | hidden at 0 | hidden | – |
-| User menu | `<me.photo>`, `<me.firstName>`, `<me.name>`, `<me.phone>`, `<me.username>` (`@` row hidden when null) | – | skeleton avatar | – |
-| Search results | `<chat.*>`, `<item.*>`, `<link.kind>` (link actions shown only when `link` is non-null; "Download media" only for `message`) | "No matches" | 3 skeleton rows | inline ErrorState |
 
 ## ui.tsx inventory
 
@@ -148,7 +138,7 @@ Shared primitives live in `web/src/ui.tsx`. Components used by one page stay in 
 | `Menu` | Popover menu (HTML `popover` + CSS anchor positioning) | Row "…" menus, user menu, search results |
 | `Dialog` | Native `<dialog>` with title and actions | All dialogs |
 | `confirm()`, `<ConfirmHost/>` | Promise-based confirm; optional typed word and checkbox | Destructive actions |
-| `toast()`, `<Toaster/>` | Bottom-right toasts, `role="status"`, 4 s (errors 8 s) | Everywhere |
+| `toast()`, `<Toaster/>` | Bottom-right toasts, `role="status"`, 4 s (errors 8 s); `toast.info(msg, { title, duration, action: { label, onClick } })` renders the action as a button in the toast | Everywhere |
 | `Empty`, `Skeleton`, `ErrorState` | Empty state, shimmer block, error + Retry | Every data-bearing element |
 | `SelectionBar` | "`<n>` selected" + actions + Clear | Files View, Queue, Library |
 | `TransferCard` | Job card: thumb, name, pill, progress, detail line, actions | Downloads and Uploads right column |
@@ -163,7 +153,7 @@ Page-local: `AreaChart` (Overview), `Sparkline` (Queue), `FilesView` and `ChatVi
 ## Overview
 
 Layout (mockup):
-- Title "Welcome to TeleFlow", subtitle "Manage your Telegram video downloads and uploads in one powerful workspace." Top-right secondary button with link icon: "Connect Channel".
+- Title "Welcome to Mediagram", subtitle "Your Telegram videos, downloads, and uploads — all in one place." Top-right secondary button with link icon: "Connect Channel".
 - Row of 4 KPI cards: Active Transfers (blue lightning tile), Completed Today (green check tile), Total Files (indigo stack tile), Failed Jobs (red warning tile). Each: value + "`<d>` downloads • `<u>` uploads".
 - Row of 3 panels:
   - **Transfer Activity**, "Downloads and uploads over time", range select. Area chart, Downloads (blue) and Uploads (purple), gradient fills, y gridlines, x labels (24h: every 3 hours; 7d: weekdays; 30d: every 5 days). Hover/focus shows a vertical guide, dots, and a tooltip ("`<bucket label>` / Downloads `<n>` / Uploads `<n>`"). Legend below.
@@ -208,7 +198,7 @@ Data needs: `stats.live` (+ `stats` events), `stats.overview` (topics `history`)
 Layout (mockup):
 - Title "Downloads", subtitle "Manage Telegram downloads from channels, groups, chats, and direct links in one workspace."
 - Three columns: chat list (~180px), files panel (flex), right column.
-- **Chats & Channels** panel: title + "+" button. Search "Search chats or channels…". Chips: All, Channels, Groups, Folders (Folders shows the user's Telegram folders as a sub-list with a back button). Rows: avatar, `<chat.title>` bold, `@<chat.username>` `muted`, `fmtAgo(<chat.lastDate>)` right, unread badge `<chat.unread>` (primary pill, hidden at 0). Selected row: primary-tinted background. The selected row also carries a primary "• Indexing" pill (pulsing dot) while its `scan.state` is `scanning`.
+- **Chats & Channels** panel: title + "+" button. Search "Search chats or channels…". Chips: All, Channels, Groups, Folders (Folders shows the user's Telegram folders as a sub-list with a back button). Rows are two lines: line 1 is avatar, `<chat.title>` bold (truncates) and `fmtAgo(<chat.lastDate>)` right (no wrap, exact time in the title attribute); line 2 is typing indicator or `@<chat.username>` `muted` (truncates) with the unread badge `<chat.unread>` right (primary pill, hidden at 0). Selected row: primary-tinted background. The selected row also carries a primary "• Indexing" pill (pulsing dot) while its `scan.state` is `scanning`.
 - **Files panel**:
   - Header: segmented toggle "Chat View" | "Files View" and, in Files View, search "Search files in this channel…".
   - Index bar (`role="status"`, `aria-live="polite"`), shown while `scan.state` is `scanning`, `failed`, or `paused`:
@@ -399,21 +389,17 @@ Data needs: `library.list({ q, type, chat, sort, page })` (`library`), `library.
 | General | Startup and window | Start with Windows (toggle), Minimize to tray on close (toggle) |
 | Downloads | Location, limits, naming | Download folder (`<settings.downloadRoot>` + Change + Open; description "Existing downloads stay where they are"), Max concurrent downloads (stepper 1–5), Skip existing files, Prefix file names with date, Folder template (text, placeholders `{chat}` and `{chat_id}`) |
 | Uploads | Defaults and limits | Default destination (select of `canPost` chats + None), Upload as album, Keep original file names, Max concurrent uploads (stepper 1–3) |
-| Telegram | Account and session | Account (avatar, `<me.name>`, `@<me.username>`, `<me.phone>`), API ID (`<settings.apiId>`; "API hash saved", never shown), Log out |
+| Telegram | Account and session | Account (avatar, `<me.name>`, `@<me.username>`, `<me.phone>`), Telegram API data (editable API ID and API hash, the hash in a `type="password"` field and never shown; heading line "Your own API ID and hash from my.telegram.org — Mediagram uses them to connect to Telegram."; status line green "Saved on this device — kept through sign-out, so you won't be asked for these again." when `<settings.apiHashSaved>` with a muted line under it — "Saved keys are encrypted with your Windows account (DPAPI) and never leave this device. Signing out keeps them; Clear All Data erases them." —, amber "Not saved yet: these keys are only in this session, so Mediagram will ask for them again next time. A completed sign-in saves them automatically." otherwise; **Save API data** → `auth.saveKeys` (disabled and relabelled "Saved" once saved; toast title "API data saved", text "Encrypted on this device — signing out keeps it."), **Delete API data** (only while `<settings.apiHashSaved>`; tint danger button left of "Saved"; confirm "Delete API data" / "Erases the API data saved on this device. Your current sign-in keeps working; you will be asked for it again after signing out."; toast title "API data deleted", text "You will be asked for your API data again after signing out."; the status line flips to the amber one), **Update API data** → a confirm dialog ("Update API data" / "New keys are checked by Telegram with a fresh sign-in — you'll enter your phone number and code again. Apply the update?") then `auth.credentials` (validated in the renderer first: a whole number 1–2147483647 and 32 hex characters; a wrong value keeps an inline `role="alert"` error on its own field and never reaches TDLib, and when the keys were already saved the new ones are re-saved too; success toast "API data saved"), a hint under API ID while signed in and typing: "Applying updated keys checks them with Telegram straight away: you'll sign back in with your phone number and code.", link "Get them at my.telegram.org")) |
 | Channels | Chat list | Show archived chats |
 | Queue | Retries and cleanup | Auto-retry failed transfers, Retry attempts (stepper 1–10, always enabled; description "Starts per transfer, including stall restarts"), Stall timeout (5 / 10 / 30 / 60 s), Clear completed after (Never / 1 / 7 / 30 days) |
 | Files & Folders | App data and logs | App data folder (`<app.home>` + Open), Logs (Open) |
 | Notifications | Desktop alerts | Notify when transfers complete, Notify on failures |
-| Privacy & Security | Cache and data | Clear cache (`<storage.cache.total>`), Clear app data (`<storage.appData>`) |
 | About | Version and licenses | Version `<app.version>`, TDLib `<app.tdlib>`, Installed `fmtDate(<app.installedAt>)` (hidden when null, i.e. dev runs), Source code (`<app.repository>`, hidden when null), Open-source licenses |
 
 Language is not shown (English only in v1). Appearance is removed (dark is the only theme; compact density is not trivial). "Check for updates" is not shown (no release feed). "Auto minimize to tray" from the mockup is the real "Minimize to tray on close".
 
 - Section card: header with icon, title, subtitle; rows of label (bold) + description (`muted`) on the left, control on the right; rows divided by 1px lines. Changes save immediately; success shows a small "Saved" toast, a validation error shows inline under the row and reverts the control.
-- Right column:
-  - **App Status**: status line (green "All systems operational" when `<auth.connection>` is `ready`; amber "Connecting to Telegram…" while connecting/updating; red "Telegram is offline" when offline; Settings renders only while signed in, so there is no signed-out state), Version `<app.version>`, Installed `fmtDate(<app.installedAt>)` (hidden when null), Telegram connection (● + state), Active downloads `<live.counts.download.active>`, Active uploads `<live.counts.upload.active>`.
-  - **Storage**: indigo progress bar with %, "`<storage.drive.total − storage.drive.free>` of `<storage.drive.total>` used" on `<storage.drive.root>` (when `<storage.drive.total>` is 0, the drive is unplugged or unmapped: the bar is empty and reads "`<storage.drive.root>` is not available"; the rest of the card still shows); breakdown rows with colored squares: Videos (indigo), Images (green), Audio (cyan), Documents (blue), Archives (amber) from `<storage.library.*>`; App cache `<storage.cache.total>` with a "Clear cache" button.
-  - **Danger Zone** (red trash icon, "These actions are permanent and cannot be undone."): red-tinted buttons "Clear All Data — Remove settings, history, cache, and your session" (deleting downloaded files is an unchecked option in its confirm) and "Disconnect Telegram — Log out and remove the saved session". Both use a typed confirmation (DELETE / DISCONNECT).
+- **Danger Zone** (bottom panel, red trash icon, subtitle "Sign out or delete data stored on this device."): three rows — **Log out** (or **Log in** when there is no active session) with a plain danger button (`variant="danger"`, Log out icon + label; the row explains the saved API data stays; Log in calls `navigate('/overview')`, where the app gate opens Login), **Clear cache** (neutral row; same disabled state and confirm as below), and **Clear app data** (red row; row description "Deletes history, queue, media index, and settings (`<storage.appData>`)"; its confirm has a 3-second countdown before the delete button opens).
 
 Data needs: `settings.get` (`settings`), `app.info`, `app.storage` (`storage`, refreshed when the page opens and after each clear), `chats.list` (`chats`, for Default destination), `auth`, `stats.live`.
 
@@ -432,7 +418,10 @@ Data needs: `settings.get` (`settings`), `app.info`, `app.storage` (`storage`, r
 | Default destination | Select | `settings.set({ defaultUploadChat })` |
 | Upload as album / Keep original file names | Toggles | `settings.set({ uploadAlbum })`, `settings.set({ keepNames })` |
 | Max concurrent uploads − / + | 1–3 | `settings.set({ maxUploads })` |
-| Log out (Telegram) | Confirm, then log out; toast "Logged out" (+ Devices hint when `local`) | `auth.logout()` |
+| Log out / Log in (Danger Zone) | Log out: a plain danger button (Log out icon + label); confirm ("Log out" / "Your Telegram session ends on this device. Saved API data stays, so signing back in is quick."), then log out; toast "Logged out" (+ Devices hint when `local`); the saved API keys stay on disk and the app restarts at the phone screen with them. Log in: shown only when there is no active session; `navigate('/overview')`, where the app gate opens Login | `auth.logout()` |
+| Save API data | Writes the keys of this session, encrypted, so Login is skipped next time; toast title "API data saved", text "Encrypted on this device — signing out keeps it."; disabled once `<settings.apiHashSaved>` | `auth.saveKeys()` |
+| Delete API data | Shown only while `<settings.apiHashSaved>`; confirm ("Delete API data" / "Erases the API data saved on this device. Your current sign-in keeps working; you will be asked for it again after signing out."), then erase the saved pair; toast title "API data deleted", text "You will be asked for your API data again after signing out."; the status line flips to the amber "Not saved yet" one; the signed-in session keeps working | `auth.forgetKeys()` |
+| Update API data | Confirm dialog first ("Update API data": changed keys are re-checked by Telegram with a fresh sign-in), then API ID + API hash drafts, validated in the renderer (whole number 1–2147483647, 32 hex characters) before anything is sent; the error stays under the field it belongs to (`role="alert"`), blur checks a field on its own, a previously saved pair is re-saved; toast "API data saved" | `confirm()` → `auth.credentials()` (+ `auth.saveKeys()` when `<settings.apiHashSaved>`) |
 | Show archived chats | Toggle | `settings.set({ showArchived })` |
 | Auto-retry failed transfers | Toggle | `settings.set({ autoRetry })` |
 | Retry attempts − / + | 1–10; enabled whether or not auto-retry is on (it also caps stall restarts) | `settings.set({ retryAttempts })` |
@@ -440,12 +429,11 @@ Data needs: `settings.get` (`settings`), `app.info`, `app.storage` (`storage`, r
 | Clear completed after | Select | `settings.set({ clearCompletedDays })` |
 | App data folder > Open / Logs > Open | Explorer | `app.openPath({ target: 'appData' \| 'logs' })` |
 | Notify when transfers complete / Notify on failures | Toggles | `settings.set({ notifyComplete })`, `settings.set({ notifyFailed })` |
-| Clear cache (Privacy, Storage card) | Disabled with hint "Pause active transfers first" while `<live.counts.download.active + live.counts.upload.active>` > 0 (live, so it re-enables as soon as transfers stop); confirm "Clear `<storage.cache.total>` of cache? Paused downloads restart from the beginning."; toast "Freed `<freed>`" | `app.clearCache()` |
-| Clear app data | Disabled while transfers are active (same live condition); confirm "Delete history, queue, media index, and settings (download folder resets to default)? Your login and downloaded files stay."; toast "Freed `<freed>`" | `app.clearData()` |
+| Clear cache (Danger Zone) | Disabled with hint "Pause active transfers first" while `<live.counts.download.active + live.counts.upload.active>` > 0 (live, so it re-enables as soon as transfers stop); confirm "Clear `<storage.cache.total>` of cache? Paused downloads restart from the beginning."; toast "Freed `<freed>`" | `app.clearCache()` |
+| Clear app data (Danger Zone) | Disabled while transfers are active (same live condition); row description "Deletes history, queue, media index, and settings (`<storage.appData>`)"; confirm "Clear app data" / "Deletes your history, download queue, media index, and all settings — the download folder resets to the default.", delete button disabled for a 3-second countdown ("Clear app data (3s)" → "(2s)" → "(1s)") then opens; toast "Freed `<freed>`" | `app.clearData()` |
 | Source code | Opens in the browser | `<a href target="_blank">` → `shell.openExternal` |
-| Open-source licenses | `LicensesDialog` with `<app.licenses>` (name, version, license) | `app.info()` |
-| Clear All Data | Typed DELETE; checkbox "Also delete downloaded files (`<storage.library.files>` files, `<storage.library.total>`)", unchecked; toast "Freed `<freed>`"; Start with Windows turns off; app returns to Login | `app.clearAll({ deleteDownloads })` |
-| Disconnect Telegram | Typed DISCONNECT; toast; app returns to Login | `auth.logout()` |
+| Open-source licenses | `LicensesDialog` with `<app.licenses>` (name, version, homepage) | `app.info()` |
+| Clear All Data | IPC exists but is not wired to any Settings button (no typed DELETE, no file option in the UI) | `app.clearAll({ deleteDownloads })` |
 
 ### Data bindings
 
@@ -462,14 +450,16 @@ Data needs: `settings.get` (`settings`), `app.info`, `app.storage` (`storage`, r
 ## Login (not in mockups)
 
 - Full-screen app background (window still draggable at the top), centered 420px panel, logo on top.
-- Step indicator: API Keys → Phone → Code → Password (Password only when 2FA is on), driven by `<auth.step>`.
-- Starting: spinner "Connecting to Telegram…". Logging out (`<auth.step>` = `logging-out`): spinner "Signing out…".
-- API Keys step: API ID, API hash, helper link "Get them at my.telegram.org". The 40px top strip is the drag region and reserves the native window buttons with `env(titlebar-area-x/width)`.
-- Phone step: phone input (`type="tel"`), "Send code", "Back". `<auth.error>` shows above the input; it is how TeleFlow explains TDLib steps it cannot complete (email setup, sign-up, Premium), and the user can enter a different number.
-- Code step: "We sent a code to `<auth.phone>`" + "via Telegram/SMS/call" from `<auth.via>`; code input (`autocomplete="one-time-code"`), "Sign in", "Use a different number".
-- Password step: hint `<auth.hint>` (hidden if empty), password input, "Sign in", "Use a different number".
+- Step order the user sees: Phone → API data (one time, only when nothing is stored) → Processing → Code → Password (Password only when 2FA is on), driven by `<auth.step>`. With nothing stored the panel opens on the phone number, because Telegram cannot send a code before it knows this app's API ID and hash: the API fields are asked for only when Continue finds no TDLib client to send the number with, so Login never opens on them. After the keys the panel stays on the Processing screen until Telegram answers with a real step.
+- Processing screen (also opened by a sign-in that starts with saved keys): heading "Signing in to Telegram" (or "Sign-in could not continue" when something failed), stage rows — "Starting the Telegram engine", "Connecting to Telegram", "Checking your API ID and hash — sending your code" — each a done tick, a spinner while active, or a quiet dot pending, with a hint that Telegram can take up to a minute. A failure shows an error card (`role="alert"`) and **Back**: to the API data step when a rejection put it there, otherwise to the phone form, which then sends the number itself. The stages only advance when the state does — the number is sent once `connection` is ready (4 s fallback), so "Connecting" never claims more than TDLib reports. When the flow ends on `ready` the panel rests on "Signed in / Opening Mediagram…" while the dashboard transitions in.
+- Logging out (`<auth.step>` = `logging-out`): spinner "Logging out…".
+- Phone step: country select + phone input (`type="tel"`), "Continue". `<auth.error>` shows above the input; it is how TeleFlow explains TDLib steps it cannot complete (email setup, sign-up, Premium), and the user can enter a different number.
+- API data step (one time, after Continue with nothing stored): API ID, API hash (`type="password"`, placeholder only), "Back" to the phone number (it is kept and shown as "Then we'll continue signing in as `<number>`"), and under the boxes a guide card "Where do I get these?" — header link "Open my.telegram.org" plus five plain steps (open my.telegram.org and log in with the phone number — Telegram sends a code in the app; click "API development tools"; fill in any app title and short name and create the app; copy "App api_id" into API ID; copy "App api_hash" into API hash) and a note that the values stay on this device (saved encrypted with the Windows account) and are only sent to Telegram. Continue starts TDLib — the processing screen appears at once — and the number typed before the keys is sent automatically once the connection is up. No sample values: the step starts empty (No hardcoded data). A rejected API ID/hash lands on the processing screen's error card, whose Back returns here; this step's own Back stays hidden until the keys are corrected (`<auth.error>`). The 40px top strip is the drag region and reserves the native window buttons with `env(titlebar-area-x/width)`.
+- Code step: "Enter the code sent to `<auth.phone>`" + "via Telegram/SMS/call" from `<auth.via>`; code input (`autocomplete="one-time-code"`), "Verify", "Back" (shows the Phone step — TDLib accepts a new number).
+- Password step: hint `<auth.hint>` (hidden if empty), password input, "Continue", "Back".
 - Each step: labelled input, primary button (busy state while the call runs), inline error (`role="alert"`) from the rejected call or `<auth.error>`.
-- When the state becomes `ready`, the shell shows Overview.
+- When the state becomes `ready`, the panel shows "Signed in / Opening Mediagram…" and Login stays mounted one transition while the dashboard mounts beneath it and rises in (`login-exit` over `app-enter`, 0.48 s); then Login is gone.
+- After sign-in nothing is asked: no toast, no prompt and no highlight — the ready gate has already saved the keys (encrypted) for the next start. API data is asked for again only by Settings > Delete API data, Clear All Data, or a rejection from Telegram; Settings > Telegram > API credentials remains the place to see the status and update the pair.
 
 Data needs: `auth.get` + `auth` events (step, phone, via, hint, error, connection). Login renders no other data.
 
@@ -477,13 +467,14 @@ Data needs: `auth.get` + `auth` events (step, phone, via, hint, error, connectio
 
 | Control | Behavior | Call |
 |---------|----------|------|
-| Continue (API Keys) | Saves credentials, starts TDLib | `auth.credentials({ apiId, apiHash })` |
-| Get them at my.telegram.org | External browser | `<a href="https://my.telegram.org" target="_blank">` |
-| Send code | Submits phone | `auth.phone({ phone })` |
-| Back (Phone) | Shows API Keys step; resubmitting restarts TDLib | – |
-| Sign in (Code) | Submits code | `auth.code({ code })` |
-| Use a different number | Shows Phone step (TDLib accepts a new number) | – |
-| Sign in (Password) | Submits password | `auth.password({ password })` |
+| Continue (Phone) | With a TDLib client: submits the number. With nothing stored: opens the one-time API data step, keeping the number | `auth.phone({ phone })` |
+| Back (API data) | Returns to the Phone step, keeping the number | – |
+| Continue (API data) | Starts TDLib with the keys; the processing screen appears, and the number typed before them is sent once the connection is ready | `auth.credentials({ apiId, apiHash })`, `auth.phone({ phone })` |
+| Back (Processing) | Leaves the processing screen: to the API data step when a rejection put it there, otherwise to the phone form, which then sends the number itself | – |
+| Guide box links ("Open my.telegram.org" header, step-1 "my.telegram.org") | External browser | `<a href="https://my.telegram.org" target="_blank">` |
+| Verify (Code) | Submits code | `auth.code({ code })` |
+| Back (Code, Password) | Shows Phone step (TDLib accepts a new number) | – |
+| Continue (Password) | Submits password | `auth.password({ password })` |
 
 ## Dialogs
 

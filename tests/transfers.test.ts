@@ -7,7 +7,7 @@ import { setImmediate as tick } from 'node:timers/promises'
 import { type AppEvent, type DB, downloadStates, enqueue, fail, getSettings, jobRow, type Kind, openDb, putSetting, type UploadFile } from '../core/db.ts'
 import { type AuthState, type Chat, extractMedia } from '../core/shapes.ts'
 import { openLog, resolvePaths, within } from '../core/storage.ts'
-import { createEngine, fileName, folderFor, gate, isRetryable, newGate, retryDelay, sanitize, stallDecision, uniquePath } from '../core/transfers.ts'
+import { createEngine, fileName, fitName, folderFor, gate, isRetryable, MAX_PATH, newGate, retryDelay, sanitize, stallDecision, uniquePath } from '../core/transfers.ts'
 import { groupUploads, settleUpload, uploadKind } from '../core/uploads.ts'
 
 // Timers and the clock are mocked: the engine's 500 ms tick, start spacing, flood waits, and retries run only when a
@@ -91,6 +91,8 @@ test('fileName and sanitize: untitled defaults, date prefix, reserved names, dot
   const cases: Record<string, string> = {
     CON: '_CON', 'con.txt': '_con.txt', 'LPT1.log': '_LPT1.log', 'console.txt': 'console.txt', 'a<b>c:d"e|f?g*h.txt': 'a_b_c_d_e_f_g_h.txt',
     'x/y\\z.bin': 'x_y_z.bin', 'trailing. . ': 'trailing', '...hidden.mp4': 'hidden.mp4', '': '_', '..': '_', 'tab\there': 'tab_here',
+    // bidi controls are stripped: an RTL override must not make a name read as a different extension
+    'in\u202Evf.mp4': 'in_vf.mp4', 'a\u200e\u061cb.mp4': 'a__b.mp4', '\u2066x\u2069.mp4': '_x_.mp4',
   }
   for (const [input, out] of Object.entries(cases)) assert.equal(sanitize(input), out, JSON.stringify(input))
   const long = sanitize(`${'x'.repeat(300)}.mkv`)
@@ -111,6 +113,16 @@ test('folderFor: placeholders are sanitized, so the target folder never leaves t
     const p = at('{chat}', title)
     assert.ok(within(root, p) && path.dirname(p) === root, `${title} → ${p}`)
   }
+})
+
+test('fitName: a name that would make the file uncreatable is cut, the folder never is', () => {
+  const dir = 'D:\\Media\\Fixture channel'
+  assert.equal(fitName(dir, 'a.mp4', new Set()), path.join(dir, 'a.mp4'))
+  const fitted = fitName(dir, `${'n'.repeat(180)}.mkv`, new Set([path.join(dir, 'first.mkv').toLowerCase()]))!
+  assert.ok(fitted.length <= MAX_PATH, `length ${fitted.length}`)
+  assert.ok(fitted.endsWith('.mkv') && fitted.startsWith(`${path.join(dir, 'n')}`), fitted)
+  assert.equal(fitName(dir, 'a.mp4', new Set([path.join(dir, 'a.mp4').toLowerCase()])), path.join(dir, 'a (2).mp4'))
+  assert.equal(fitName(`D:\\${'p'.repeat(250)}`, 'a.mp4', new Set()), null) // the folder alone is past the ceiling
 })
 
 test('uniquePath: existing files and reserved names get (2), (3)…, case-insensitively', () => {

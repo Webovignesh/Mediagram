@@ -136,13 +136,42 @@ function initEventListener() {
         (counts.upload.queued + counts.upload.active + counts.upload.paused)
       liveSnapshot = { ...liveSnapshot, activeCount, stats: e.stats }
       changed = true
+    } else if (e.type === 'typing') {
+      const existing = typingTimers.get(e.chatId)
+      if (existing) {
+        clearTimeout(existing)
+        typingTimers.delete(e.chatId)
+      }
+      if (e.text) {
+        typingSnapshot = { ...typingSnapshot, [e.chatId]: e.text }
+        const timer = setTimeout(() => {
+          const next = { ...typingSnapshot }
+          delete next[e.chatId]
+          typingSnapshot = next
+          typingTimers.delete(e.chatId)
+          notifyTyping()
+        }, 5000)
+        typingTimers.set(e.chatId, timer)
+      } else {
+        const next = { ...typingSnapshot }
+        delete next[e.chatId]
+        typingSnapshot = next
+      }
+      notifyTyping()
     }
     if (changed) {
       liveListeners.forEach((l) => l())
     }
   })
 
-  // Populate first snapshot from auth.get and stats.live
+  // Populate first snapshot from auth.get, stats.live, and chats.typing
+  call<Record<number, string>>('chats.typing').then((map) => {
+    if (map && Object.keys(map).length > 0) {
+      typingSnapshot = { ...typingSnapshot, ...map }
+      notifyTyping()
+    }
+  }).catch(() => {})
+
   call<AuthState>('auth.get').then((auth) => {
     if (liveSnapshot.auth !== auth) {
       liveSnapshot = { ...liveSnapshot, auth }
@@ -158,6 +187,14 @@ function initEventListener() {
     liveSnapshot = { ...liveSnapshot, activeCount, stats }
     liveListeners.forEach((l) => l())
   }).catch(() => {})
+}
+
+let typingSnapshot: Record<number, string> = {}
+const typingListeners = new Set<() => void>()
+const typingTimers = new Map<number, NodeJS.Timeout>()
+
+function notifyTyping() {
+  typingListeners.forEach((l) => l())
 }
 
 /** Subscribe to app events. */
@@ -176,6 +213,24 @@ export function useLive(): LiveState {
     },
     () => liveSnapshot
   )
+}
+
+/** Hook for real-time typing and media sending indicators across chats. */
+export function useTyping(): Record<number, string> {
+  initEventListener()
+  return useSyncExternalStore(
+    (cb) => {
+      typingListeners.add(cb)
+      return () => { typingListeners.delete(cb) }
+    },
+    () => typingSnapshot
+  )
+}
+
+/** Hook for real-time typing indicator of a specific chat. */
+export function useChatTyping(chatId?: number | null): string | null {
+  const typing = useTyping()
+  return chatId ? typing[chatId] ?? null : null
 }
 
 /** Hook for hash-based routing. */

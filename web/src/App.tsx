@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
-import { Home, Download, Upload, ListOrdered, Settings as SettingsIcon, ChevronDown, Send, LogOut, PanelLeftClose, PanelLeftOpen } from 'lucide-react'
+import { Home, Download, Upload, ListOrdered, Settings as SettingsIcon, ChevronDown, LogOut, PanelLeftClose, PanelLeftOpen } from 'lucide-react'
 import { call, useCall, useLive, useRoute, navigate } from './api.ts'
-import { Empty, ErrorState, Badge, Avatar, toast, confirm } from './ui.tsx'
+import { Empty, ErrorState, Badge, Avatar, toast, confirm, MediagramLogo } from './ui.tsx'
 import type { AuthState, Me } from '../../core/shapes.ts'
 import Login from './pages/Login.tsx'
 import Overview from './pages/Overview.tsx'
@@ -70,22 +70,20 @@ function Sidebar({
       {flyingPlane && (
         <div
           key={flyingPlane.key}
-          className="fly-to-queue-plane fixed pointer-events-none z-[9999] flex items-center justify-center size-8 rounded-full bg-cyan text-white shadow-xl"
+          className="fly-to-queue-plane fixed pointer-events-none z-[9999] flex items-center justify-center size-8 rounded-full shadow-xl"
           style={{
             '--fly-start-x': `${flyingPlane.startX}px`,
             '--fly-start-y': `${flyingPlane.startY}px`,
           } as any}
         >
-          <Send size={15} />
+          <MediagramLogo size={28} />
         </div>
       )}
 
       {/* Brand */}
       <div className="border-b border-border p-3 flex items-center justify-between">
         <div className="flex items-center gap-2.5 overflow-hidden">
-          <div className="grid size-8 shrink-0 place-items-center rounded-lg bg-primary/20 text-primary border border-primary/30">
-            <Send size={16} />
-          </div>
+          <MediagramLogo size={32} className="rounded-lg shadow-md shrink-0" />
           {!collapsed && (
             <div className="overflow-hidden">
               <div className="font-bold text-[13.5px] text-text leading-tight truncate tracking-wide">Workspace</div>
@@ -151,6 +149,8 @@ export default function App() {
   /** Network messages live in toasts only; the OS event and TDLib's own state report both call in, so each side
    *  suppresses a repeat of its kind for 15 s (an outage rarely announces itself just once). */
   const netToast = (online: boolean) => {
+    // Only show transfer connection status toasts when user is signed in
+    if (auth?.step !== 'ready') return
     const kind = online ? 'online' : 'offline'
     const now = Date.now()
     if (now - lastToast.current[kind] < 15_000) return
@@ -166,13 +166,53 @@ export default function App() {
     window.addEventListener('offline', offline)
     window.addEventListener('online', online)
     return () => { window.removeEventListener('offline', offline); window.removeEventListener('online', online) }
-  }, [])
+  }, [auth?.step])
   useEffect(() => {
-    const was = prevConnection.current, now = auth?.connection
-    if (was === 'ready' && now === 'offline') netToast(false)
-    else if (was === 'offline' && now === 'ready') netToast(true)
-    prevConnection.current = now
-  }, [auth?.connection])
+    const was = prevConnection.current
+    const now = auth?.connection
+    const isAuthed = auth?.step === 'ready'
+    // Never trigger network outage toasts during sign-in attempts / credential validation / logout
+    if (isAuthed) {
+      if (was === 'ready' && now === 'offline') netToast(false)
+      else if (was === 'offline' && now === 'ready') netToast(true)
+    }
+    prevConnection.current = isAuthed ? now : undefined
+  }, [auth?.connection, auth?.step])
+  // Minimum splash display time on app launch (600ms) guarantees that the splash screen never flashes
+  // away in a split-second, giving TDLib time to report session readiness without any login screen flash.
+  const [minSplashDone, setMinSplashDone] = useState(false)
+  useEffect(() => {
+    const timer = setTimeout(() => setMinSplashDone(true), 600)
+    return () => clearTimeout(timer)
+  }, [])
+
+  // Sustained logout state: stays active throughout the entire logout pipeline (closing sockets, wiping local
+  // session, restarting with saved keys) until the phone/credentials step is fully established and stable.
+  const [isLoggingOut, setIsLoggingOut] = useState(false)
+  useEffect(() => {
+    if (auth?.step === 'logging-out') {
+      setIsLoggingOut(true)
+    } else if (isLoggingOut && (auth?.step === 'phone' || auth?.step === 'credentials')) {
+      const timer = setTimeout(() => setIsLoggingOut(false), 600)
+      return () => clearTimeout(timer)
+    }
+  }, [auth?.step, isLoggingOut])
+
+  // Hand-off from Login form to Dashboard: only applies when user actually went through the Login form
+  const [leavingLogin, setLeavingLogin] = useState(false)
+  const seenLogin = useRef(false)
+  useEffect(() => {
+    if (auth?.step !== 'ready') {
+      if (auth && auth.step !== 'starting' && auth.step !== 'logging-out' && !isLoggingOut) seenLogin.current = true
+      return
+    }
+    if (!seenLogin.current) return
+    seenLogin.current = false
+    setLeavingLogin(true)
+    const timer = setTimeout(() => setLeavingLogin(false), 480)
+    return () => clearTimeout(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- runs once per login, not on connection pushes
+  }, [auth?.step, isLoggingOut])
 
   if (error) {
     return (
@@ -183,30 +223,66 @@ export default function App() {
     )
   }
 
-  if (loading || !auth) {
+  // Sustained Signing Out screen during logout pipeline (stays steadily visible until logout completes)
+  if (isLoggingOut || auth?.step === 'logging-out') {
     return (
-      <div className="flex h-full items-center justify-center">
-        <div className="text-text-2">Loading…</div>
+      <div className="fade-enter relative flex h-screen w-screen flex-col items-center justify-center bg-[#0f172a] select-none overflow-hidden">
+        <WindowDragBar />
+        <div className="flex flex-col items-center gap-4">
+          <div className="logout-icon grid size-16 place-items-center rounded-2xl bg-danger/15 text-danger shadow-[0_0_35px_rgba(239,68,68,0.3)] border border-danger/30">
+            <LogOut size={28} />
+          </div>
+          <div className="flex flex-col items-center gap-1.5 text-center">
+            <div className="text-[19px] font-bold text-white tracking-wide">Signing out…</div>
+            <div className="text-[12px] text-muted font-medium flex items-center gap-2">
+              <span className="size-1.5 rounded-full bg-danger animate-pulse" />
+              Closing Telegram session securely
+            </div>
+          </div>
+        </div>
       </div>
     )
   }
 
-  // Auth gate: any step other than 'ready' shows Login
+  // Sustained Splash screen on app launch: stays active until session check is complete and minSplashDone elapsed
+  if (loading || !auth || auth.step === 'starting' || (!minSplashDone && auth.step === 'ready')) {
+    return (
+      <div className="relative flex h-screen w-screen flex-col items-center justify-center bg-[#0f172a] select-none overflow-hidden">
+        <WindowDragBar />
+        <div className="flex flex-col items-center gap-4">
+          <div className="splash-icon flex size-16 items-center justify-center rounded-2xl shadow-[0_0_40px_rgba(59,130,246,0.35)]">
+            <MediagramLogo size={64} className="rounded-2xl" />
+          </div>
+          <div className="flex flex-col items-center gap-1.5 text-center">
+            <div className="text-[19px] font-bold text-white tracking-wide">Mediagram</div>
+            <div className="text-[12px] text-muted font-medium flex items-center gap-2">
+              <span className="size-1.5 rounded-full bg-primary animate-pulse" />
+              Connecting to Telegram…
+            </div>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  // Auth gate: any other non-ready step shows Login with smooth entrance animation
   if (auth.step !== 'ready') {
-    return <Login />
+    return (
+      <div className="login-enter h-screen w-screen overflow-hidden">
+        <Login />
+      </div>
+    )
   }
 
   const rawPage = route.split('?')[0] || '/overview'
   const page = rawPage === '' || rawPage === '/' ? '/overview' : rawPage
 
-  return (
-    <div className="flex h-screen w-screen flex-col overflow-hidden bg-bg">
+  const shell = (
+    <div className="flex h-full w-full flex-col overflow-hidden bg-bg">
       {/* Top Window Bar: Solid 36px bar holding native controls, drag region, and the app logo */}
       <div className="drag flex h-9 shrink-0 items-center justify-between bg-[#0f172a] px-3 select-none z-30 border-b border-white/[0.06]">
         <div className="no-drag flex items-center gap-2 text-[12px] font-semibold text-text tracking-wide">
-          <div className="grid size-5 place-items-center rounded bg-primary text-white shadow-glow">
-            <Send size={11} />
-          </div>
+          <MediagramLogo size={18} className="rounded" />
           <span>Mediagram</span>
         </div>
 
@@ -222,7 +298,7 @@ export default function App() {
           onToggleCollapse={() => setCollapsed(!collapsed)}
         />
 
-        <main className="flex-1 overflow-auto">
+        <main className={`flex-1 min-h-0 h-full ${page === '/settings' ? 'overflow-hidden' : 'overflow-auto'}`}>
           {page === '/overview' && <Overview />}
           {page === '/downloads' && <Downloads />}
           {page === '/uploads' && <Uploads />}
@@ -235,6 +311,19 @@ export default function App() {
           )}
         </main>
       </div>
+    </div>
+  )
+
+  // Through the hand-off the dashboard mounts beneath Login, which fades out as a layer over it. The tree shape
+  // stays put either way, so nothing inside the dashboard remounts when the overlay leaves.
+  return (
+    <div className="relative h-screen w-screen overflow-hidden bg-bg">
+      <div className={leavingLogin ? 'app-enter absolute inset-0' : 'absolute inset-0'}>{shell}</div>
+      {leavingLogin && (
+        <div className="login-exit absolute inset-0 z-40">
+          <Login />
+        </div>
+      )}
     </div>
   )
 }

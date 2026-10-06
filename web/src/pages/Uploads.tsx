@@ -1,12 +1,20 @@
 // Phase 5.3: Uploads page per UI.md & Reference Mockup
-import { useState, useRef, type DragEvent } from 'react'
+import { useState, useRef, useEffect, type DragEvent } from 'react'
 import { UploadCloud, X, Upload, Zap, Clock, CheckCircle2, FileText } from 'lucide-react'
 import { call, useCall, useLive, navigate } from '../api.ts'
 import type { LiveStats } from '../../../core/transfers.ts'
 import { Panel, SearchInput, Chip, Button, Avatar, Toggle, TypeChip, Empty, Skeleton, ErrorState, fmtBytes, toast, triggerFlyToQueue } from '../ui.tsx'
 
 export default function Uploads() {
-  const [chatId, setChatId] = useState<number | null>(null)
+  const [chatId, setChatId] = useState<number | null>(() => {
+    try {
+      const saved = localStorage.getItem('mediagram_uploads_chat_id')
+      return saved ? Number(saved) : null
+    } catch {
+      return null
+    }
+  })
+
   const [destSearch, setDestSearch] = useState('')
   const [destKind, setDestKind] = useState<'all' | 'channels' | 'groups' | 'saved'>('all')
 
@@ -41,6 +49,14 @@ export default function Uploads() {
   const defaultChat = settings?.defaultUploadChat ? postableChats.find((c) => c.id === settings.defaultUploadChat)?.id : null
   const selectedChatId = chatId || defaultChat || postableChats[0]?.id || null
   const selectedChat = postableChats.find((c) => c.id === selectedChatId)
+
+  useEffect(() => {
+    try {
+      if (selectedChatId != null) {
+        localStorage.setItem('mediagram_uploads_chat_id', String(selectedChatId))
+      }
+    } catch {}
+  }, [selectedChatId])
 
   const handleDrop = (e: DragEvent<HTMLDivElement>) => {
     e.preventDefault()

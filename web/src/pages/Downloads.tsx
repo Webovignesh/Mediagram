@@ -1,9 +1,8 @@
-// Phase 5.2: Downloads page per UI.md & Mockup Reference
-import React, { useState, useRef, useEffect, useLayoutEffect } from 'react'
-import { Plus, RotateCcw, Download, Folder, CheckSquare, Square, FolderOpen, Send, ExternalLink, Copy, Filter, FileText, ChevronDown, Play, SlidersHorizontal, ArrowDown, Trash2, Film, LogOut, MoreVertical } from 'lucide-react'
-import { call, useCall, useLive, navigate } from '../api.ts'
-import type { LiveStats } from '../../../core/transfers.ts'
-import { Panel, SearchInput, Chip, Select, Button, Avatar, Pill, Thumb, TypeChip, Pagination, Empty, Skeleton, ErrorState, OpenChatDialog, MediaPreviewModal, Dialog, fmtBytes, fmtAgo, fmtDuration, toast, triggerFlyToQueue, confirm, CheckDuplicatesModal, type DuplicateCheckResult } from '../ui.tsx'
+import React, { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback } from 'react'
+import { Plus, RotateCcw, Download, Folder, CheckSquare, Square, FolderOpen, Send, ExternalLink, Copy, Filter, FileText, MessageSquare, ChevronDown, Play, Pause, Music, SlidersHorizontal, ArrowDown, Trash2, Film, LogOut, MoreVertical } from 'lucide-react'
+import { call, useCall, useLive, useTyping, navigate } from '../api.ts'
+import { Panel, SearchInput, Chip, Select, Button, Avatar, Pill, Thumb, TypeChip, Pagination, Empty, Skeleton, ErrorState, OpenChatDialog, MediaPreviewModal, Dialog, fmtBytes, fmtAgo, fmtDate, fmtDuration, toast, triggerFlyToQueue, confirm, CheckDuplicatesModal, MediagramLogo, TelegramInviteModal, type DuplicateCheckResult } from '../ui.tsx'
+import { ChatView } from './ChatView.tsx'
 
 function LinkifiedText({
   text,
@@ -31,7 +30,7 @@ function LinkifiedText({
               className="inline-flex items-center gap-1 text-cyan hover:text-cyan/80 underline font-medium hover:bg-cyan/10 rounded px-1 -mx-0.5 transition-colors cursor-pointer text-left break-all"
               title={isTg ? 'Open Telegram link in Mediagram' : 'Open in browser'}
             >
-              {isTg ? <Send size={11} className="inline shrink-0" /> : <ExternalLink size={11} className="inline shrink-0 opacity-75" />}
+              {isTg ? <MediagramLogo size={13} className="inline shrink-0 mr-0.5 rounded-[3px]" /> : <ExternalLink size={11} className="inline shrink-0 opacity-75" />}
               <span>{part}</span>
             </button>
           )
@@ -60,45 +59,223 @@ function getMessageTime(timestampSec: number): string {
   return new Date(timestampSec * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
 }
 
+function TelegramAudioPlayer({
+  media,
+  chatId,
+  messageId,
+  onDownload,
+  onOpenViewer,
+}: {
+  media: any
+  chatId: number
+  messageId: number
+  onDownload: () => void
+  onOpenViewer: () => void
+}) {
+  const [playing, setPlaying] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const [audioUrl, setAudioUrl] = useState<string | null>(media.path ? `teleflow://file/${encodeURIComponent(media.path)}` : null)
+  const [currentTime, setCurrentTime] = useState(0)
+  const [duration, setDuration] = useState(media.duration || 0)
+  const audioRef = useRef<HTMLAudioElement | null>(null)
+
+  const handlePlayToggle = async (e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (!audioUrl) {
+      setLoading(true)
+      try {
+        const res = await call<{ completed: boolean, path: string | null }>('media.prepare', { chatId, messageId })
+        if (res.completed && res.path) {
+          const url = `teleflow://file/${encodeURIComponent(res.path)}`
+          setAudioUrl(url)
+          setLoading(false)
+          setTimeout(() => {
+            if (audioRef.current) {
+              audioRef.current.play()
+              setPlaying(true)
+            }
+          }, 50)
+          return
+        }
+      } catch {}
+      setLoading(false)
+      onOpenViewer()
+      return
+    }
+
+    if (audioRef.current) {
+      if (playing) {
+        audioRef.current.pause()
+        setPlaying(false)
+      } else {
+        audioRef.current.play()
+        setPlaying(true)
+      }
+    }
+  }
+
+  return (
+    <div className="flex items-center gap-3 p-3 rounded-2xl bg-[#0e1622] my-1 w-full max-w-[380px] border border-white/[0.06] shadow-sm select-none" onClick={(e) => e.stopPropagation()}>
+      {audioUrl && (
+        <audio
+          ref={audioRef}
+          src={audioUrl}
+          onTimeUpdate={() => audioRef.current && setCurrentTime(audioRef.current.currentTime)}
+          onLoadedMetadata={() => audioRef.current && setDuration(audioRef.current.duration || media.duration || 0)}
+          onEnded={() => setPlaying(false)}
+        />
+      )}
+
+      {/* Telegram Play/Pause circular button */}
+      <button
+        type="button"
+        onClick={handlePlayToggle}
+        className="size-11 rounded-full bg-primary hover:bg-primary-hover text-white flex items-center justify-center shrink-0 shadow-md transition-transform hover:scale-105 active:scale-95"
+        title={playing ? 'Pause' : 'Play audio'}
+      >
+        {loading ? (
+          <div className="size-5 rounded-full border-2 border-white/30 border-t-white animate-spin" />
+        ) : playing ? (
+          <Pause size={18} className="fill-white" />
+        ) : (
+          <Play size={18} className="ml-0.5 fill-white" />
+        )}
+      </button>
+
+      {/* Info & scrubber */}
+      <div className="min-w-0 flex-1 flex flex-col justify-center">
+        <div className="text-[13px] font-semibold text-white truncate cursor-pointer hover:text-cyan transition-colors" onClick={onOpenViewer} title={media.name}>
+          {media.name}
+        </div>
+        <div className="mt-1 flex items-center gap-2">
+          <input
+            type="range"
+            min="0"
+            max={duration || 100}
+            value={currentTime}
+            onChange={(e) => {
+              const val = Number(e.target.value)
+              setCurrentTime(val)
+              if (audioRef.current) audioRef.current.currentTime = val
+            }}
+            className="w-full h-1 bg-white/20 rounded-lg appearance-none cursor-pointer accent-primary"
+          />
+        </div>
+        <div className="flex items-center justify-between text-[10.5px] text-muted mt-0.5 tabular-nums">
+          <span>{fmtDuration(Math.round(currentTime))}</span>
+          <span>{duration ? fmtDuration(Math.round(duration)) : fmtBytes(media.size)}</span>
+        </div>
+      </div>
+
+      {/* Action: Download / Open */}
+      <div className="shrink-0 flex items-center">
+        <button
+          type="button"
+          onClick={onDownload}
+          className="size-8 rounded-full hover:bg-white/10 text-muted hover:text-white flex items-center justify-center transition-colors"
+          title={media.status === 'downloaded' ? 'Show in folder' : 'Download audio'}
+        >
+          {media.status === 'downloaded' ? <FolderOpen size={15} className="text-cyan" /> : <Download size={15} />}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+interface ChatFilterState {
+  mediaType: string
+  sizeFilter: string
+  appliedCustomSize: { minBytes: number, maxBytes: number, label: string } | null
+  duration: string
+  appliedCustomDuration: { minSec: number, maxSec: number, label: string } | null
+  fileSearch: string
+  fileExt: string
+  page: number
+  mediaOnlyChat: boolean
+  chatMsgSearch: string
+}
+
+const CHAT_FILTERS_STORAGE_KEY = 'mediagram_chat_filters'
+
+const defaultChatFilter: ChatFilterState = {
+  mediaType: 'all',
+  sizeFilter: 'all',
+  appliedCustomSize: null,
+  duration: 'all',
+  appliedCustomDuration: null,
+  fileSearch: '',
+  fileExt: 'all',
+  page: 1,
+  mediaOnlyChat: false,
+  chatMsgSearch: '',
+}
+
+function loadInitialChatFilters(): Record<number, Partial<ChatFilterState>> {
+  try {
+    const raw = localStorage.getItem(CHAT_FILTERS_STORAGE_KEY)
+    if (raw) return JSON.parse(raw)
+  } catch {}
+  return {}
+}
+
 export default function Downloads() {
   const [openChat, setOpenChat] = useState(false)
   const [previewItem, setPreviewItem] = useState<any>(null)
-  const [chatId, setChatId] = useState<number | null>(null)
-  const [view, setView] = useState<'files' | 'chat'>('files')
+  const [chatId, setChatId] = useState<number | null>(() => {
+    try {
+      const saved = localStorage.getItem('mediagram_active_chat_id')
+      return saved ? Number(saved) : null
+    } catch {
+      return null
+    }
+  })
+  const [view, setView] = useState<'files' | 'chat'>(() => {
+    try {
+      const saved = localStorage.getItem('mediagram_downloads_view')
+      return (saved === 'chat' || saved === 'files') ? (saved as 'files' | 'chat') : 'files'
+    } catch {
+      return 'files'
+    }
+  })
+
+  useEffect(() => {
+    try {
+      if (chatId != null) {
+        localStorage.setItem('mediagram_active_chat_id', String(chatId))
+      }
+    } catch {}
+  }, [chatId])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('mediagram_downloads_view', view)
+    } catch {}
+  }, [view])
+
   const [chatSearch, setChatSearch] = useState('')
   const [chatKind, setChatKind] = useState<'all' | 'channels' | 'groups' | 'folders'>('all')
   const [selectedFolderId, setSelectedFolderId] = useState<number | null>(null)
 
   // Files view filters & pagination
-  const [fileSearch, setFileSearch] = useState('')
-  const [mediaType, setMediaType] = useState<string>('all')
-  const [fileExt, setFileExt] = useState<string>('all')
-  const [duration, setDuration] = useState<string>('all')
-  const [sizeFilter, setSizeFilter] = useState<string>('all')
   const [statusFilter, setStatusFilter] = useState<string>('all')
   const [sortBy, setSortBy] = useState<string>('newest')
-  const [page, setPage] = useState(1)
   const [selectedIds, setSelectedIds] = useState<number[]>([])
 
-  // Custom filter state
+  // Custom filter modal state
   const [customSizeModalOpen, setCustomSizeModalOpen] = useState(false)
   const [customSizeMin, setCustomSizeMin] = useState('')
   const [customSizeMinUnit, setCustomSizeMinUnit] = useState<'KB' | 'MB' | 'GB'>('MB')
   const [customSizeMax, setCustomSizeMax] = useState('')
   const [customSizeMaxUnit, setCustomSizeMaxUnit] = useState<'KB' | 'MB' | 'GB'>('MB')
-  const [appliedCustomSize, setAppliedCustomSize] = useState<{ minBytes: number, maxBytes: number, label: string } | null>(null)
 
   const [customDurationModalOpen, setCustomDurationModalOpen] = useState(false)
   const [customDurationMin, setCustomDurationMin] = useState('')
   const [customDurationMinUnit, setCustomDurationMinUnit] = useState<'sec' | 'min' | 'hr'>('min')
   const [customDurationMax, setCustomDurationMax] = useState('')
   const [customDurationMaxUnit, setCustomDurationMaxUnit] = useState<'sec' | 'min' | 'hr'>('min')
-  const [appliedCustomDuration, setAppliedCustomDuration] = useState<{ minSec: number, maxSec: number, label: string } | null>(null)
 
   // Chat view state
   const [msgLimit, setMsgLimit] = useState(30)
-  const [chatMsgSearch, setChatMsgSearch] = useState('')
-  const [mediaOnlyChat, setMediaOnlyChat] = useState(false)
   const chatScrollRef = useRef<HTMLDivElement>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const [showScrollBottom, setShowScrollBottom] = useState(false)
@@ -109,26 +286,93 @@ export default function Downloads() {
   const [dedupeSelectedCount, setDedupeSelectedCount] = useState(0)
   const [dedupeResult, setDedupeResult] = useState<DuplicateCheckResult | null>(null)
 
+  // Telegram Invite / Join Request Modal
+  const [inviteModalOpen, setInviteModalOpen] = useState(false)
+  const [inviteData, setInviteData] = useState<{
+    title: string
+    members?: number
+    photo?: string | null
+    about?: string
+    createsJoinRequest?: boolean
+    isPublic?: boolean
+    link: string
+  } | null>(null)
+  const [inviteLoading, setInviteLoading] = useState(false)
+  const [inviteRequestSent, setInviteRequestSent] = useState(false)
+
   // Data fetching
+  const { data: authData } = useCall<any>('auth.get', undefined, ['auth'])
+  const me = authData?.me
+
   const { data: chatsData, error: chatsErr, reload: chatsReload } = useCall<{ chats: any[], folders: any[] }>('chats.list', {}, ['chats'])
 
+  // chats.list already arrives in Telegram's own order (main-list position: pinned first, then most recent),
+  // so the sidebar keeps it: re-sorting by date would sink pinned chats and the chats TDLib has no last message for.
   const allChats = chatsData?.chats ?? []
   const allFolders = chatsData?.folders ?? []
 
   // Resolve current chat
   const activeChatId = chatId ?? (allChats[0]?.id ?? null)
   const activeChat = allChats.find((c) => c.id === activeChatId)
+  const typingMap = useTyping()
+  const activeTyping = activeChatId ? typingMap[activeChatId] : null
 
-  // Filter chats by kind/search
-  const filteredChats = allChats.filter((c) => {
-    if (chatSearch && !c.title.toLowerCase().includes(chatSearch.toLowerCase()) && !(c.username && c.username.toLowerCase().includes(chatSearch.toLowerCase()))) {
-      return false
-    }
-    if (chatKind === 'channels') return c.kind === 'channel'
-    if (chatKind === 'groups') return c.kind === 'group' || c.kind === 'supergroup'
-    if (chatKind === 'folders' && selectedFolderId !== null) return c.folders?.includes(selectedFolderId)
-    return true
-  })
+  // Persistent chat filters map
+  const [chatFilters, setChatFilters] = useState<Record<number, Partial<ChatFilterState>>>(loadInitialChatFilters)
+
+  // Current active chat filters
+  const currentFilter = useMemo<ChatFilterState>(() => {
+    if (!activeChatId) return defaultChatFilter
+    return { ...defaultChatFilter, ...(chatFilters[activeChatId] || {}) }
+  }, [activeChatId, chatFilters])
+
+  const updateActiveChatFilter = useCallback((patch: Partial<ChatFilterState>) => {
+    if (!activeChatId) return
+    setChatFilters((prev) => {
+      const nextChat = { ...(prev[activeChatId] || {}), ...patch }
+      const nextMap = { ...prev, [activeChatId]: nextChat }
+      try {
+        localStorage.setItem(CHAT_FILTERS_STORAGE_KEY, JSON.stringify(nextMap))
+      } catch {}
+      return nextMap
+    })
+  }, [activeChatId])
+
+  // Getters for current filters
+  const mediaType = currentFilter.mediaType
+  const sizeFilter = currentFilter.sizeFilter
+  const appliedCustomSize = currentFilter.appliedCustomSize
+  const duration = currentFilter.duration
+  const appliedCustomDuration = currentFilter.appliedCustomDuration
+  const fileSearch = currentFilter.fileSearch
+  const fileExt = currentFilter.fileExt
+  const page = currentFilter.page
+  const mediaOnlyChat = currentFilter.mediaOnlyChat
+  const chatMsgSearch = currentFilter.chatMsgSearch
+
+  // Setters that update persistent filter for active chat
+  const setMediaType = (v: string) => updateActiveChatFilter({ mediaType: v, page: 1 })
+  const setSizeFilter = (v: string) => updateActiveChatFilter({ sizeFilter: v, appliedCustomSize: v === 'custom' ? appliedCustomSize : null, page: 1 })
+  const setAppliedCustomSize = (v: any) => updateActiveChatFilter({ appliedCustomSize: v })
+  const setDuration = (v: string) => updateActiveChatFilter({ duration: v, appliedCustomDuration: v === 'custom' ? appliedCustomDuration : null, page: 1 })
+  const setAppliedCustomDuration = (v: any) => updateActiveChatFilter({ appliedCustomDuration: v })
+  const setFileSearch = (v: string) => updateActiveChatFilter({ fileSearch: v, page: 1 })
+  const setFileExt = (v: string) => updateActiveChatFilter({ fileExt: v, page: 1 })
+  const setPage = (p: number | ((prev: number) => number)) => updateActiveChatFilter({ page: typeof p === 'function' ? p(page) : p })
+  const setMediaOnlyChat = (v: boolean | ((prev: boolean) => boolean)) => updateActiveChatFilter({ mediaOnlyChat: typeof v === 'function' ? v(mediaOnlyChat) : v })
+  const setChatMsgSearch = (v: string) => updateActiveChatFilter({ chatMsgSearch: v })
+
+  // Filter chats by kind/search; the order stays Telegram's - newest activity (and pinned chats) at the top
+  const filteredChats = allChats
+    .filter((c) => {
+      if (chatSearch && !c.title.toLowerCase().includes(chatSearch.toLowerCase()) && !(c.username && c.username.toLowerCase().includes(chatSearch.toLowerCase()))) {
+        return false
+      }
+      if (chatKind === 'channels') return c.kind === 'channel'
+      if (chatKind === 'groups') return c.kind === 'group' || c.kind === 'supergroup'
+      if (chatKind === 'folders' && selectedFolderId !== null) return c.folders?.includes(selectedFolderId)
+      return true
+    })
 
   // Media query params with custom size/duration sorting
   const resolvedSort =
@@ -222,13 +466,20 @@ export default function Downloads() {
   })
 
   const resetFilters = () => {
-    setFileSearch('')
-    setMediaType('all')
-    setDuration('all')
-    setSizeFilter('all')
-    setAppliedCustomSize(null)
-    setAppliedCustomDuration(null)
-    setPage(1)
+    if (activeChatId) {
+      updateActiveChatFilter({
+        mediaType: 'all',
+        sizeFilter: 'all',
+        appliedCustomSize: null,
+        duration: 'all',
+        appliedCustomDuration: null,
+        fileSearch: '',
+        fileExt: 'all',
+        page: 1,
+        mediaOnlyChat: false,
+        chatMsgSearch: '',
+      })
+    }
     setSelectedIds([])
   }
 
@@ -243,9 +494,11 @@ export default function Downloads() {
       return
     }
     const label = `${!isNaN(minVal) && minVal > 0 ? `${minVal} ${customSizeMinUnit}` : '0'} – ${!isNaN(maxVal) && maxVal > 0 ? `${maxVal} ${customSizeMaxUnit}` : '∞'}`
-    setAppliedCustomSize({ minBytes, maxBytes, label })
-    setSizeFilter('custom')
-    setPage(1)
+    updateActiveChatFilter({
+      appliedCustomSize: { minBytes, maxBytes, label },
+      sizeFilter: 'custom',
+      page: 1,
+    })
     setCustomSizeModalOpen(false)
   }
 
@@ -260,9 +513,11 @@ export default function Downloads() {
       return
     }
     const label = `${!isNaN(minVal) && minVal > 0 ? `${minVal} ${customDurationMinUnit}` : '0s'} – ${!isNaN(maxVal) && maxVal > 0 ? `${maxVal} ${customDurationMaxUnit}` : '∞'}`
-    setAppliedCustomDuration({ minSec, maxSec, label })
-    setDuration('custom')
-    setPage(1)
+    updateActiveChatFilter({
+      appliedCustomDuration: { minSec, maxSec, label },
+      duration: 'custom',
+      page: 1,
+    })
     setCustomDurationModalOpen(false)
   }
 
@@ -441,7 +696,7 @@ export default function Downloads() {
       const validResults = checkResults.filter((r): r is DuplicateCheckResult => r !== null)
       if (!validResults.length) {
         setDedupeModalOpen(false)
-        toast('No media found in folder channels', 'info')
+        toast('No media found in the chats of this folder', 'info')
         return
       }
       const combined: DuplicateCheckResult = {
@@ -471,32 +726,66 @@ export default function Downloads() {
   }
 
   async function handleTelegramLink(link: string) {
+    const cleanLink = link.trim().replace(/[.,!?;:)\]]+$/, '')
+    const isTg = /^(?:https?:\/\/)?(?:www\.)?(?:t\.me|telegram\.me|telegram\.dog)\/|^tg:\/\//i.test(cleanLink) || /^@\w{4,32}$/.test(cleanLink)
     try {
-      const res = await call<any>('chats.open', { link: link.trim(), join: false })
+      const res = await call<any>('chats.open', { link: cleanLink, join: false })
       if (res.chat?.id) {
         setChatId(res.chat.id)
         chatsReload()
         toast(`Opened ${res.chat.title || 'chat'}`)
       } else if (res.invite) {
-        const title = res.invite.title || 'Channel'
-        const count = res.invite.members ? ` (${res.invite.members} members)` : ''
-        if (await confirm({
-          title: `Join ${title}?`,
-          message: `Would you like to join "${title}"${count} and open its media in Mediagram?`,
-          confirm: 'Join & Open',
-        })) {
-          const joined = await call<any>('chats.open', { link: link.trim(), join: true })
-          if (joined.chat?.id) {
-            setChatId(joined.chat.id)
-            chatsReload()
-            toast(`Joined ${joined.chat.title || 'chat'}`)
-          }
-        }
-      } else {
-        window.open(link.startsWith('http') ? link : `https://${link}`, '_blank')
+        setInviteData({
+          title: res.invite.title || 'Channel',
+          members: res.invite.members,
+          photo: res.invite.photo,
+          about: res.invite.about,
+          createsJoinRequest: res.invite.createsJoinRequest,
+          isPublic: res.invite.isPublic,
+          link: cleanLink,
+        })
+        setInviteRequestSent(false)
+        setInviteModalOpen(true)
+      } else if (!isTg) {
+        window.open(cleanLink.startsWith('http') ? cleanLink : `https://${cleanLink}`, '_blank')
       }
-    } catch {
-      window.open(link.startsWith('http') ? link : `https://${link}`, '_blank')
+    } catch (err: any) {
+      if (err?.status === 409 || err?.message?.includes('request to join was sent')) {
+        setInviteData({
+          title: 'Telegram Channel',
+          link: cleanLink,
+          createsJoinRequest: true,
+        })
+        setInviteRequestSent(true)
+        setInviteModalOpen(true)
+      } else if (isTg) {
+        toast(err?.message || 'Could not open Telegram channel, bot, or group', 'danger')
+      } else {
+        window.open(cleanLink.startsWith('http') ? cleanLink : `https://${cleanLink}`, '_blank')
+      }
+    }
+  }
+
+  async function handleJoinInvite() {
+    if (!inviteData) return
+    setInviteLoading(true)
+    try {
+      const joined = await call<any>('chats.open', { link: inviteData.link, join: true })
+      if (joined.chat?.id) {
+        setChatId(joined.chat.id)
+        chatsReload()
+        setInviteModalOpen(false)
+        toast(`Joined ${joined.chat.title || inviteData.title}`)
+      }
+    } catch (err: any) {
+      if (err?.status === 409 || err?.message?.includes('request to join was sent')) {
+        setInviteRequestSent(true)
+        toast('Join request sent to channel admins')
+      } else {
+        toast(err?.message || 'Could not join channel', 'danger')
+      }
+    } finally {
+      setInviteLoading(false)
     }
   }
 
@@ -545,6 +834,19 @@ export default function Downloads() {
         item={previewItem}
         onClose={() => setPreviewItem(null)}
         onDownload={previewItem?.messageId && activeChatId ? () => downloadItems([{ chatId: activeChatId, messageId: previewItem.messageId }]) : undefined}
+      />
+
+      <TelegramInviteModal
+        open={inviteModalOpen}
+        invite={inviteData}
+        loading={inviteLoading}
+        requestSent={inviteRequestSent}
+        onClose={() => {
+          setInviteModalOpen(false)
+          setInviteData(null)
+          setInviteRequestSent(false)
+        }}
+        onJoin={handleJoinInvite}
       />
 
       <CheckDuplicatesModal
@@ -750,8 +1052,10 @@ export default function Downloads() {
                 <div
                   key={c.id}
                   onClick={() => {
+                    if (c.id !== activeChatId) {
+                      setView('files')
+                    }
                     setChatId(c.id)
-                    setPage(1)
                     setSelectedIds([])
                     setChannelMenuOpen(false)
                     c.unread = 0
@@ -762,33 +1066,40 @@ export default function Downloads() {
                 >
                   <Avatar src={c.photo} name={c.title} size={32} />
                   <div className="min-w-0 flex-1">
-                    <div className="truncate text-[13px] font-medium text-text">{c.title}</div>
-                    <div className="flex items-center justify-between text-[11px] text-muted">
-                      <span className="truncate">{c.username ? `@${c.username}` : c.kind}</span>
-                      {c.lastDate ? <span>{fmtAgo(c.lastDate)}</span> : null}
+                    {/* Line 1 never moves: the time is nowrap, so an unread badge (line 2) cannot squeeze it
+                        into a second line or push the title around. */}
+                    <div className="flex items-center gap-2">
+                      <div className="min-w-0 flex-1 truncate text-[13px] font-medium text-text" title={c.title}>{c.title}</div>
+                      {c.lastDate ? (
+                        <span className="shrink-0 whitespace-nowrap text-[11px] text-muted" title={fmtDate(c.lastDate)}>
+                          {fmtAgo(c.lastDate)}
+                        </span>
+                      ) : null}
+                    </div>
+                    <div className="flex items-center justify-between gap-2 text-[11px] text-muted">
+                      {typingMap[c.id] ? (
+                        <span className="min-w-0 truncate text-cyan font-medium animate-pulse flex items-center gap-1">
+                          <span className="size-1.5 rounded-full bg-cyan animate-ping inline-block shrink-0" />
+                          <span className="min-w-0 truncate">{typingMap[c.id]}</span>
+                        </span>
+                      ) : (
+                        <span className="min-w-0 truncate" title={c.username ? `@${c.username}` : c.kind}>
+                          {c.username ? `@${c.username}` : c.kind}
+                        </span>
+                      )}
+                      {c.unread > 0 && (
+                        <span className="shrink-0 rounded-full bg-primary px-1.5 py-0.5 text-[10px] font-bold text-white">
+                          {c.unread}
+                        </span>
+                      )}
                     </div>
                   </div>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      confirmLeaveChat(c.id, c.title)
-                    }}
-                    className="opacity-0 group-hover:opacity-100 transition-opacity rounded p-1 text-muted hover:text-danger hover:bg-danger/15 shrink-0"
-                    title="Leave / Delete Channel"
-                  >
-                    <Trash2 size={13} />
-                  </button>
                   {active && scan?.state === 'scanning' && (
                     <span
                       className="flex shrink-0 items-center gap-1 rounded-full bg-primary/20 px-1.5 py-0.5 text-[10px] font-semibold text-primary"
                       title="Indexing this chat's media"
                     >
                       <span className="size-1.5 animate-pulse rounded-full bg-primary" /> Indexing
-                    </span>
-                  )}
-                  {c.unread > 0 && (
-                    <span className="rounded-full bg-primary px-1.5 py-0.5 text-[10px] font-bold text-white shrink-0">
-                      {c.unread}
                     </span>
                   )}
                 </div>
@@ -799,34 +1110,25 @@ export default function Downloads() {
       </div>
 
       {/* Column 2: Files View / Chat View (Center flexible) */}
-      <div className="flex flex-1 flex-col overflow-y-auto p-5 space-y-4">
-        {/* View bar & channel search */}
-        <div className="flex items-center justify-between gap-3 flex-wrap pr-40">
-          <div className="flex items-center gap-2">
-            <Button
-              variant={view === 'files' ? 'primary' : 'secondary'}
-              onClick={() => setView('files')}
-              className="flex items-center gap-1.5"
-            >
-              <FileText size={15} />
-              <span>Files View</span>
-            </Button>
-            <Button
-              variant={view === 'chat' ? 'primary' : 'secondary'}
-              onClick={() => setView('chat')}
-              className="flex items-center gap-1.5"
-            >
-              <span>Chat View</span>
-            </Button>
-          </div>
-
-          <div className="w-64">
-            <SearchInput
-              placeholder="Search files in this channel…"
-              value={fileSearch}
-              onChange={(v) => { setFileSearch(v); setPage(1) }}
-            />
-          </div>
+      <div className={`flex flex-1 flex-col ${view === 'chat' ? 'overflow-hidden min-h-0' : 'overflow-y-auto'} p-5 space-y-4`}>
+        {/* View switcher bar */}
+        <div className="flex items-center gap-2">
+          <Button
+            variant={view === 'files' ? 'primary' : 'secondary'}
+            onClick={() => setView('files')}
+            className="flex items-center gap-1.5"
+          >
+            <FileText size={15} />
+            <span>Files View</span>
+          </Button>
+          <Button
+            variant={view === 'chat' ? 'primary' : 'secondary'}
+            onClick={() => setView('chat')}
+            className="flex items-center gap-1.5"
+          >
+            <MessageSquare size={15} />
+            <span>Chat View</span>
+          </Button>
         </div>
 
         {/* Telegram Folder banner if viewing a folder */}
@@ -910,10 +1212,10 @@ export default function Downloads() {
         {/* Main area depending on Files View vs Chat View */}
         {view === 'files' ? (
           <div className="space-y-3 flex-1 flex flex-col">
-            {/* Active Channel header in Files View */}
+            {/* Active Channel header in Files View with aligned Search bar */}
             {activeChat && (
-              <div className="flex items-center justify-between pb-3 border-b border-border/40">
-                <div className="flex items-center gap-3 min-w-0">
+              <div className="flex items-center justify-between pb-3 border-b border-border/40 gap-4">
+                <div className="flex items-center gap-3 min-w-0 flex-1">
                   <Avatar src={activeChat.photo} name={activeChat.title} size={34} />
                   <div className="min-w-0">
                     <div className="text-[14px] font-bold text-text truncate leading-tight tracking-wide">
@@ -923,6 +1225,15 @@ export default function Downloads() {
                       {activeChat.username ? `@${activeChat.username}` : activeChat.kind || 'Channel'} • {mediaData?.total ?? 0} files
                     </div>
                   </div>
+                </div>
+
+                {/* Search files in this channel aligned with chat name */}
+                <div className="w-64 shrink-0">
+                  <SearchInput
+                    placeholder="Search files in this channel…"
+                    value={fileSearch}
+                    onChange={(v) => { setFileSearch(v); setPage(1) }}
+                  />
                 </div>
 
                 {/* 3-dot channel menu */}
@@ -1217,345 +1528,22 @@ export default function Downloads() {
             </div>
           </div>
         ) : (
-          /* Real Telegram Clone Chat View */
-          <div className="relative flex-1 rounded-2xl border border-white/[0.08] bg-[#0c1424] backdrop-blur-md p-4 flex flex-col justify-between overflow-hidden shadow-md">
-            {/* Chat View Header Toolbar */}
-            <div className="flex items-center justify-between gap-3 pb-3 border-b border-white/[0.08] mb-3 flex-wrap bg-[#0c1424]/90 z-20 pr-40">
-              <div className="flex items-center gap-3 min-w-0">
-                <Avatar src={activeChat?.photo} name={activeChat?.title || 'Chat'} size={36} />
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="text-[14px] font-bold text-text truncate leading-tight tracking-wide">
-                      {activeChat?.title || 'Messages'}
-                    </span>
-                    {activeChat && (
-                      <div className="relative shrink-0">
-                        <button
-                          onClick={() => setChannelMenuOpen(!channelMenuOpen)}
-                          className="flex size-7 items-center justify-center rounded-lg border border-border bg-tile text-muted hover:text-white hover:border-primary transition-colors"
-                          title="Channel Actions"
-                        >
-                          <MoreVertical size={14} />
-                        </button>
-                        {channelMenuOpen && (
-                          <>
-                            <div className="fixed inset-0 z-40" onClick={() => setChannelMenuOpen(false)} />
-                            <div
-                              className="absolute left-0 top-full mt-1.5 z-50 w-48 rounded-xl border border-border bg-[#182533] p-1.5 shadow-2xl backdrop-blur-xl space-y-0.5"
-                              onClick={() => setChannelMenuOpen(false)}
-                            >
-                              {activeChat.username && (
-                                <button
-                                  onClick={() => copyChatLink(activeChat.username)}
-                                  className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12px] text-text hover:bg-white/10 transition-colors"
-                                >
-                                  <Copy size={13} className="text-muted" />
-                                  <span>Copy Link</span>
-                                </button>
-                              )}
-                              <button
-                                onClick={() => clearChatHistory(activeChat.id, activeChat.title)}
-                                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12px] text-text hover:bg-white/10 transition-colors"
-                              >
-                                <RotateCcw size={13} className="text-muted" />
-                                <span>Clear Chat History</span>
-                              </button>
-                              <button
-                                onClick={() => confirmLeaveChat(activeChat.id, activeChat.title)}
-                                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12px] text-danger hover:bg-danger/15 transition-colors"
-                              >
-                                <Trash2 size={13} />
-                                <span>Leave / Delete Channel</span>
-                              </button>
-                            </div>
-                          </>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                  <div className="text-[11.5px] text-muted truncate leading-tight mt-0.5">
-                    {activeChat?.username ? `@${activeChat.username}` : activeChat?.kind || 'Channel'} • {filteredMessages.length} messages
-                  </div>
-                </div>
-              </div>
-              <div className="flex items-center gap-2">
-                <div className="w-52">
-                  <SearchInput
-                    placeholder="Search in chat…"
-                    value={chatMsgSearch}
-                    onChange={setChatMsgSearch}
-                  />
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setMediaOnlyChat(!mediaOnlyChat)}
-                  className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[12px] font-medium border transition-colors ${
-                    mediaOnlyChat
-                      ? 'bg-primary text-white border-primary shadow-sm'
-                      : 'bg-white/5 border-white/10 text-muted hover:text-white hover:bg-white/10'
-                  }`}
-                  title="Filter messages that contain media files"
-                >
-                  <Filter size={13} />
-                  <span>Media only</span>
-                </button>
-              </div>
-            </div>
-
-            {/* Message Stream */}
-            <div
-              ref={chatScrollRef}
-              onScroll={(e) => {
-                const target = e.currentTarget
-                const isNearBottom = target.scrollHeight - target.scrollTop - target.clientHeight < 120
-                setShowScrollBottom(!isNearBottom)
-              }}
-              className="flex-1 overflow-y-auto space-y-3.5 pr-2"
-            >
-              {msgErr ? (
-                <ErrorState error={msgErr} onRetry={msgReload} />
-              ) : !msgData ? (
-                <div className="space-y-4 p-4">
-                  {[...Array(5)].map((_, i) => <Skeleton key={i} className="h-20 w-3/4 rounded-2xl" />)}
-                </div>
-              ) : filteredMessages.length === 0 ? (
-                <div className="py-20 text-center text-muted">
-                  <p>No messages found matching criteria</p>
-                </div>
-              ) : (
-                <div className="space-y-3 pb-2">
-                  {/* Load older messages at the TOP */}
-                  {msgData.more && (
-                    <div className="flex justify-center py-2">
-                      <Button
-                        variant="secondary"
-                        onClick={handleLoadOlder}
-                        className="text-[12px] rounded-full px-4 py-1.5 shadow-sm border border-white/10 bg-white/5 hover:bg-white/10"
-                      >
-                        Load older messages
-                      </Button>
-                    </div>
-                  )}
-
-                  {/* Chronological order: oldest to newest */}
-                  {[...filteredMessages].reverse().map((m: any, idx: number, arr: any[]) => {
-                    const currentDateGroup = getDateGroup(m.date)
-                    const prevDateGroup = idx > 0 ? getDateGroup(arr[idx - 1].date) : null
-                    const showDateDivider = currentDateGroup !== prevDateGroup
-
-                    return (
-                      <React.Fragment key={m.id}>
-                        {showDateDivider && (
-                          <div className="flex justify-center my-4 select-none">
-                            <span className="rounded-full bg-[#182533] px-3.5 py-1 text-[11px] font-semibold text-slate-300 shadow border border-white/10">
-                              {currentDateGroup}
-                            </span>
-                          </div>
-                        )}
-
-                        <div className={`flex flex-col items-start ${m.media ? 'max-w-[480px] w-full' : 'max-w-[85%] w-fit'} group/msg`}>
-                          <div className="relative rounded-2xl rounded-tl-sm border border-white/[0.08] bg-[#182533] p-3 shadow-md hover:border-white/20 transition-all text-text w-full">
-                            {/* Sender line */}
-                            <div className="flex items-center justify-between text-[11.5px] mb-1">
-                              <span className="font-semibold text-cyan tracking-wide">
-                                {m.sender || activeChat?.title || 'Unknown'}
-                              </span>
-                              <button
-                                onClick={() => copyText(m.text || m.media?.name || '')}
-                                className="opacity-0 group-hover/msg:opacity-100 transition-opacity p-1 text-muted hover:text-white rounded"
-                                title="Copy text"
-                              >
-                                <Copy size={13} />
-                              </button>
-                            </div>
-
-                            {/* Media card */}
-                            {m.media && (
-                              <div className="rounded-xl overflow-hidden border border-white/[0.08] bg-[#0c1322] my-1.5 shadow-inner">
-                                {m.media.type === 'video' || m.media.type === 'photo' || m.media.type === 'animation' ? (
-                                  <div
-                                    className="relative w-full max-w-[340px] max-h-[460px] overflow-hidden bg-black/60 cursor-pointer group/media flex items-center justify-center rounded-2xl select-none shadow-lg"
-                                    onClick={() => setPreviewItem({ name: m.media.name, path: m.media.path, thumb: m.media.thumb, type: m.media.type, size: m.media.size, duration: m.media.duration, chatId: activeChatId, messageId: m.id })}
-                                  >
-                                    {m.media.thumb ? (
-                                      <img
-                                        src={`teleflow://thumb/${m.media.thumb}`}
-                                        alt={m.media.name}
-                                        className="w-full h-auto min-h-[240px] max-h-[460px] object-cover rounded-2xl transition-transform duration-200 group-hover/media:scale-[1.01]"
-                                        loading="eager"
-                                      />
-                                    ) : (
-                                      <div className="flex h-56 w-full items-center justify-center bg-slate-900/80 text-muted rounded-2xl">
-                                        <Film size={36} />
-                                      </div>
-                                    )}
-
-                                    {/* Top-left duration / audio badge (Telegram style: 1:30 🔈x) */}
-                                    <div className="absolute top-2.5 left-2.5 flex items-center gap-1 rounded-full bg-black/65 backdrop-blur-md px-2.5 py-0.5 text-[11px] font-semibold text-white pointer-events-none shadow">
-                                      <span>{m.media.duration ? fmtDuration(m.media.duration) : fmtBytes(m.media.size)}</span>
-                                      {(m.media.type === 'video' || m.media.type === 'animation') && (
-                                        <span className="opacity-80 text-[10px]">🔈</span>
-                                      )}
-                                    </div>
-
-                                    {/* Center Telegram circular play/spinner ring */}
-                                    {(m.media.type === 'video' || m.media.type === 'animation') && (
-                                      <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                                        <div className="size-14 rounded-full bg-black/40 backdrop-blur-sm border-2 border-white/80 flex items-center justify-center shadow-2xl group-hover/media:scale-110 group-hover/media:bg-primary/80 transition-all">
-                                          <Play size={24} className="ml-1 fill-white text-white" />
-                                        </div>
-                                      </div>
-                                    )}
-
-                                    {/* Bottom-right timestamp badge */}
-                                    <div className="absolute bottom-2.5 right-2.5 flex items-center gap-1.5 rounded-full bg-black/65 backdrop-blur-md px-2.5 py-0.5 text-[11px] font-medium text-white/90 pointer-events-none shadow">
-                                      <span>{getMessageTime(m.date)}</span>
-                                      <span className="text-cyan font-bold text-[10px] leading-none">✓✓</span>
-                                    </div>
-
-                                    {/* Top-right quick download action on hover */}
-                                    <div className="absolute top-2.5 right-2.5 opacity-0 group-hover/media:opacity-100 transition-opacity flex items-center gap-1">
-                                      {m.media.status === 'downloaded' ? (
-                                        m.media.path && (
-                                          <button
-                                            onClick={(e) => {
-                                              e.stopPropagation()
-                                              revealFile(m.media.path)
-                                            }}
-                                            className="size-7 rounded-full bg-black/70 backdrop-blur-md text-cyan hover:text-white flex items-center justify-center shadow"
-                                            title="Show in folder"
-                                          >
-                                            <FolderOpen size={13} />
-                                          </button>
-                                        )
-                                      ) : (
-                                          <button
-                                            onClick={(ev) => {
-                                              ev.stopPropagation()
-                                              downloadItems([{ chatId: activeChatId!, messageId: m.id }], false, ev)
-                                            }}
-                                            className="size-7 rounded-full bg-black/70 backdrop-blur-md text-white hover:bg-primary flex items-center justify-center shadow"
-                                            title="Download"
-                                          >
-                                          <Download size={13} />
-                                        </button>
-                                      )}
-                                    </div>
-                                  </div>
-                                ) : (
-                                  <div className="flex items-center gap-3 p-3">
-                                    <div className="grid size-11 place-items-center rounded-xl bg-primary/20 text-primary shrink-0">
-                                      <FileText size={20} />
-                                    </div>
-                                    <div className="min-w-0 flex-1">
-                                      <div className="text-[13px] font-medium text-white truncate" title={m.media.name}>{m.media.name}</div>
-                                      <div className="text-[11.5px] text-muted mt-0.5 tabular-nums">{fmtBytes(m.media.size)}</div>
-                                    </div>
-                                  </div>
-                                )}
-
-                                {/* Action footer inside media */}
-                                <div className="flex items-center justify-between p-2.5 bg-black/25 border-t border-white/[0.05]">
-                                  <span className="text-[12px] font-medium text-text-2 truncate max-w-[280px]" title={m.media.name}>
-                                    {m.media.name}
-                                  </span>
-                                  <div className="flex items-center gap-2 shrink-0">
-                                    {m.media.status === 'downloaded' ? (
-                                      <>
-                                        {m.media.path && (
-                                          <button
-                                            onClick={() => revealFile(m.media.path)}
-                                            className="inline-flex items-center gap-1 text-[11.5px] text-cyan hover:text-cyan/80 bg-cyan/10 hover:bg-cyan/20 px-2.5 py-1 rounded-md transition-colors"
-                                            title="Show in folder"
-                                          >
-                                            <FolderOpen size={13} />
-                                            <span>Folder</span>
-                                          </button>
-                                        )}
-                                        <button
-                                          onClick={() => downloadItems([{ chatId: activeChatId!, messageId: m.id }], true)}
-                                          className="inline-flex items-center gap-1 text-[11.5px] text-muted hover:text-white bg-white/5 hover:bg-white/10 px-2 py-1 rounded-md transition-colors"
-                                          title="Download again"
-                                        >
-                                          <RotateCcw size={13} />
-                                        </button>
-                                      </>
-                                    ) : (
-                                        <Button
-                                          variant="primary"
-                                          onClick={() => void downloadItems([{ chatId: activeChatId!, messageId: m.id }], false)}
-                                          className="text-[11.5px] py-1 px-3 flex items-center gap-1 font-medium shadow-sm"
-                                        >
-                                        <Download size={13} /> Download
-                                      </Button>
-                                    )}
-                                  </div>
-                                </div>
-                              </div>
-                            )}
-
-                            {/* Message text / caption */}
-                            {m.text && (
-                              <div className="mt-1 text-[13.5px] leading-relaxed">
-                                <LinkifiedText text={m.text} onOpenLink={handleTelegramLink} />
-                              </div>
-                            )}
-
-                            {/* Message footer timestamp + double checkmark */}
-                            <div className="flex items-center justify-end gap-1 mt-1 text-[10.5px] text-muted/70 tabular-nums">
-                              <span>{getMessageTime(m.date)}</span>
-                              <span className="text-cyan font-bold text-[11px] leading-none">✓✓</span>
-                            </div>
-                          </div>
-                        </div>
-                      </React.Fragment>
-                    )
-                  })}
-                  <div ref={messagesEndRef} />
-                </div>
-              )}
-            </div>
-
-            {/* Floating scroll to bottom button */}
-            {showScrollBottom && (
-              <button
-                onClick={() => scrollToBottom('smooth')}
-                className="absolute bottom-16 right-6 z-20 flex size-9 items-center justify-center rounded-full bg-primary text-white shadow-xl hover:bg-primary-hover transition-all"
-                title="Scroll to latest"
-              >
-                <ChevronDown size={18} />
-              </button>
-            )}
-
-            {/* Chat message typing/input bar */}
-            {activeChat && (
-              <div className="mt-3 pt-3 border-t border-white/[0.08] flex items-center gap-2">
-                <input
-                  type="text"
-                  placeholder={activeChat.canPost !== false ? `Write a message in ${activeChat.title}…` : 'Posting not permitted in this channel'}
-                  disabled={activeChat.canPost === false || sendingMsg}
-                  value={newMsgText}
-                  onChange={(e) => setNewMsgText(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !e.shiftKey) {
-                      e.preventDefault()
-                      handleSendChatMessage()
-                    }
-                  }}
-                  className="flex-1 rounded-xl border border-white/10 bg-[#111b2b] px-4 py-2.5 text-[13px] text-text placeholder:text-muted focus:border-primary outline-none transition-colors"
-                />
-                <button
-                  type="button"
-                  onClick={handleSendChatMessage}
-                  disabled={!newMsgText.trim() || sendingMsg || activeChat.canPost === false}
-                  className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-primary text-white shadow-glow hover:bg-primary-hover disabled:opacity-40 disabled:cursor-not-allowed transition-all"
-                  title="Send message"
-                >
-                  <Send size={16} />
-                </button>
-              </div>
-            )}
-          </div>
+          <ChatView
+            chatId={activeChatId!}
+            activeChat={activeChat}
+            me={me}
+            messages={msgData?.messages ?? []}
+            hasMore={Boolean(msgData?.more)}
+            loading={!msgData}
+            error={msgErr}
+            onLoadOlder={handleLoadOlder}
+            onReload={msgReload}
+            onOpenViewer={setPreviewItem}
+            onDownloadItem={(item, force, e) => downloadItems([item], force, e)}
+            onRevealFile={revealFile}
+            onOpenLink={handleTelegramLink}
+            activeTyping={activeTyping}
+          />
         )}
       </div>
     </div>

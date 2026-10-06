@@ -1,15 +1,16 @@
 // App lifecycle (ARCHITECTURE > Desktop integration): paths, single instance, window, tray, notifications, IPC, quit.
 import fs from 'node:fs'
 import path from 'node:path'
+import { Readable } from 'node:stream'
 import { pathToFileURL } from 'node:url'
-import { app, BrowserWindow, dialog, ipcMain, Menu, net, Notification, protocol, screen, session, shell, Tray } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, Notification, protocol, safeStorage, screen, session, shell, Tray } from 'electron'
 import { getTdjson } from 'prebuilt-tdlib'
 import icon from '../assets/icon.png?asset'
-import { type AppEvent, type DB, getSettings, type Kind, openDb, putSetting, readSetting } from '../core/db.ts'
-import { library, log, onLibraryChange, openLog, pageKey, realRoots, resolvePaths } from '../core/storage.ts'
+import { type AppError, type AppEvent, type DB, getSettings, type Kind, openDb, putSetting, readSetting } from '../core/db.ts'
+import { isUnc, library, log, onLibraryChange, openLog, pageKey, realRoots, resolvePaths } from '../core/storage.ts'
 import * as telegram from '../core/telegram.ts'
 import { createEngine, type Engine, type LiveStats } from '../core/transfers.ts'
-import { createMethods, handleCall, type License, protocolFile } from './ipc.ts'
+import { createMethods, fromRenderer, handleCall, type License, protocolFile } from './ipc.ts'
 
 declare const __LICENSES__: License[] // built by electron.vite.config.ts
 
@@ -17,6 +18,12 @@ declare const __LICENSES__: License[] // built by electron.vite.config.ts
 // and every other fs call share it, so a bigger pool keeps them off each other's feet. libuv reads this the first time
 // it needs a thread, which is the first asynchronous fs call — still ahead of us.
 process.env.UV_THREADPOOL_SIZE ??= '16'
+
+// Hardware acceleration and video decoding enhancements (HEVC / H.265 / zero-copy rendering)
+app.commandLine.appendSwitch('enable-features', 'PlatformHEVCDecoderSupport')
+app.commandLine.appendSwitch('enable-gpu-rasterization')
+app.commandLine.appendSwitch('enable-zero-copy')
+app.commandLine.appendSwitch('ignore-gpu-blocklist')
 
 let win: BrowserWindow | null = null
 let tray: Tray | null = null
@@ -78,7 +85,7 @@ function startup() {
   app.setPath('userData', paths.home)
   app.setPath('sessionData', paths.chromium)
   // 3. Windows toast identity (same as appId). 4. One process per home: TDLib locks its database.
-  app.setAppUserModelId('com.teleflow.app')
+  app.setAppUserModelId('com.mediagram.app')
   if (!app.requestSingleInstanceLock()) return app.quit()
   // 5.
   protocol.registerSchemesAsPrivileged([{ scheme: 'teleflow', privileges: { standard: true, secure: true, stream: true, supportFetchAPI: true } }])
@@ -90,8 +97,16 @@ function startup() {
 
   // 6. SQLite, the engine, and its recovery (before TDLib starts, so pending upload updates find their files).
   const db = openDb(paths.db)
-  const defaultRoot = path.join(app.getPath('downloads'), 'TeleFlow')
-  const settings = () => getSettings(db, defaultRoot)
+  const legacyDefaultRoot = path.join(app.getPath('downloads'), 'TeleFlow')
+  const newDefaultRoot = path.join(app.getPath('downloads'), 'Mediagram')
+  const defaultRoot = fs.existsSync(newDefaultRoot) ? newDefaultRoot : (fs.existsSync(legacyDefaultRoot) ? legacyDefaultRoot : newDefaultRoot)
+  // A root saved by an older build (or written straight into the database) still has to obey today's rules: a network
+  // share is never the library, because Clear All Data deletes everything under the root (ARCHITECTURE > Runtime data).
+  const settings = () => {
+    const s = getSettings(db, defaultRoot)
+    if (!path.isAbsolute(s.downloadRoot) || isUnc(s.downloadRoot)) s.downloadRoot = defaultRoot
+    return s
+  }
   const env = process.env
   const roots = realRoots({
     sealed: [paths.home, paths.appDir, path.dirname(app.getPath('appData')), env.SystemRoot, env.ProgramFiles, env['ProgramFiles(x86)'], env.ProgramData]
@@ -102,9 +117,30 @@ function startup() {
   // quoted because Electron 44 reads it back with CommandLine::FromString, which splits an unquoted path at its first
   // space (a profile such as C:\Users\First Last), so the toggle would always read back off.
   const loginItem = { path: `"${process.execPath}"`, args: app.isPackaged ? ['--hidden'] : [app.getAppPath(), '--hidden'] }
+  // API keys are kept encrypted (DPAPI through safeStorage): saved automatically when a sign-in reaches `ready`,
+  // so the next start skips the API-keys step; a rejection from Telegram or Clear All Data forgets them. Logout
+  // keeps them (the session is what ends). A row written by an older build in the clear is upgraded when read.
+  const encode = (plain: string) => (safeStorage.isEncryptionAvailable() ? `enc:${safeStorage.encryptString(plain).toString('base64')}` : `plain:${plain}`)
+  const decode = (stored: unknown): string | null => {
+    if (typeof stored !== 'string') return null
+    if (stored.startsWith('enc:')) { try { return safeStorage.decryptString(Buffer.from(stored.slice(4), 'base64')) } catch { return null } }
+    if (stored.startsWith('plain:')) return stored.slice(6)
+    return /^[0-9a-f]{32}$/i.test(stored) ? stored : null
+  }
+  const keys = {
+    save: (apiId: number, apiHash: string) => { putSetting(db, 'apiId', apiId); putSetting(db, 'apiHash', encode(apiHash)) },
+    forget: () => { putSetting(db, 'apiId'); putSetting(db, 'apiHash') },
+    get: (): { apiId: number, apiHash: string } | null => {
+      const apiId = readSetting(db, 'apiId'), apiHash = decode(readSetting(db, 'apiHash'))
+      return typeof apiId === 'number' && apiHash ? { apiId, apiHash } : null
+    },
+  }
+  const hasSaved = typeof readSetting(db, 'apiId') === 'number' || fs.existsSync(path.join(paths.tdlib, 'session.fingerprint'))
   telegram.init({
     dir: paths.tdlib, version: app.getVersion(), db, emit, showArchived: () => settings().showArchived,
-    forgetCredentials: () => { putSetting(db, 'apiId'); putSetting(db, 'apiHash') },
+    forgetCredentials: keys.forget,
+    saveCredentials: (c) => { keys.save(c.apiId, c.apiHash); emit({ type: 'invalidate', topics: ['settings'] }) },
+    hasSavedCredentials: hasSaved,
   })
   const finished = (kind: Kind, ok: boolean) => {
     const s = settings()
@@ -121,16 +157,47 @@ function startup() {
   // The env URL is honored only unpackaged, so a packaged app never loads a page named by the environment.
   const rendererUrl = (!app.isPackaged && process.env.ELECTRON_RENDERER_URL) || pathToFileURL(path.join(import.meta.dirname, '../renderer/index.html')).href
   const rendererKey = pageKey(rendererUrl)
+  // Upload provenance: preload reports the path of every File the user chose (dialog or drop) here, and uploads.add
+  // refuses anything else. Renderer code can name any path; it cannot make a File Chromium will resolve for one.
+  const uploadGrants = new Set<string>()
+  const grantKey = (p: string) => path.resolve(p).toLowerCase()
+  const grants = {
+    add: (paths: unknown) => {
+      if (uploadGrants.size > 10_000) uploadGrants.clear() // a session cap; re-picking a file is cheap
+      if (!Array.isArray(paths)) return
+      for (const p of paths) if (typeof p === 'string' && p.length <= 4096 && path.isAbsolute(p)) uploadGrants.add(grantKey(p))
+    },
+    has: (p: string) => uploadGrants.has(grantKey(p)),
+  }
+  // Download-root provenance: only a folder the Browse dialog handed back may become the root.
+  const pickedFolders = new Set<string>()
+  const picks = {
+    add: (p: string) => { if (typeof p === 'string' && p && p.length <= 4096 && path.isAbsolute(p)) pickedFolders.add(grantKey(p)) },
+    has: (p: string) => pickedFolders.has(grantKey(p)),
+  }
   const ctx = {
     version: app.getVersion(), tdlib, paths, db, settings, roots, emit, tg: telegram, engine: eng,
-    installedAt: app.isPackaged ? fs.statSync(appDir).birthtimeMs : null,
+    installedAt: app.isPackaged ? (() => {
+      try {
+        const stat = fs.statSync(appDir)
+        const t = stat.birthtimeMs || stat.ctimeMs || stat.mtimeMs || Date.now()
+        return t > 1e11 ? t : t * 1000
+      } catch {
+        return Date.now()
+      }
+    })() : null,
     repository: JSON.parse(fs.readFileSync(path.join(app.getAppPath(), 'package.json'), 'utf8')).repository?.url,
     licenses: __LICENSES__,
     native: {
+      grants,
+      picks,
+      keys,
       pickFolder: async (title?: string) => {
         const options = { title, properties: ['openDirectory', 'createDirectory'] as ('openDirectory' | 'createDirectory')[] }
         const r = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options)
-        return r.canceled ? null : r.filePaths[0] ?? null
+        const chosen = r.canceled ? null : r.filePaths[0] ?? null
+        if (chosen) picks.add(chosen) // settings.set accepts this path because the user chose it here
+        return chosen
       },
       openPath: (target: string) => shell.openPath(target),
       reveal: (file: string) => shell.showItemInFolder(file),
@@ -149,19 +216,83 @@ function startup() {
   app.on('second-instance', showWindow)
   app.on('window-all-closed', () => app.quit())
 
+  // Nothing in this app attaches a <webview> and only the main window ever opens: whatever a page tries, no second
+  // window, no webview, and no navigation away from the app (ARCHITECTURE > Security > Renderer compromise).
+  app.on('web-contents-created', (_event, contents) => {
+    contents.on('will-attach-webview', (e) => e.preventDefault())
+    contents.on('will-navigate', (e) => e.preventDefault())
+    contents.setWindowOpenHandler(({ url }) => {
+      if (url.startsWith('https://')) void shell.openExternal(url)
+      return { action: 'deny' }
+    })
+  })
+
   // 7.
   app.whenReady().then(async () => {
     session.defaultSession.setPermissionRequestHandler((_contents, _permission, done) => done(false))
+    // With no check handler Chromium answers every permission *query* "granted" while the request handler above
+    // refuses the actual prompt — a page would be told it may use the camera or read the clipboard. Answer the
+    // queries too: only what the UI uses (the copy buttons, fullscreen) and nothing else.
+    session.defaultSession.setPermissionCheckHandler((_contents, permission) =>
+      permission === 'clipboard-sanitized-write' || permission === 'fullscreen')
+    // A teleflow:// response is only ever an image or media file, but it may be a downloaded document: nothing in it
+    // gets a chance to run or be sniffed into a type it didn't declare (ARCHITECTURE > teleflow:// protocol).
+    const mediaHeaders: Record<string, string> = {
+      'X-Content-Type-Options': 'nosniff',
+      'Content-Security-Policy': "default-src 'none'; sandbox",
+    }
     protocol.handle('teleflow', async (req) => {
       try {
         const file = req.method === 'GET' ? await protocolFile(req.url, ctx) : null
         if (!file) return new Response(null, { status: 404 })
         if (req.url.startsWith('teleflow://thumb/')) {
           const buf = await fs.promises.readFile(file)
-          return new Response(buf, { headers: { 'Content-Type': 'image/jpeg', 'Cache-Control': 'public, max-age=2592000, immutable' } })
+          return new Response(buf, { headers: { ...mediaHeaders, 'Content-Type': 'image/jpeg', 'Cache-Control': 'public, max-age=2592000, immutable' } })
         }
-        const res = await net.fetch(pathToFileURL(file).href)
-        return res
+        const stat = await fs.promises.stat(file)
+        const size = stat.size
+        const ext = path.extname(file).slice(1).toLowerCase()
+        const mimeMap: Record<string, string> = {
+          mp4: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime', mkv: 'video/x-matroska', m4v: 'video/mp4',
+          mp3: 'audio/mpeg', ogg: 'audio/ogg', wav: 'audio/wav', m4a: 'audio/mp4', aac: 'audio/aac', flac: 'audio/flac',
+          jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', gif: 'image/gif',
+        }
+        const mime = mimeMap[ext] || 'application/octet-stream'
+
+        const range = req.headers.get('range')
+        if (range) {
+          const match = range.match(/bytes=(\d+)-(\d*)/)
+          if (match) {
+            const start = parseInt(match[1], 10)
+            const end = match[2] ? parseInt(match[2], 10) : size - 1
+            const chunksize = (end - start) + 1
+            const nodeStream = fs.createReadStream(file, { start, end })
+            const webStream = Readable.toWeb(nodeStream) as unknown as ReadableStream
+            return new Response(webStream, {
+              status: 206,
+              statusText: 'Partial Content',
+              headers: {
+                ...mediaHeaders,
+                'Content-Type': mime,
+                'Content-Range': `bytes ${start}-${end}/${size}`,
+                'Accept-Ranges': 'bytes',
+                'Content-Length': String(chunksize),
+              }
+            })
+          }
+        }
+
+        const nodeStream = fs.createReadStream(file)
+        const webStream = Readable.toWeb(nodeStream) as unknown as ReadableStream
+        return new Response(webStream, {
+          status: 200,
+          headers: {
+            ...mediaHeaders,
+            'Content-Type': mime,
+            'Accept-Ranges': 'bytes',
+            'Content-Length': String(size),
+          }
+        })
       } catch { return new Response(null, { status: 404 }) } // not signed in, bad URL, file gone
     })
     ipcMain.handle('call', (e, req) => {
@@ -169,6 +300,29 @@ function startup() {
       try { sender = e.senderFrame?.url ?? null } catch {} // disposed frame → reject
       return handleCall(methods, rendererKey, sender, req)
     })
+    // Preload's pathOf(): record which files the user chose. Same sender rule as the call channel, and the work is
+    // synchronous, so it lands before the uploads.add that follows it in the same message queue.
+    ipcMain.handle('grant', (e, paths) => {
+      let sender: string | null = null
+      try { sender = e.senderFrame?.url ?? null } catch {}
+      if (!fromRenderer(rendererKey, sender)) return false
+      grants.add(paths)
+      return true
+    })
+    // 8. Saved keys (if the user chose to keep them) start TDLib straight into the session immediately
+    const apiId = readSetting(db, 'apiId'), stored = readSetting(db, 'apiHash')
+    const apiHash = decode(stored)
+    if (typeof apiId === 'number' && apiHash) {
+      if (!(typeof stored === 'string' && stored.startsWith('enc:'))) keys.save(apiId, apiHash) // upgrade an old row
+      telegram.start({ apiId, apiHash }).catch((e) => {
+        if ((e as AppError).status !== 409) log('error', `Starting TDLib failed: ${(e as Error).message}`)
+        else log('warn', `The saved API keys don't match the session on this device: ${(e as Error).message}`)
+      })
+    } else if (stored !== undefined) {
+      log('warn', 'The stored API keys could not be read; they were forgotten')
+      keys.forget()
+    }
+
     // A login-item start (--hidden) stays in the tray only when closing to the tray is on.
     win = createWindow(rendererUrl, db, process.argv.includes('--hidden') && settings().closeToTray, () => settings().closeToTray)
     tray = new Tray(icon)
@@ -181,10 +335,8 @@ function startup() {
       { label: 'Quit Mediagram', click: () => app.quit() },
     ]))
     tray.on('double-click', showWindow)
-    // 8.
-    const apiId = readSetting(db, 'apiId'), apiHash = readSetting(db, 'apiHash')
-    if (typeof apiId === 'number' && typeof apiHash === 'string') await telegram.start({ apiId, apiHash })
-    // 9. Fills the cache global search reads from, and listens for files appearing outside TeleFlow.
+
+    // 9. Fills the cache global search reads from, and listens for files appearing outside Mediagram.
     onLibraryChange(() => emit({ type: 'invalidate', topics: ['library'] }))
     library(settings().downloadRoot).catch((e) => log('warn', `Library scan failed: ${(e as Error).message}`))
   }).catch(fatal)

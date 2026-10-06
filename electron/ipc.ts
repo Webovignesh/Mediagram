@@ -3,8 +3,8 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import {
-  type AppError, checkSettings, type DB, downloadStates, type Emit, fail, jobsList, mediaExts, type MediaItem, mediaQuery, putSetting,
-  setSettings, statsActivity, statsChats, statsOverview, type StoredSettings,
+  type AppError, checkSettings, type DB, downloadStates, type Emit, fail, jobsList, mediaExts, type MediaItem, mediaQuery,
+  readSetting, setSettings, statsActivity, statsChats, statsOverview, type StoredSettings,
 } from '../core/db.ts'
 import { type Chat, extractMedia, isTelegramLink, linkKind, mediaRow } from '../core/shapes.ts'
 import {
@@ -18,6 +18,13 @@ export type License = { name: string, version: string, license: string }
 /** Electron calls, passed in by main. */
 export type Native = {
   pickFolder(title?: string): Promise<string | null>
+  /** Files the user chose this session (file dialog or drag-drop, handed over by preload). uploads.add reads nothing else. */
+  grants: { add(paths: unknown): void, has(path: string): boolean }
+  /** Folders chosen in the Browse dialog this session. settings.set only accepts one of these as the download root. */
+  picks: { add(path: string): void, has(path: string): boolean }
+  /** The API keys, encrypted by main: saved automatically when a sign-in reaches `ready`, kept through logout,
+   *  forgotten when Telegram rejects them or Clear All Data runs. `get` is the pair the next sign-in starts with. */
+  keys: { save(apiId: number, apiHash: string): void, forget(): void, get(): { apiId: number, apiHash: string } | null }
   openPath(target: string): Promise<string> // '' on success, else the error (shell.openPath)
   reveal(file: string): void
   trashItem(file: string): Promise<void>
@@ -99,6 +106,10 @@ export const shape = <S extends Record<string, Check<unknown>>>(spec: S) => (arg
 const method = <A, R>(validate: (args: unknown) => A, run: (args: A) => R) => ({ validate, run })
 
 const kind = oneOf('download', 'upload')
+/** Extensions library.open refuses: executing a downloaded file is not a file-manager job (ARCHITECTURE > Security). */
+const RUNS = new Set(['exe', 'msi', 'msp', 'mst', 'appx', 'appxbundle', 'msix', 'msixbundle', 'com', 'pif', 'scr', 'cpl',
+  'bat', 'cmd', 'ps1', 'psm1', 'psd1', 'psc1', 'vbs', 'vbe', 'js', 'jse', 'wsf', 'wsh', 'ws', 'hta', 'jar', 'jnlp',
+  'reg', 'rgs', 'msc', 'lnk', 'url', 'website', 'scf', 'apk', 'sh', 'run'])
 const range = oneOf('24h', '7d', '30d')
 const message = fields({ chatId: id, messageId: id })
 const ext: Check<string> = (v, f) => match(/^[a-z0-9]{1,16}$/i, 'must be a file extension')(v, f).toLowerCase()
@@ -119,6 +130,10 @@ const filterSpec = {
   sort: opt(oneOf('newest', 'oldest', 'largest', 'smallest', 'name', 'longest')),
 }
 /** downloads.add takes one of three forms, told apart by their keys. */
+/** One {chatId, filters} pass may queue at most this many files (the {items} path allows the same ceiling): the
+ *  caller narrows the filters instead of one call materialising an entire chat's history. */
+const FILTER_ADD_MAX = 10_000
+
 const downloadsArgs = (args: unknown) => {
   const keys = args && typeof args === 'object' ? Object.keys(args) : []
   if (keys.includes('link')) return shape({ link: text(300, 2) })(args)
@@ -194,11 +209,31 @@ export function createMethods(ctx: Ctx) {
     }),
 
     'auth.get': method(shape({}), () => tg.authState()),
-    'auth.credentials': method(shape({ apiId: int(1, 2_147_483_647), apiHash: match(/^[0-9a-f]{32}$/i, 'must be the 32-character hash from my.telegram.org') }), async (creds) => {
-      putSetting(db, 'apiId', creds.apiId)
-      putSetting(db, 'apiHash', creds.apiHash)
-      await tg.start(creds)
+    // The keys go to TDLib and stay in main's memory for the session. Reaching `ready` saves them encrypted for the
+    // next start (core/telegram.ts calls back); a rejection from Telegram forgets them again. Before an existing
+    // session is opened, core/telegram.ts compares them with the fingerprint recorded when that session signed in:
+    // a mismatch is a 409 with needsFresh, and `fresh` is that offer taken (the local session is deleted first, so
+    // Telegram checks the pair for real at the code step). Settings changing the keys of a signed-in session is that
+    // same check in reverse: keys differing from the running session force the fresh path, identical keys do nothing.
+    'auth.credentials': method(shape({ apiId: int(1, 2_147_483_647), apiHash: match(/^[0-9a-f]{32}$/i, 'must be the 32-character hash from my.telegram.org'), fresh: flag }), async ({ fresh, ...creds }) => {
+      const current = tg.credentials()
+      const same = !!current && current.apiId === creds.apiId && current.apiHash.toLowerCase() === creds.apiHash.toLowerCase()
+      if (!fresh && same) return tg.authState()
+      await tg.start(creds, fresh || !!current)
       return tg.authState()
+    }),
+    /** Puts the session's own keys on disk (encrypted by main), so the next start skips the API-keys step. */
+    'auth.saveKeys': method(shape({}), () => {
+      const creds = tg.credentials()
+      if (!creds) throw fail(409, 'Enter your API ID and hash first')
+      ctx.native.keys.save(creds.apiId, creds.apiHash)
+      invalidate('settings')
+      return { saved: true }
+    }),
+    'auth.forgetKeys': method(shape({}), () => {
+      ctx.native.keys.forget()
+      invalidate('settings')
+      return { saved: false }
     }),
     'auth.phone': method(shape({ phone: match(/^\+?[\d\s().-]{5,24}$/, 'must be a phone number with its country code') }),
       ({ phone }) => tg.sendPhone(phone.replace(/\D/g, ''))),
@@ -207,13 +242,13 @@ export function createMethods(ctx: Ctx) {
     'auth.logout': method(shape({ local: opt(bool) }), async () => {
       const before = await dirSize(ctx.paths.tdlib)
       const { local } = await tg.logout()
-      return { freed: Math.max(0, before - await dirSize(ctx.paths.tdlib)), local }
-    }),
-    'auth.resetCredentials': method(shape({}), async () => {
-      putSetting(db, 'apiId', undefined)
-      putSetting(db, 'apiHash', undefined)
-      await tg.logout().catch(() => ({ local: false }))
-      return { ok: true }
+      invalidate('settings')
+      await tg.reset() // the session's in-memory keys go with it; the pair saved on disk (kept on purpose) signs back in
+      const freed = Math.max(0, before - await dirSize(ctx.paths.tdlib))
+      const saved = ctx.native.keys.get()
+      // Straight back to the phone step with the saved keys: signing out ends the session, not the app's setup.
+      if (saved) await tg.start(saved).catch((e) => log('warn', `Restarting with the saved API keys failed: ${(e as Error).message}`))
+      return { freed, local }
     }),
 
     'chats.list': method(shape({}), () => tg.chatList()),
@@ -230,22 +265,67 @@ export function createMethods(ctx: Ctx) {
       await tg.clearChat(chatId)
       return { ok: true }
     }),
-    'chats.send': method(shape({ chatId: id, text: text(4096, 1) }), async ({ chatId, text: msgText }) => {
-      await tg.sendMessage(chatId, msgText)
+    'chats.send': method(shape({ chatId: id, text: text(4096, 1), replyToMessageId: opt(id) }), async ({ chatId, text: msgText, replyToMessageId }) => {
+      await tg.sendMessage(chatId, msgText, replyToMessageId)
       return { ok: true }
     }),
-    'chats.messages': method(shape({ chatId: id, limit: int(1, 1000, 30) }), async ({ chatId, limit }) => {
-      const r = await tg.messages(chatId, limit)
-      const states = downloadStates(db, chatId, r.messages.filter((m) => m.media).map((m) => m.id))
-      return { more: r.more, messages: r.messages.map((m) => ({ ...m, media: m.media && { ...mediaRow(chatId, m, m.media), ...states.get(m.id)! } satisfies MediaItem })) }
+    'messages.send': method(shape({ chatId: id, text: text(4096, 1), replyToMessageId: opt(id) }), async ({ chatId, text: msgText, replyToMessageId }) => {
+      await tg.sendMessage(chatId, msgText, replyToMessageId)
+      return { ok: true }
     }),
+    'messages.edit': method(shape({ chatId: id, messageId: id, text: text(4096, 1) }), async ({ chatId, messageId, text: msgText }) => {
+      await tg.editMessage(chatId, messageId, msgText)
+      return { ok: true }
+    }),
+    'messages.delete': method(shape({ chatId: id, messageIds: list(id, 1, 100), revoke: opt(bool) }), async ({ chatId, messageIds, revoke }) => {
+      await tg.deleteMessages(chatId, messageIds, revoke ?? true)
+      return { ok: true }
+    }),
+    'messages.pin': method(shape({ chatId: id, messageId: id, unpin: opt(bool) }), async ({ chatId, messageId, unpin }) => {
+      await tg.pinChatMessage(chatId, messageId, unpin ?? false)
+      return { ok: true }
+    }),
+    'messages.react': method(shape({ chatId: id, messageId: id, reaction: text(32, 1), remove: opt(bool) }), async ({ chatId, messageId, reaction, remove }) => {
+      await tg.reactMessage(chatId, messageId, reaction, remove ?? false)
+      return { ok: true }
+    }),
+    'messages.read': method(shape({ chatId: id, messageIds: list(id, 1, 100) }), async ({ chatId, messageIds }) => {
+      await tg.markMessagesRead(chatId, messageIds)
+      return { ok: true }
+    }),
+    'messages.search': method(shape({ chatId: id, query: text(100, 1), fromMessageId: opt(id), limit: int(1, 100, 50) }), async ({ chatId, query, fromMessageId, limit }) => {
+      return tg.searchMessages(chatId, query, fromMessageId ?? 0, limit)
+    }),
+    'chats.sendTyping': method(shape({ chatId: id, action: opt(text(30)) }), async ({ chatId, action }) => {
+      await tg.sendChatAction(chatId, action ?? 'typing')
+      return { ok: true }
+    }),
+    'chats.messages': method(shape({ chatId: id, limit: int(1, 1000, 30), fromMessageId: opt(id) }), async ({ chatId, limit, fromMessageId }) => {
+      const r = await tg.messages(chatId, limit, fromMessageId ?? 0)
+      const states = downloadStates(db, chatId, r.messages.filter((m) => m.media).map((m) => m.id))
+      return {
+        more: r.more,
+        messages: r.messages.map((m) => {
+          if (!m.media) return { ...m, media: null }
+          const state = states.get(m.id)!
+          const cachedPath = (m.media.file.local.is_downloading_completed && m.media.file.local.path) ? m.media.file.local.path : null
+          return {
+            ...m,
+            media: {
+              ...mediaRow(chatId, m, m.media),
+              ...state,
+              path: state.path || cachedPath,
+            } satisfies MediaItem,
+          }
+        }),
+      }
+    }),
+    'media.prepare': method(shape({ chatId: id, messageId: id }), ({ chatId, messageId }) => tg.prepareMedia(chatId, messageId)),
+    'chats.typing': method(shape({ chatId: opt(id) }), ({ chatId }) => chatId ? { text: tg.getChatAction(chatId) } : tg.getAllChatActions()),
     'chats.media': method(shape({ chatId: id, ...filterSpec, page, pageSize }), ({ chatId, page, pageSize, ...filters }) => {
       knownChat(chatId)
       tg.ensureScan(chatId)
       return { ...mediaQuery(db, chatId, filters, { page, pageSize }), exts: mediaExts(db, chatId), scan: tg.scanInfo(chatId) }
-    }),
-    'media.play': method(shape({ chatId: id, messageId: id }), async ({ chatId, messageId }) => {
-      return tg.getPlayableFile(chatId, messageId)
     }),
     /** The index bar's Retry and Resume: forget why this chat stopped or failed and start the scan again. */
     'chats.rescan': method(shape({ chatId: id }), ({ chatId }) => {
@@ -264,7 +344,14 @@ export function createMethods(ctx: Ctx) {
         const { chatId, messages } = await tg.linkMessages(a.link)
         return engine.addDownloads(chatId, messages.map((m) => mediaRow(chatId, m, extractMedia(m)!)))
       }
-      if ('filters' in a) return engine.addDownloads(knownChat(a.chatId).id, mediaQuery(db, a.chatId, a.filters).items)
+      if ('filters' in a) {
+        const chatId = knownChat(a.chatId).id
+        // One pass can queue a whole chat's history: count first and refuse a batch this size instead of building it
+        // in memory (ARCHITECTURE > Methods notes > downloads.add).
+        const { total } = mediaQuery(db, a.chatId, a.filters, { page: 1, pageSize: 1 })
+        if (total > FILTER_ADD_MAX) throw fail(400, `That's ${total.toLocaleString('en-US')} files. Narrow the filters and add them in batches of ${FILTER_ADD_MAX.toLocaleString('en-US')}.`)
+        return engine.addDownloads(chatId, mediaQuery(db, a.chatId, a.filters).items)
+      }
       return engine.addItems(a.items, a.force)
     }),
     'downloads.checkDuplicates': method(downloadsArgs, async (a) => engine.checkDuplicates(a)),
@@ -274,9 +361,12 @@ export function createMethods(ctx: Ctx) {
       const chat = knownChat(a.chatId)
       if (!chat.canPost) throw fail(403, "You can't post in this chat")
       if (a.caption.length > auth.me.captionMax) throw fail(400, `caption must be at most ${auth.me.captionMax} characters`)
-      // Upload sources are only ever read; each must be an existing regular file within Telegram's size limit.
+      // Upload sources are only ever read; each must be an existing regular file within Telegram's size limit. The
+      // provenance check comes first: a renderer can name any path, so an upload may only read paths the user handed
+      // to the app through the file dialog or a drag-drop (ARCHITECTURE > Security > Renderer compromise).
       const files = await Promise.all(a.paths.map(async (p, i) => {
         if (!path.isAbsolute(p) || path.parse(p).root.length < 3) throw reject(`paths[${i}]`, 'must be a full file path')
+        if (!ctx.native.grants.has(p)) throw fail(403, `${path.basename(p)} isn't a file you chose for this upload. Pick it again with Choose files or drag it onto the window.`)
         const name = path.basename(p)
         const st = await fs.promises.stat(p).catch(() => null)
         if (!st?.isFile()) throw fail(400, `${name} is missing or isn't a file`)
@@ -312,7 +402,13 @@ export function createMethods(ctx: Ctx) {
       sort: opt(oneOf('newest', 'oldest', 'largest', 'smallest', 'name')), page, pageSize,
     }), (a) => libraryList(db, { root: root(), thumbs: ctx.paths.thumbs }, a)),
     'library.missing': method(shape({}), async () => ({ items: await libraryMissing(db, await library(root()), ctx.paths.thumbs) })),
-    'library.open': method(shape({ path: filePath }), async (a) => open(await libraryFile(db, root(), a.path))),
+    'library.open': method(shape({ path: filePath }), async (a) => {
+      const file = await libraryFile(db, root(), a.path)
+      const ext = path.extname(file).slice(1).toLowerCase()
+      // Opening a downloaded program is running it, and the library has no reason to do that on the user's behalf.
+      if (RUNS.has(ext)) throw fail(400, `Mediagram won't open ${path.basename(file)}: it can run a program or a script. Use Reveal to open its folder instead.`)
+      return open(file)
+    }),
     'library.reveal': method(shape({ path: filePath }), async (a) => { ctx.native.reveal(await libraryFile(db, root(), a.path)) }),
     'library.trash': method(shape({ paths: list(filePath, 1, 1000) }), async ({ paths }) => {
       const r = await trash(db, root(), paths, ctx.native.trashItem)
@@ -321,12 +417,18 @@ export function createMethods(ctx: Ctx) {
       return { trashed: r.trashed, freed: r.freed }
     }),
 
-    'settings.get': method(shape({}), settings),
+    // apiHashSaved is a flag only: the stored value itself never leaves main (ARCHITECTURE > IPC contract).
+    'settings.get': method(shape({}), () => ({ ...settings(), apiHashSaved: readSetting(db, 'apiHash') !== undefined })),
     // Every key is validated (incl. the download root rules and canPost) before anything is written.
     'settings.set': method(checkSettings, async (patch) => {
       const before = ctx.settings()
       const next = { ...patch }
       if (next.downloadRoot !== undefined) {
+        // Provenance: the renderer may only move the root to a folder the user chose in the Browse dialog (or keep
+        // the one already in use), so a forged call cannot point the library, its reads, or Clear All at any folder.
+        if (next.downloadRoot !== before.downloadRoot && !ctx.native.picks.has(next.downloadRoot)) {
+          throw fail(400, 'downloadRoot must be a folder you picked in the Browse dialog')
+        }
         next.downloadRoot = checkDownloadRoot(next.downloadRoot, ctx.roots)
         checkDownloadRoot(await realLocation(next.downloadRoot), ctx.roots) // the stored path stays the one picked
       }
@@ -351,7 +453,7 @@ export function createMethods(ctx: Ctx) {
 export type Methods = ReturnType<typeof createMethods>
 
 /** teleflow:// URL → local file, or null for a 404 (ARCHITECTURE > teleflow:// protocol). */
-export async function protocolFile(url: string, ctx: Pick<Ctx, 'tg' | 'paths' | 'settings'>): Promise<string | null> {
+export async function protocolFile(url: string, ctx: Pick<Ctx, 'tg' | 'paths' | 'settings' | 'db'>): Promise<string | null> {
   const u = new URL(url)
   const arg = decodeURIComponent(u.pathname.slice(1))
   const isFile = async (f: string) => !!(await fs.promises.stat(f).catch(() => null))?.isFile()
@@ -366,10 +468,14 @@ export async function protocolFile(url: string, ctx: Pick<Ctx, 'tg' | 'paths' | 
     return real && realRoot && real !== realRoot && within(realRoot, real) && await isFile(real) ? real : null
   }
   if (u.host === 'file' || u.host === 'media') {
-    if (await isFile(arg)) return arg
-    const root = ctx.settings().downloadRoot
-    const target = path.resolve(root, arg)
-    if (await isFile(target)) return target
+    // 1. TDLib cache/downloads directory: allow direct instant playback
+    const tdFiles = path.join(ctx.paths.tdlib, 'files')
+    const resolved = path.resolve(arg)
+    if (within(tdFiles, resolved) && await isFile(resolved)) return resolved
+
+    // 2. Playback URLs carry absolute paths, so they go through the library rule: an existing file inside the root
+    // after realpath, or a recorded download. A forged URL names nothing outside those two (ARCHITECTURE > Security).
+    try { return await libraryFile(ctx.db, ctx.settings().downloadRoot, arg) } catch { return null }
   }
   return null
 }
@@ -377,11 +483,17 @@ export async function protocolFile(url: string, ctx: Pick<Ctx, 'tg' | 'paths' | 
 export type Envelope = { ok: true, data: unknown } | { ok: false, status: number, error: string, retryAfter?: number }
 type AnyMethod = { validate(args: unknown): unknown, run(args: unknown): unknown }
 
-/** Bridge steps 1–4: sender check, own-property lookup, validation, error envelope. */
-export async function handleCall(methods: Record<string, AnyMethod>, rendererKey: string, senderUrl: string | null, req: unknown): Promise<Envelope> {
+/** True when a message came from the renderer page itself (ARCHITECTURE > IPC contract): a sibling frame or another
+ *  local page is rejected, because file: origins are all "null" and cannot be compared. */
+export function fromRenderer(rendererKey: string, senderUrl: string | null): boolean {
   let key: string | null = null
   try { key = senderUrl === null ? null : pageKey(senderUrl) } catch {} // unparsable or encoded-slash URL → reject
-  if (key !== rendererKey) {
+  return key === rendererKey
+}
+
+/** Bridge steps 1–4: sender check, own-property lookup, validation, error envelope. */
+export async function handleCall(methods: Record<string, AnyMethod>, rendererKey: string, senderUrl: string | null, req: unknown): Promise<Envelope> {
+  if (!fromRenderer(rendererKey, senderUrl)) {
     log('warn', `Not allowed: IPC call from ${senderUrl ?? 'an unknown frame'}`)
     return { ok: false, status: 403, error: 'Not allowed' }
   }

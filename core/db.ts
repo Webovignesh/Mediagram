@@ -13,7 +13,12 @@ export const fail = (status: number, message: string, extra?: { retryAfter?: num
   Object.assign(new Error(message), { status }, extra)
 
 /** Main → renderer events (ARCHITECTURE > Events); main coalesces `invalidate`. */
-export type AppEvent = { type: 'auth', auth: AuthState } | { type: 'invalidate', topics: string[] } | { type: 'stats', stats: LiveStats }
+export type AppEvent =
+  | { type: 'auth', auth: AuthState }
+  | { type: 'invalidate', topics: string[] }
+  | { type: 'stats', stats: LiveStats }
+  | { type: 'typing', chatId: number, text: string | null }
+  | { type: 'fileProgress', fileId: number, downloaded: number, total: number, completed: boolean, path: string | null }
 export type Emit = (e: AppEvent) => void
 
 export type DB = DatabaseSync
@@ -116,6 +121,7 @@ export type Settings = {
   defaultUploadChat: number | null, uploadAlbum: boolean, keepNames: boolean, maxUploads: number, showArchived: boolean,
   autoRetry: boolean, retryAttempts: number, stallSeconds: number, clearCompletedDays: number, notifyComplete: boolean,
   notifyFailed: boolean, closeToTray: boolean, startWithSystem: boolean, apiId: number | null,
+  prebufferVideo: boolean,
 }
 /** What the database stores; `startWithSystem` lives in the Windows login item, not here. */
 export type StoredSettings = Omit<Settings, 'startWithSystem'>
@@ -125,6 +131,7 @@ const defaults: Omit<StoredSettings, 'downloadRoot'> = {
   maxDownloads: 2, skipExisting: true, datePrefix: false, folderTemplate: '{chat}', defaultUploadChat: null,
   uploadAlbum: true, keepNames: true, maxUploads: 1, showArchived: false, autoRetry: true, retryAttempts: 3,
   stallSeconds: 10, clearCompletedDays: 0, notifyComplete: true, notifyFailed: true, closeToTray: false, apiId: null,
+  prebufferVideo: true,
 }
 
 type Rule = (v: unknown, key: string) => void
@@ -159,6 +166,7 @@ const rules: Record<keyof SettingsPatch, Rule> = {
   uploadAlbum: bool, keepNames: bool, maxUploads: range(1, 3), showArchived: bool, autoRetry: bool,
   retryAttempts: range(1, 10), stallSeconds: choice(5, 10, 30, 60), clearCompletedDays: choice(0, 1, 7, 30),
   notifyComplete: bool, notifyFailed: bool, closeToTray: bool, startWithSystem: bool,
+  prebufferVideo: bool,
 }
 const internal = new Set(['apiId', 'apiHash', 'window']) // written by auth.credentials and main only
 

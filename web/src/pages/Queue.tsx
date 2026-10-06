@@ -1,5 +1,5 @@
 // Phase 5.4: Queue page - Revamped UI per awesome-design-md standards
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Download, Upload, CheckCircle2, XCircle, Pause, Play, ArrowUp, ArrowDown, RotateCcw, X, FolderOpen, CheckSquare, Square, FileText, Clock, Trash2 } from 'lucide-react'
 import { call, useCall, useLive } from '../api.ts'
 import type { LiveStats } from '../../../core/transfers.ts'
@@ -40,7 +40,22 @@ function Sparkline({ data }: { data: number[] }) {
 
 export default function Queue() {
   const [previewItem, setPreviewItem] = useState<any>(null)
-  const [tab, setTab] = useState<'downloads' | 'uploads' | 'completed' | 'failed'>('downloads')
+  const [tab, setTab] = useState<'downloads' | 'uploads' | 'completed' | 'failed'>(() => {
+    try {
+      const saved = localStorage.getItem('mediagram_queue_tab')
+      if (saved && ['downloads', 'uploads', 'completed', 'failed'].includes(saved)) {
+        return saved as any
+      }
+    } catch {}
+    return 'downloads'
+  })
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('mediagram_queue_tab', tab)
+    } catch {}
+  }, [tab])
+
   const [status, setStatus] = useState<string>('open')
   const [search, setSearch] = useState('')
   const [page, setPage] = useState(1)
@@ -123,7 +138,7 @@ export default function Queue() {
         <div className="flex items-center justify-between pr-40">
           <div>
             <h1 className="text-[26px] font-bold text-white tracking-wide">Queue</h1>
-            <p className="mt-0.5 text-[13px] text-text-2">Manage your active and pending downloads and uploads</p>
+            <p className="mt-0.5 text-[13px] text-text-2">What is running now, and what is waiting in line</p>
           </div>
         </div>
 

@@ -8,7 +8,7 @@ import {
   type Kind, mediaByIds, type MediaFilters, mediaQuery, type MediaRow, type Status, type StoredSettings, tx,
 } from './db.ts'
 import { type AuthState, type Chat, extractMedia, mediaRow } from './shapes.ts'
-import { libraryAdded, log, moveFile, type Paths, within } from './storage.ts'
+import { libraryAdded, log, moveFile, realLocation, type Paths, within } from './storage.ts'
 import { createUploads } from './uploads.ts'
 
 // ---- Pure helpers ----
@@ -20,7 +20,9 @@ const trimEnds = (s: string) => s.replace(/^[. ]+|[. ]+$/g, '')
  *  trailing dots and spaces (a leading dot would hide the file from the Library), at most 180 characters with the
  *  extension kept. */
 export function sanitize(name: string) {
-  let s = trimEnds(name.replace(/[<>:"/\\|?*\x00-\x1f]/g, '_'))
+  // The bidi controls and marks are stripped too: a name can otherwise hide its real extension behind an RTL override
+  // (ARCHITECTURE > Security > Renderer compromise).
+  let s = trimEnds(name.replace(/[<>:"/\\|?*\x00-\x1f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, '_'))
   if (reservedName.test(s)) s = `_${s}`
   const chars = [...s] // code points, so a cut never splits a surrogate pair
   if (chars.length > 180) {
@@ -51,6 +53,20 @@ export function uniquePath(dir: string, name: string, reserved: Set<string>) {
     const p = path.join(dir, n === 1 ? name : `${base} (${n})${ext}`)
     if (!reserved.has(p.toLowerCase()) && !fs.existsSync(p)) return p
   }
+}
+
+/** The longest Windows path the app can write without the long-path prefix: 259 characters plus the null. */
+export const MAX_PATH = 259
+
+/** The path `name` lands on, with the name cut when the folder would make it too long to create (ARCHITECTURE >
+ *  Download step 6): the extension stays, room for a " (2)" suffix is kept, and the folder is never cut — the Library
+ *  and the history row have to keep naming the folder the user chose. `null` when even the trimmed name cannot fit. */
+export function fitName(dir: string, name: string, reserved: Set<string>) {
+  const ext = path.extname(name), stem = path.basename(name, ext)
+  const room = MAX_PATH - dir.length - 1 - ext.length - 6
+  if (room < 1) return null
+  const dest = uniquePath(dir, stem.length > room ? stem.slice(0, room) + ext : name, reserved)
+  return dest.length <= MAX_PATH ? dest : null
 }
 
 /** Start gate per kind: spacing between starts (doubled per flood up to 5 s, eased 100 ms per start) and the flood wait. */
@@ -235,7 +251,9 @@ export function createEngine(d: EngineDeps) {
       }
       const s = d.settings()
       const dir = path.join(s.downloadRoot, folderFor(s.folderTemplate, { id: job.chat_id, title: job.chat_title }))
-      if (!within(s.downloadRoot, dir)) throw fail(400, 'The folder template leads outside the download folder', { final: true }) // backstop
+      // The template is checked where the folder really is, so a junction cannot aim it out of the root. `dir` itself
+      // stays as written: it is what the Library scans, and history must speak the same path (ARCHITECTURE > Download step 6).
+      if (!within(await realLocation(s.downloadRoot), await realLocation(dir))) throw fail(400, 'The folder template leads outside the download folder', { final: true }) // backstop
       l.target = { dir, name: fileName(media.name, m.date, s.datePrefix) }
       l.size = file.size || file.expected_size || l.size
       const existing = s.skipExisting && l.size > 0 ? await fs.promises.stat(path.join(dir, l.target.name)).catch(() => null) : null
@@ -280,11 +298,25 @@ export function createEngine(d: EngineDeps) {
     l.finalizing = true
     pump() // the slot is free while the file moves: a big cross-volume copy must not hold up the next download
     statsSoon()
-    const dest = uniquePath(l.target.dir, l.target.name, reserved)
+    // Write where the folder really is: a junction planted while the file downloaded must not carry the file out of
+    // the root, so the pair is resolved and checked again here (ARCHITECTURE > Download step 6). History keeps the
+    // path the Library scans; the two name the same file, because that resolved folder is the target's real location.
+    const dir = await realLocation(l.target.dir)
+    if (!within(await realLocation(d.settings().downloadRoot), dir)) {
+      return failed(l, fail(400, "The download folder points somewhere it shouldn't, so the file was not saved", { final: true }))
+    }
+    // A folder path near Windows' ceiling, or a name long enough to push the file past it, would fail the move halfway:
+    // the name is cut to fit (the folder is not), and a folder that fits nothing is refused before the file is touched.
+    const part = path.join(dir, `.teleflow-${l.id}.part`)
+    const dest = fitName(dir, l.target.name, reserved)
+    if (!dest || part.length > MAX_PATH) {
+      return failed(l, fail(400, `The download folder path is too long to save a file in it (${Math.max(part.length, dir.length + 1)} characters). Pick a shorter folder in Settings.`, { final: true }))
+    }
+    const recorded = path.join(l.target.dir, path.basename(dest))
     reserved.add(dest.toLowerCase())
     try {
-      await fs.promises.mkdir(l.target.dir, { recursive: true })
-      await moveFile(src, dest, path.join(l.target.dir, `.teleflow-${l.id}.part`))
+      await fs.promises.mkdir(dir, { recursive: true })
+      await moveFile(src, dest, part)
     } catch (e) {
       reserved.delete(dest.toLowerCase())
       return failed(l, e) // the TDLib copy stays, so a retry finalizes without downloading again
@@ -292,7 +324,7 @@ export function createEngine(d: EngineDeps) {
     // The file has its final name: nothing below fails the job. deleteFile keeps TDLib's database consistent
     // (FileGram lesson) and removes the source a cross-volume copy left behind.
     await d.invoke({ _: 'deleteFile', file_id: l.fileIds[0] }).catch((e: Error) => log('warn', `deleteFile after a download failed: ${e.message}`))
-    await complete(l, dest)
+    await complete(l, recorded)
     reserved.delete(dest.toLowerCase())
   }
 

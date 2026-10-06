@@ -22,7 +22,7 @@ TeleFlow is an installable Windows desktop app for downloading, uploading, and o
 
 ### 1. Setup and login
 - First run: enter the Telegram API ID and API hash (from my.telegram.org), then phone, login code, and 2FA password when enabled.
-- Log out from the user menu, Settings > Telegram, or Settings > Danger Zone > Disconnect Telegram. The queue is kept; jobs are not tied to an account, so jobs from another account fail if a different account signs in (v1 limit).
+- Log out from Settings > Danger Zone > Log out (a plain danger button; the row reads Log in when there is no active session). The queue is kept; jobs are not tied to an account, so jobs from another account fail if a different account signs in (v1 limit).
 
 ### 2. Overview
 - KPIs: Active Transfers, Completed Today, Total Files, Failed Jobs (each with a download/upload split).
@@ -64,7 +64,7 @@ TeleFlow is an installable Windows desktop app for downloading, uploading, and o
 ### 7. Settings
 - Categories per the mockup. Only settings the app actually honors are shown (see UI.md > Settings).
 - Start with Windows and minimize-to-tray on close are real (Electron login item and tray).
-- App Status, Storage (download library by type, app cache), cache/data clearing, Danger Zone.
+- Settings sections (General, Downloads, Uploads, Telegram, Channels, Queue, Files & Folders, Notifications, About) plus a Danger Zone panel: Log out, Clear cache, Clear app data (its confirm opens the delete button after a 3-second countdown).
 
 ### 8. Desktop integration
 - Single instance: launching again focuses the running window.
@@ -98,9 +98,10 @@ Borrowed from the reference repo and lessons in this repo's git history:
 - Download root: `%USERPROFILE%\Downloads\TeleFlow` by default, configurable. Clear All Data can delete every file under it, so it may not be a drive root; may not be, sit inside, or contain the app data folder, the install folder, `AppData`, or the Windows system folders (Windows, Program Files, ProgramData); and may not be the user folder or a known folder (Desktop, Documents, Downloads, Pictures, Videos, Music) itself or an ancestor of one. The same rules apply to where the folder really is, so a junction or symlink cannot lead into one of these. Subfolders such as `Downloads\TeleFlow` and other folders such as `D:\Media` are fine. Changing it does not move existing downloads; they stay where they are and still open from the Queue and Chat View.
 - Clearing (Settings), each with current size, a confirm dialog, and the freed size in a toast:
   - Clear cache: TDLib file cache (`optimizeStorage`), thumbnails, temp files, Chromium cache. Keeps login, history, queue, downloads. Refused while transfers are active; paused downloads restart from zero.
-  - Clear app data: history, queue, media index, settings reset to defaults (including the download folder), plus the cache. Keeps login and downloaded files.
-  - Clear All Data (Danger Zone): everything above plus log out, delete the session, and turn Start with Windows off; unchecked "Also delete downloaded files" option.
-  - Disconnect Telegram (Danger Zone): log out and delete the session.
+  - Clear app data: history, queue, media index, settings reset to defaults (including the download folder), plus the cache. Keeps login and downloaded files. The row and its confirm only say what is deleted.
+  - Clear All Data (`app.clearAll` IPC — not wired to a Settings button): everything above plus log out, delete the session, and turn Start with Windows off; unchecked "Also delete downloaded files" option.
+  - Log out (Danger Zone): ends the Telegram session on this device; the saved API data stays and the next start opens on the phone screen.
+  - Delete API data (Settings > Telegram): erases the saved API ID and hash from this device; the signed-in session keeps working until it signs out, and the pair is asked for again after that.
 
 ## Out of scope for v1
 

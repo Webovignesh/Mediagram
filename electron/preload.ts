@@ -8,7 +8,14 @@ const bridge = {
     ipcRenderer.on('event', listener)
     return () => { ipcRenderer.removeListener('event', listener) }
   },
-  pathOf: (file: File): string => webUtils.getPathForFile(file),
+  pathOf: (file: File): string => {
+    // Only a File Chromium was handed by the file dialog or a drag-drop resolves to a path (a File built in JS does
+    // not), so this is where upload provenance is recorded: main learns the path from preload, never from renderer
+    // text (ARCHITECTURE > Security > Renderer compromise).
+    const p = webUtils.getPathForFile(file)
+    if (p) ipcRenderer.invoke('grant', [p]).catch(() => {})
+    return p
+  },
 }
 
 contextBridge.exposeInMainWorld('teleflow', bridge)

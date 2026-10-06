@@ -1,7 +1,7 @@
 // Phase 5: Complete UI primitives per UI.md
-import { type ReactNode, type LegacyRef, useState, useEffect, useRef, createContext, useContext } from 'react'
-import { Loader2, ChevronDown, X, Search, Check, Pause, Play, Download, CheckCircle2, AlertCircle, AlertTriangle, Info } from 'lucide-react'
-import { call } from './api.ts'
+import { type ReactNode, type LegacyRef, type RefObject, useState, useEffect, useRef, createContext, useContext } from 'react'
+import { Loader2, ChevronDown, X, Search, Check, Pause, Play, Download, CheckCircle2, AlertCircle, AlertTriangle, Info, Music, FolderOpen, Gauge, Film, Volume2, VolumeX, Maximize2, Minimize2 } from 'lucide-react'
+import { call, on, useCall } from './api.ts'
 
 export type Tone = 'primary' | 'info' | 'success' | 'warning' | 'danger' | 'neutral'
 type Status = 'queued' | 'active' | 'paused' | 'completed' | 'failed'
@@ -38,7 +38,14 @@ export const fmtDuration = (s: number) => {
 }
 export const fmtCount = (n: number) => n.toLocaleString('en')
 const dateFormat = new Intl.DateTimeFormat('en', { month: 'short', day: 'numeric', year: 'numeric' })
-export const fmtDate = (unix: number) => dateFormat.format(new Date(unix * 1000))
+export const fmtDate = (time: number | null | undefined) => {
+  if (!time || isNaN(time)) return '–'
+  let ms = time > 1e11 ? time : time * 1000
+  if (new Date(ms).getFullYear() > 3000) {
+    ms = time / 1000
+  }
+  return dateFormat.format(new Date(ms))
+}
 export const typeLabel: Record<string, string> = {
   video_note: 'video message', voice: 'voice message', animation: 'GIF', album: 'album',
   video: 'video', photo: 'photo', document: 'document', audio: 'audio',
@@ -46,12 +53,12 @@ export const typeLabel: Record<string, string> = {
 
 // Components
 export function Button({ 
-  children, variant = 'primary', tone, busy, disabled, type = 'button', onClick, className,
+  children, variant = 'primary', tone, busy, disabled, type = 'button', onClick, className, style,
 }: { 
   children: ReactNode, variant?: 'primary' | 'secondary' | 'tint' | 'danger', tone?: Tone, busy?: boolean
-  disabled?: boolean, type?: 'button' | 'submit', onClick?: () => void, className?: string
+  disabled?: boolean, type?: 'button' | 'submit', onClick?: () => void, className?: string, style?: React.CSSProperties
 }) {
-  const base = 'rounded-md px-3.5 py-1.5 text-[13px] font-medium transition-colors disabled:opacity-60'
+  const base = 'inline-flex items-center justify-center gap-2 whitespace-nowrap shrink-0 rounded-md px-3.5 py-1.5 text-[13px] font-medium transition-colors disabled:opacity-60'
   const variants = {
     primary: 'bg-primary text-text hover:bg-[#3b82f6]',
     secondary: 'border border-border bg-tile hover:border-primary',
@@ -63,6 +70,7 @@ export function Button({
   return (
     <button 
       type={type} disabled={disabled || busy} aria-busy={busy} onClick={onClick}
+      style={style}
       className={`${base} ${variants[variant]} ${className || ''}`}
     >
       {busy ? <Loader2 size={16} className="inline animate-spin" /> : children}
@@ -511,6 +519,8 @@ type ConfirmOpts = {
   danger?: boolean
   typed?: string
   checkbox?: string
+  /** Seconds the confirm button stays off with a visible countdown (the Clear app data delete timer). */
+  wait?: number
 }
 
 type ConfirmState = {
@@ -533,6 +543,7 @@ export function ConfirmHost({ children }: { children: ReactNode }) {
   const [state, setState] = useState<ConfirmState | null>(null)
   const [typed, setTyped] = useState('')
   const [checked, setChecked] = useState(false)
+  const [left, setLeft] = useState(0)
 
   useEffect(() => {
     confirmDispatcher = (s) => {
@@ -542,6 +553,20 @@ export function ConfirmHost({ children }: { children: ReactNode }) {
     }
     return () => { confirmDispatcher = null }
   }, [])
+
+  // The delete timer: count down while the dialog is open, then let the button through.
+  useEffect(() => {
+    const wait = state?.opts.wait
+    if (!wait) { setLeft(0); return }
+    setLeft(wait)
+    let n = wait
+    const t = setInterval(() => {
+      n -= 1
+      setLeft(Math.max(n, 0))
+      if (n <= 0) clearInterval(t)
+    }, 1000)
+    return () => clearInterval(t)
+  }, [state])
 
   const close = (result: boolean) => {
     state?.resolve(result)
@@ -575,10 +600,10 @@ export function ConfirmHost({ children }: { children: ReactNode }) {
             <Button variant="secondary" onClick={() => close(false)}>Cancel</Button>
             <Button
               variant={state.opts.danger ? 'danger' : 'primary'}
-              disabled={Boolean(state.opts.typed && typed.trim().toUpperCase() !== state.opts.typed.trim().toUpperCase())}
+              disabled={left > 0 || Boolean(state.opts.typed && typed.trim().toUpperCase() !== state.opts.typed.trim().toUpperCase())}
               onClick={() => close(true)}
             >
-              {state.opts.confirm}
+              {left > 0 ? `${state.opts.confirm} (${left}s)` : state.opts.confirm}
             </Button>
           </div>
         </Dialog>
@@ -666,7 +691,7 @@ export function Toaster() {
   if (!toasts.length) return null
 
   return (
-    <div className="fixed bottom-5 right-5 z-50 flex flex-col gap-2.5 max-w-[420px] w-full pointer-events-none select-none">
+    <div className="fixed top-12 right-6 z-[9999] flex flex-col gap-2.5 max-w-[380px] w-full pointer-events-none select-none">
       {toasts.map((t) => {
         const isDanger = t.tone === 'danger'
         const isSuccess = t.tone === 'success'
@@ -674,42 +699,40 @@ export function Toaster() {
         const isPrimary = t.tone === 'primary'
 
         const borderClass = isDanger
-          ? 'border-rose-500/40'
+          ? 'border-rose-500/40 shadow-[0_8px_30px_rgba(244,63,94,0.25)]'
           : isSuccess
-          ? 'border-emerald-500/40'
+          ? 'border-emerald-500/40 shadow-[0_8px_30px_rgba(16,185,129,0.25)]'
           : isWarning
-          ? 'border-amber-500/40'
+          ? 'border-amber-500/40 shadow-[0_8px_30px_rgba(245,158,11,0.25)]'
           : isPrimary
-          ? 'border-cyan/40'
-          : 'border-white/10'
+          ? 'border-cyan/40 shadow-[0_8px_30px_rgba(6,182,212,0.25)]'
+          : 'border-white/15 shadow-[0_8px_30px_rgba(0,0,0,0.5)]'
 
-        const bgClass = isDanger
-          ? 'bg-[#1e0a13]/95'
+        const iconBg = isDanger
+          ? 'bg-rose-500/20 text-rose-400 border border-rose-500/30'
           : isSuccess
-          ? 'bg-[#061e16]/95'
+          ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
           : isWarning
-          ? 'bg-[#211606]/95'
-          : isPrimary
-          ? 'bg-[#0b1c36]/95'
-          : 'bg-[#0c152a]/95'
+          ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
+          : 'bg-primary/20 text-cyan border border-primary/30'
 
         return (
           <div
             key={t.id}
             role={isDanger ? 'alert' : 'status'}
-            className={`pointer-events-auto relative overflow-hidden rounded-xl border ${borderClass} ${bgClass} backdrop-blur-xl p-3.5 shadow-2xl transition-all`}
+            className={`pointer-events-auto relative overflow-hidden rounded-2xl border ${borderClass} bg-[#0e1626]/95 backdrop-blur-2xl p-3.5 shadow-2xl transition-all animate-in slide-in-from-top-3 fade-in duration-200`}
           >
             <div className="flex items-start gap-3">
-              <div className="shrink-0 mt-0.5">
-                {isSuccess && <CheckCircle2 size={18} className="text-emerald-400" />}
-                {isDanger && <AlertCircle size={18} className="text-rose-400" />}
-                {isWarning && <AlertTriangle size={18} className="text-amber-400" />}
-                {(isPrimary || (!isSuccess && !isDanger && !isWarning)) && <Info size={18} className="text-cyan" />}
+              <div className={`size-8 rounded-xl shrink-0 flex items-center justify-center ${iconBg}`}>
+                {isSuccess && <CheckCircle2 size={16} strokeWidth={2.5} />}
+                {isDanger && <AlertCircle size={16} strokeWidth={2.5} />}
+                {isWarning && <AlertTriangle size={16} strokeWidth={2.5} />}
+                {(isPrimary || (!isSuccess && !isDanger && !isWarning)) && <Info size={16} strokeWidth={2.5} />}
               </div>
 
-              <div className="flex-1 min-w-0 pr-1">
-                {t.title && <div className="text-[13px] font-semibold text-white leading-tight mb-0.5">{t.title}</div>}
-                <div className={`text-[12.5px] leading-relaxed break-words ${isDanger ? 'text-rose-100' : isSuccess ? 'text-emerald-100' : isWarning ? 'text-amber-100' : 'text-slate-100'}`}>
+              <div className="flex-1 min-w-0 pr-1 pt-0.5">
+                {t.title && <div className="text-[13px] font-semibold text-white tracking-wide leading-tight mb-0.5">{t.title}</div>}
+                <div className={`text-[12.5px] leading-relaxed break-words font-medium ${isDanger ? 'text-rose-100' : isSuccess ? 'text-emerald-100' : isWarning ? 'text-amber-100' : 'text-slate-100'}`}>
                   {t.message}
                 </div>
                 {t.description && <div className="text-[11.5px] text-muted leading-relaxed mt-1">{t.description}</div>}
@@ -732,7 +755,7 @@ export function Toaster() {
               <button
                 type="button"
                 onClick={() => dismissToast(t.id)}
-                className="shrink-0 text-muted hover:text-white rounded-md p-1 transition-colors cursor-pointer"
+                className="shrink-0 size-6 rounded-lg text-slate-400 hover:text-white hover:bg-white/10 transition-colors flex items-center justify-center cursor-pointer mt-0.5"
                 title="Dismiss"
               >
                 <X size={14} />
@@ -741,7 +764,7 @@ export function Toaster() {
 
             {t.duration > 0 && (
               <div
-                className={`absolute bottom-0 left-0 h-[2px] w-full origin-left opacity-60 ${
+                className={`absolute bottom-0 left-0 h-[2px] w-full origin-left opacity-70 ${
                   isDanger ? 'bg-rose-500' : isSuccess ? 'bg-emerald-500' : isWarning ? 'bg-amber-500' : 'bg-cyan'
                 }`}
                 style={{
@@ -922,6 +945,296 @@ export function TransferCard({
   )
 }
 
+export function MediagramLogo({ size = 20, className = '' }: { size?: number, className?: string }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 256 256"
+      className={`shrink-0 overflow-hidden ${className}`}
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <defs>
+        <linearGradient id="mediagram-logo-grad" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stopColor="#3b82f6" />
+          <stop offset="100%" stopColor="#1d4ed8" />
+        </linearGradient>
+      </defs>
+      <rect width="256" height="256" rx="56" fill="url(#mediagram-logo-grad)" />
+      <path d="M199 58 47 120q-10 5 0 9l47 16 18 52q4 10 12 3l25-23 39 29q9 6 12-4l16-130q1-17-17-14Z" fill="#fff" />
+      <path d="m94 145 92-62-74 74-1 40Z" fill="#c7d7fe" />
+    </svg>
+  )
+}
+
+function CustomVideoPlayer({
+  src,
+  speed,
+  onSpeedChange,
+}: {
+  src: string
+  speed: number
+  onSpeedChange: (speed: number) => void
+}) {
+  const videoRef = useRef<HTMLVideoElement>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
+  const [playing, setPlaying] = useState(true)
+  const [currentTime, setCurrentTime] = useState(0)
+  const [duration, setDuration] = useState(0)
+  const [volume, setVolume] = useState(1)
+  const [muted, setMuted] = useState(false)
+  const [fullscreen, setFullscreen] = useState(false)
+  const [showControls, setShowControls] = useState(true)
+  const [buffering, setBuffering] = useState(true)
+  const hideTimerRef = useRef<NodeJS.Timeout | null>(null)
+
+  useEffect(() => {
+    if (videoRef.current) {
+      videoRef.current.playbackRate = speed
+    }
+  }, [speed])
+
+  const resetHideTimer = () => {
+    setShowControls(true)
+    if (hideTimerRef.current) clearTimeout(hideTimerRef.current)
+    if (playing) {
+      hideTimerRef.current = setTimeout(() => setShowControls(false), 2500)
+    }
+  }
+
+  const togglePlay = () => {
+    if (!videoRef.current) return
+    if (videoRef.current.paused) {
+      videoRef.current.play()
+      setPlaying(true)
+    } else {
+      videoRef.current.pause()
+      setPlaying(false)
+    }
+    resetHideTimer()
+  }
+
+  // Spacebar plays/pauses video
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.code === 'Space' || e.key === ' ') {
+        const tag = (e.target as HTMLElement)?.tagName
+        if (['INPUT', 'TEXTAREA', 'SELECT'].includes(tag)) return
+        e.preventDefault()
+        togglePlay()
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [playing])
+
+  const handleVolumeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = parseFloat(e.target.value)
+    setVolume(val)
+    setMuted(val === 0)
+    if (videoRef.current) {
+      videoRef.current.volume = val
+      videoRef.current.muted = val === 0
+    }
+  }
+
+  const toggleMute = () => {
+    if (!videoRef.current) return
+    if (muted) {
+      videoRef.current.muted = false
+      videoRef.current.volume = volume || 1
+      setMuted(false)
+    } else {
+      videoRef.current.muted = true
+      setMuted(true)
+    }
+  }
+
+  const toggleFullscreen = () => {
+    if (!containerRef.current) return
+    if (!document.fullscreenElement) {
+      containerRef.current.requestFullscreen?.()
+      setFullscreen(true)
+    } else {
+      document.exitFullscreen?.()
+      setFullscreen(false)
+    }
+  }
+
+  const handleSeek = (posFraction: number) => {
+    const newTime = Math.max(0, Math.min(duration, posFraction * duration))
+    if (videoRef.current) {
+      videoRef.current.currentTime = newTime
+      setCurrentTime(newTime)
+    }
+  }
+
+  const formatTime = (secs: number) => {
+    if (isNaN(secs) || secs < 0) return '0:00'
+    const m = Math.floor(secs / 60)
+    const s = Math.floor(secs % 60)
+    return `${m}:${s < 10 ? '0' : ''}${s}`
+  }
+
+  const progressPct = duration > 0 ? Math.min(100, Math.max(0, (currentTime / duration) * 100)) : 0
+
+  return (
+    <div
+      ref={containerRef}
+      className="relative flex items-center justify-center w-full max-w-5xl aspect-video min-h-[360px] max-h-[86vh] rounded-2xl overflow-hidden group select-none bg-black shadow-2xl cursor-default"
+      onMouseMove={resetHideTimer}
+      onMouseLeave={() => playing && setShowControls(false)}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <video
+        ref={videoRef}
+        src={src}
+        autoPlay
+        playsInline
+        preload="auto"
+        onClick={togglePlay}
+        onTimeUpdate={() => videoRef.current && setCurrentTime(videoRef.current.currentTime)}
+        onLoadedMetadata={() => videoRef.current && setDuration(videoRef.current.duration)}
+        onLoadStart={() => setBuffering(true)}
+        onWaiting={() => setBuffering(true)}
+        onSeeking={() => setBuffering(true)}
+        onSeeked={() => setBuffering(false)}
+        onCanPlay={() => setBuffering(false)}
+        onLoadedData={() => setBuffering(false)}
+        onPlay={() => {
+          setPlaying(true)
+          setBuffering(false)
+        }}
+        onPause={() => setPlaying(false)}
+        className="w-full h-full object-contain cursor-pointer"
+      />
+
+      {/* Loading Spinner Circle when buffering / initial loading */}
+      {buffering && (
+        <div
+          data-testid="video-buffering-spinner"
+          className="absolute inset-0 flex items-center justify-center bg-black/40 pointer-events-none z-25 transition-opacity"
+        >
+          <div className="size-16 rounded-full bg-black/80 backdrop-blur-md border border-white/20 flex items-center justify-center text-cyan shadow-2xl">
+            <Loader2 size={32} className="animate-spin text-cyan" />
+          </div>
+        </div>
+      )}
+
+      {/* Center play icon overlay when paused and not buffering */}
+      {!playing && !buffering && (
+        <div
+          onClick={togglePlay}
+          className="absolute inset-0 flex items-center justify-center bg-black/25 cursor-pointer z-20"
+        >
+          <div className="size-16 rounded-full bg-black/75 backdrop-blur-md border border-white/20 flex items-center justify-center text-white shadow-2xl transition-transform hover:scale-110">
+            <Play size={28} className="ml-1 fill-white" />
+          </div>
+        </div>
+      )}
+
+      {/* Sleek Custom Bottom Video Controls Bar */}
+      <div
+        className={`absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/95 via-black/75 to-transparent px-4 pb-3.5 pt-8 flex flex-col gap-2 transition-opacity duration-300 z-30 ${
+          showControls ? 'opacity-100' : 'opacity-0 pointer-events-none'
+        }`}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Custom Sleek Scrubber Timeline */}
+        <div
+          className="w-full flex items-center relative py-1 cursor-pointer group/scrub"
+          onClick={(e) => {
+            const rect = e.currentTarget.getBoundingClientRect()
+            handleSeek((e.clientX - rect.left) / rect.width)
+          }}
+        >
+          <div className="w-full h-1.5 group-hover/scrub:h-2 bg-white/20 rounded-full overflow-hidden transition-all relative">
+            <div
+              className="h-full bg-cyan rounded-full transition-all duration-75"
+              style={{ width: `${progressPct}%` }}
+            />
+          </div>
+          <div
+            className="absolute size-3.5 rounded-full bg-white shadow-md pointer-events-none group-hover/scrub:scale-125 transition-transform"
+            style={{ left: `calc(${progressPct}% - 7px)` }}
+          />
+        </div>
+
+        {/* Controls row */}
+        <div className="flex items-center justify-between text-white text-[12px] font-medium pt-0.5 whitespace-nowrap flex-nowrap gap-3">
+          <div className="flex items-center gap-2.5 shrink-0">
+            <button
+              type="button"
+              onClick={togglePlay}
+              className="p-1 hover:text-cyan transition-colors"
+              title={playing ? 'Pause (Space)' : 'Play (Space)'}
+            >
+              {playing ? <Pause size={17} /> : <Play size={17} className="fill-white" />}
+            </button>
+
+            {/* Time readout */}
+            <span className="font-mono text-[11.5px] text-slate-200 tabular-nums whitespace-nowrap select-none">
+              {formatTime(currentTime)} / {formatTime(duration)}
+            </span>
+
+            {/* Full Volume Control with Slider */}
+            <div className="flex items-center gap-1.5 ml-1 group/vol">
+              <button
+                type="button"
+                onClick={toggleMute}
+                className="p-1 hover:text-cyan transition-colors"
+                title={muted || volume === 0 ? 'Unmute' : 'Mute'}
+              >
+                {muted || volume === 0 ? <VolumeX size={17} className="text-danger" /> : <Volume2 size={17} />}
+              </button>
+              <input
+                type="range"
+                min={0}
+                max={1}
+                step={0.05}
+                value={muted ? 0 : volume}
+                onChange={handleVolumeChange}
+                className="w-14 sm:w-18 h-1 bg-white/30 rounded-lg appearance-none cursor-pointer accent-cyan hover:h-1.5 transition-all"
+                title={`Volume: ${Math.round((muted ? 0 : volume) * 100)}%`}
+              />
+              <span className="text-[10px] text-slate-300 font-mono w-7 tabular-nums select-none">
+                {Math.round((muted ? 0 : volume) * 100)}%
+              </span>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 shrink-0">
+            {/* Speed toggle without emoji */}
+            <button
+              type="button"
+              onClick={() => {
+                const speeds = [1, 1.25, 1.5, 2]
+                const nextIndex = (speeds.indexOf(speed) + 1) % speeds.length
+                onSpeedChange(speeds[nextIndex])
+              }}
+              className="flex items-center gap-1 px-2.5 py-1 rounded-md border border-white/20 bg-white/10 hover:bg-white/20 text-white text-[11.5px] font-semibold transition-colors"
+              title="Toggle playback speed"
+            >
+              <Gauge size={13} className="text-cyan" />
+              <span>{speed}x</span>
+            </button>
+
+            {/* Fullscreen toggle (NO 3-dot button!) */}
+            <button
+              type="button"
+              onClick={toggleFullscreen}
+              className="p-1 hover:text-cyan transition-colors"
+              title={fullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
+            >
+              {fullscreen ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export function MediaPreviewModal({
   open,
   item,
@@ -936,21 +1249,93 @@ export function MediaPreviewModal({
     type?: string
     size?: number
     duration?: number
+    chatId?: number
+    messageId?: number
   } | null
   onClose: () => void
   onDownload?: () => void
 }) {
-  const [downloading, setDownloading] = useState(false)
+  const { data: settings } = useCall<any>('settings.get', {}, ['settings'])
+  const [preparedPath, setPreparedPath] = useState<string | null>(null)
+  const [prepProgress, setPrepProgress] = useState<{ downloaded: number, total: number } | null>(null)
+  const [speed, setSpeed] = useState<number>(1)
+  const audioRef = useRef<HTMLAudioElement>(null)
+
+  // true = wait for full download before playing; false = start playing as soon as TDLib gives any path
+  const shouldPrebuffer = settings?.prebufferVideo ?? true
 
   useEffect(() => {
-    if (!open) {
-      setDownloading(false)
+    if (!open || !item) {
+      setPreparedPath(null)
+      setPrepProgress(null)
+      setSpeed(1)
       return
     }
+
     const handleKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
     window.addEventListener('keydown', handleKey)
-    return () => window.removeEventListener('keydown', handleKey)
-  }, [open, onClose])
+
+    if (item.path) {
+      setPreparedPath(item.path)
+      return () => window.removeEventListener('keydown', handleKey)
+    }
+
+    if (!item.chatId || !item.messageId) {
+      return () => window.removeEventListener('keydown', handleKey)
+    }
+
+    let targetFileId: number | null = null
+    let active = true
+
+    call<{ completed: boolean, path: string | null, fileId: number, size: number, downloaded: number }>('media.prepare', {
+      chatId: item.chatId,
+      messageId: item.messageId,
+    })
+      .then((res) => {
+        if (!active) return
+        targetFileId = res.fileId
+        if (res.path) {
+          if (!shouldPrebuffer) {
+            // Direct play: use path immediately even if still downloading
+            setPreparedPath(res.path)
+          } else if (res.completed) {
+            setPreparedPath(res.path)
+          }
+        }
+        if (!res.completed && res.size) {
+          setPrepProgress({ downloaded: res.downloaded || 0, total: res.size })
+        }
+      })
+      .catch(() => {})
+
+    const unsub = on((event) => {
+      if (!active) return
+      if (event.type === 'fileProgress') {
+        if (targetFileId && event.fileId !== targetFileId) return
+        if (event.path) {
+          if (!shouldPrebuffer) {
+            // Direct play: as soon as we have any path, show the player
+            setPreparedPath(event.path)
+          } else if (event.completed) {
+            setPreparedPath(event.path)
+          }
+        }
+        if (!event.completed && event.total > 0) {
+          setPrepProgress({ downloaded: event.downloaded, total: event.total })
+        }
+      }
+    })
+
+    return () => {
+      active = false
+      window.removeEventListener('keydown', handleKey)
+      unsub()
+    }
+  }, [open, item, onClose, shouldPrebuffer])
+
+  useEffect(() => {
+    if (audioRef.current) audioRef.current.playbackRate = speed
+  }, [speed, preparedPath])
 
   if (!open || !item) return null
 
@@ -959,194 +1344,313 @@ export function MediaPreviewModal({
   const isImage = ['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp'].includes(ext) || item.type === 'photo' || item.type === 'image'
   const isAudio = ['mp3', 'ogg', 'wav', 'flac', 'm4a', 'aac'].includes(ext) || item.type === 'audio' || item.type === 'voice'
 
-  const localUrl = item.path ? `teleflow://file/${encodeURIComponent(item.path)}` : null
+  const resolvedPath = item.path || preparedPath
+  const mediaUrl = resolvedPath ? `teleflow://file/${encodeURIComponent(resolvedPath)}` : null
   const thumbUrl = item.thumb ? `teleflow://thumb/${item.thumb}` : null
 
   return (
     <div
-      className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-black/85 p-6 backdrop-blur-md"
+      className="fixed inset-0 z-50 flex flex-col justify-between bg-black/95 select-none backdrop-blur-md transition-all duration-200 cursor-pointer"
       onClick={onClose}
     >
+      {/* Floating minimal Header with padding-right to clear Electron window controls */}
       <div
-        className="relative flex w-[90vw] max-w-5xl max-h-[92vh] min-h-[520px] flex-col rounded-2xl border border-white/10 bg-[#121c2d] p-6 shadow-2xl backdrop-blur-xl"
+        className="w-full flex items-center justify-between px-6 py-3.5 pr-40 bg-gradient-to-b from-black/90 via-black/40 to-transparent z-20 cursor-default"
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Header */}
-        <div className="mb-4 flex items-center justify-between gap-4 border-b border-border/50 pb-3">
-          <div className="min-w-0 flex-1">
-            <h3 className="truncate text-[15px] font-bold text-text" title={item.name}>
-              {item.name}
-            </h3>
-            <div className="mt-0.5 flex items-center gap-3 text-[11px] text-muted">
-              {item.size ? <span>{fmtBytes(item.size)}</span> : null}
-              {item.duration ? <span>{fmtDuration(item.duration)}</span> : null}
-              <TypeChip ext={ext.toUpperCase()} />
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            {item.path ? (
-              <Button
-                variant="secondary"
-                onClick={() => call('library.open', { path: item.path })}
-                className="py-1.5 px-3.5 text-[12px]"
-              >
-                Open in App
-              </Button>
-            ) : onDownload ? (
-              <Button
-                variant="primary"
-                onClick={() => {
-                  setDownloading(true)
-                  onDownload()
-                }}
-                className="py-1.5 px-3.5 text-[12px] flex items-center gap-1.5"
-              >
-                <Download size={14} /> Download
-              </Button>
-            ) : null}
-            <button
-              onClick={onClose}
-              className="flex size-8 items-center justify-center rounded-lg border border-border bg-tile text-text-2 hover:border-primary hover:text-text transition-colors"
-              title="Close (Esc)"
-            >
-              <X size={16} />
-            </button>
+        <div className="min-w-0 flex-1 mr-4">
+          <h3 className="truncate text-[14px] font-semibold text-white/90 tracking-wide" title={item.name}>
+            {item.name}
+          </h3>
+          <div className="mt-0.5 flex items-center gap-2 text-[11px] text-slate-300">
+            {item.size ? <span>{fmtBytes(item.size)}</span> : null}
+            {item.duration ? <span>• {fmtDuration(item.duration)}</span> : null}
+            <TypeChip ext={ext.toUpperCase()} />
           </div>
         </div>
 
-        {/* Media Content */}
-        <div className="flex flex-1 items-center justify-center overflow-hidden min-h-[440px] bg-black/50 rounded-xl p-2 border border-white/5">
-          {isVideo ? (
-            localUrl ? (
-              <video
-                src={localUrl}
-                controls
-                autoPlay
-                className="max-h-[75vh] w-full max-w-4xl rounded-lg shadow-2xl bg-black object-contain"
-              />
-            ) : (
-              <div className="flex flex-col items-center justify-center gap-4 py-4 px-2 text-center w-full">
-                {thumbUrl ? (
-                  <div className="relative w-full max-w-4xl h-[60vh] flex items-center justify-center overflow-hidden rounded-2xl bg-black/90 shadow-2xl">
-                    <img src={thumbUrl} alt={item.name} className="w-full h-full object-contain rounded-2xl" />
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (onDownload) {
-                          setDownloading(true)
-                          onDownload()
-                        }
-                      }}
-                      className="absolute inset-0 flex items-center justify-center group/play cursor-pointer bg-black/25 hover:bg-black/35 transition-colors"
-                      title="Click to Download and Play"
-                    >
-                      <div className="size-20 rounded-full bg-primary text-white flex items-center justify-center shadow-2xl group-hover/play:scale-110 transition-transform">
-                        <Play size={36} className="ml-1 fill-white" />
-                      </div>
-                    </button>
-                  </div>
-                ) : (
-                  <div className="size-20 rounded-full bg-primary/20 text-primary flex items-center justify-center mb-2">
-                    <Play size={32} className="ml-1" />
-                  </div>
-                )}
-                <div className="text-[13px] text-muted">
-                  {downloading ? (
-                    <span className="text-cyan font-medium animate-pulse">
-                      Downloading video to play in full quality… check Queue for progress.
-                    </span>
-                  ) : (
-                    'Video preview available. Click to download and play in full quality.'
-                  )}
-                </div>
-                {onDownload && !downloading && (
-                  <Button
-                    variant="primary"
-                    onClick={() => {
-                      setDownloading(true)
-                      onDownload()
-                    }}
-                    className="py-2 px-6 text-[13px] flex items-center gap-2 shadow-lg"
-                  >
-                    <Download size={15} /> Download &amp; Play
-                  </Button>
-                )}
-              </div>
-            )
-          ) : isImage && (localUrl || thumbUrl) ? (
-            <img
-              src={localUrl || thumbUrl!}
-              alt={item.name}
-              className="max-h-[78vh] max-w-full object-contain rounded-lg shadow-2xl"
+        <div className="flex items-center gap-2 shrink-0">
+          {onDownload ? (
+            <Button
+              variant="primary"
+              onClick={onDownload}
+              className="py-1.5 px-3.5 text-[12px] flex items-center gap-1.5 shadow-lg"
+            >
+              <Download size={14} />
+              <span>Download</span>
+            </Button>
+          ) : null}
+
+          <button
+            onClick={onClose}
+            className="flex size-8 items-center justify-center rounded-full bg-white/10 hover:bg-white/20 text-white transition-colors ml-1"
+            title="Close (Esc)"
+          >
+            <X size={17} />
+          </button>
+        </div>
+      </div>
+
+      {/* Center Media Stage - Backdrop click closes modal; media element stops propagation */}
+      <div className="flex flex-1 items-center justify-center w-full h-full p-4 overflow-hidden">
+        {isVideo ? (
+          mediaUrl ? (
+            <CustomVideoPlayer
+              src={mediaUrl}
+              speed={speed}
+              onSpeedChange={setSpeed}
             />
-          ) : isAudio ? (
-            localUrl ? (
-              <div className="flex flex-col items-center justify-center gap-6 py-12 px-16 w-full max-w-md">
-                <div className="size-24 rounded-full bg-primary/20 text-primary flex items-center justify-center shadow-xl border border-primary/30">
-                  <Play size={36} className="ml-1 fill-primary" />
+          ) : shouldPrebuffer ? (
+            // Prebuffer ON: show download progress spinner, wait for full download
+            <div
+              className="relative flex items-center justify-center max-h-[85vh] max-w-[95vw] rounded-2xl overflow-hidden bg-black cursor-default shadow-2xl"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {thumbUrl ? (
+                <img
+                  src={thumbUrl}
+                  alt={item.name}
+                  className="max-h-[85vh] max-w-[95vw] w-auto h-auto min-w-[320px] md:min-w-[480px] object-contain rounded-2xl opacity-60 filter blur-[1px]"
+                />
+              ) : (
+                <div className="w-80 h-52 flex items-center justify-center bg-slate-900/80 rounded-2xl">
+                  <Film size={36} className="text-muted" />
                 </div>
-                <div className="text-center">
-                  <div className="text-[15px] text-white font-semibold truncate max-w-sm">{item.name}</div>
-                  <div className="text-[12px] text-muted mt-1">{item.size ? fmtBytes(item.size) : ''} {item.duration ? `• ${fmtDuration(item.duration)}` : ''}</div>
-                </div>
-                <audio src={localUrl} controls autoPlay className="w-full" />
-              </div>
-            ) : (
-              <div className="flex flex-col items-center justify-center gap-4 py-12 px-8 text-center">
-                <div className="size-20 rounded-full bg-primary/20 text-primary flex items-center justify-center mb-2">
-                  <Play size={32} className="ml-1" />
-                </div>
-                <div className="text-[14px] text-white font-medium">{item.name}</div>
-                <div className="text-[12px] text-muted">
-                  {downloading ? 'Downloading audio file…' : 'Audio file not downloaded yet.'}
-                </div>
-                {onDownload && !downloading && (
-                  <Button
-                    variant="primary"
-                    onClick={() => {
-                      setDownloading(true)
-                      onDownload()
-                    }}
-                    className="py-2 px-5 text-[13px] flex items-center gap-2"
-                  >
-                    <Download size={15} /> Download &amp; Play
-                  </Button>
+              )}
+              <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/40 backdrop-blur-xs gap-3">
+                {prepProgress && prepProgress.total > 0 ? (
+                  <>
+                    <div className="relative size-16 flex items-center justify-center">
+                      <svg className="size-16 -rotate-90" viewBox="0 0 64 64">
+                        <circle cx="32" cy="32" r="28" stroke="currentColor" strokeWidth="4" className="text-white/20 fill-none" />
+                        <circle
+                          cx="32" cy="32" r="28"
+                          stroke="currentColor" strokeWidth="4"
+                          className="text-cyan fill-none transition-all duration-150"
+                          strokeDasharray={175.9}
+                          strokeDashoffset={175.9 - (175.9 * Math.min(100, Math.round((prepProgress.downloaded / prepProgress.total) * 100))) / 100}
+                          strokeLinecap="round"
+                        />
+                      </svg>
+                      <span className="absolute text-[12px] font-bold text-white font-mono">
+                        {Math.min(100, Math.round((prepProgress.downloaded / prepProgress.total) * 100))}%
+                      </span>
+                    </div>
+                    <div className="flex flex-col items-center gap-0.5">
+                      <div className="text-[12.5px] font-semibold text-white">Buffering video…</div>
+                      <div className="text-[11px] font-mono text-slate-300">
+                        {fmtBytes(prepProgress.downloaded)} / {fmtBytes(prepProgress.total)}
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <div className="flex flex-col items-center gap-3">
+                    <div className="size-12 rounded-full border-3 border-cyan/30 border-t-cyan animate-spin" />
+                    <span className="text-[12px] text-cyan font-semibold">Preparing…</span>
+                  </div>
                 )}
-              </div>
-            )
-          ) : thumbUrl ? (
-            <div className="flex flex-col items-center gap-3">
-              <img
-                src={thumbUrl}
-                alt={item.name}
-                className="max-h-[72vh] max-w-full object-contain rounded-lg shadow-lg"
-              />
-              <div className="text-[12px] text-muted text-center">
-                Preview thumbnail. {item.path ? '' : 'Download the file to view full content.'}
               </div>
             </div>
           ) : (
-            <div className="flex flex-col items-center justify-center py-16 px-20 text-center">
-              <div className="size-20 rounded-2xl bg-primary/20 flex items-center justify-center text-primary mb-4 shadow">
-                <TypeChip ext={ext.toUpperCase() || 'FILE'} />
-              </div>
-              <div className="text-[15px] font-semibold text-text max-w-md truncate">{item.name}</div>
-              <div className="text-[12px] text-muted mt-1.5">
-                {item.path ? 'Ready to open with your system default application.' : 'File not downloaded yet.'}
-              </div>
-              {!item.path && onDownload && !downloading && (
-                <Button
-                  variant="primary"
-                  onClick={() => {
-                    setDownloading(true)
-                    onDownload()
-                  }}
-                  className="mt-4 py-2 px-5 text-[13px] flex items-center gap-2"
-                >
-                  <Download size={15} /> Download File
-                </Button>
+            // Prebuffer OFF: show thumbnail with a simple loading indicator while TDLib starts the download
+            <div
+              className="relative flex items-center justify-center max-h-[85vh] max-w-[95vw] rounded-2xl overflow-hidden bg-black cursor-default shadow-2xl"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {thumbUrl ? (
+                <img
+                  src={thumbUrl}
+                  alt={item.name}
+                  className="max-h-[85vh] max-w-[95vw] w-auto h-auto min-w-[320px] md:min-w-[480px] object-contain rounded-2xl opacity-80"
+                />
+              ) : (
+                <div className="w-80 h-52 flex items-center justify-center bg-slate-900/80 rounded-2xl">
+                  <Film size={36} className="text-muted" />
+                </div>
               )}
+              <div className="absolute inset-0 flex flex-col items-center justify-center gap-3">
+                <div className="size-12 rounded-full border-3 border-white/20 border-t-white/80 animate-spin" />
+                <span className="text-[12px] text-white/70 font-medium">Starting playback…</span>
+              </div>
             </div>
+          )
+        ) : isImage ? (
+          <div
+            className="relative flex items-center justify-center max-h-[88vh] max-w-[95vw] cursor-default"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <img
+              src={mediaUrl || thumbUrl || ''}
+              alt={item.name}
+              className="max-h-[88vh] max-w-[95vw] w-auto h-auto min-w-[320px] md:min-w-[480px] object-contain rounded-lg shadow-2xl transition-all duration-150"
+            />
+          </div>
+        ) : isAudio ? (
+          <div
+            className="flex flex-col items-center justify-center gap-6 py-10 px-12 w-full max-w-xl bg-[#182533]/90 backdrop-blur-2xl border border-white/10 rounded-3xl shadow-2xl cursor-default"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="size-24 rounded-full bg-primary/20 text-primary flex items-center justify-center shadow-xl border border-primary/40 animate-pulse">
+              <Music size={42} className="text-primary" />
+            </div>
+            <div className="text-center w-full px-4">
+              <div className="text-[16px] text-white font-bold truncate max-w-md mx-auto">{item.name}</div>
+              <div className="text-[12px] text-muted mt-1">
+                {item.size ? fmtBytes(item.size) : ''} {item.duration ? `• ${fmtDuration(item.duration)}` : ''}
+              </div>
+            </div>
+            {mediaUrl ? (
+              <audio ref={audioRef} src={mediaUrl} controls autoPlay className="w-full mt-2" />
+            ) : (
+              <div className="flex flex-col items-center gap-2 py-4">
+                <div className="size-10 rounded-full border-2 border-primary/30 border-t-primary animate-spin" />
+                <span className="text-[12.5px] text-cyan font-medium">Loading audio…</span>
+              </div>
+            )}
+          </div>
+        ) : (
+          <div
+            className="flex flex-col items-center justify-center gap-4 py-16 px-20 text-center bg-[#182533]/80 rounded-2xl border border-white/10 shadow-2xl cursor-default"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="size-20 rounded-2xl bg-primary/20 flex items-center justify-center text-primary mb-2 shadow">
+              <TypeChip ext={ext.toUpperCase() || 'FILE'} />
+            </div>
+            <div className="text-[16px] font-semibold text-white max-w-md truncate">{item.name}</div>
+            <div className="text-[12.5px] text-muted">{item.size ? fmtBytes(item.size) : ''}</div>
+            {onDownload && (
+              <Button variant="primary" onClick={onDownload} className="mt-3 py-2 px-6 text-[13px] flex items-center gap-2">
+                <Download size={15} /> Download File
+              </Button>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+/** Telegram Join Request / Community Invite Modal */
+export function TelegramInviteModal({
+  open,
+  invite,
+  loading,
+  requestSent,
+  onClose,
+  onJoin,
+}: {
+  open: boolean
+  invite: {
+    title: string
+    members?: number
+    photo?: string | null
+    about?: string
+    createsJoinRequest?: boolean
+    isPublic?: boolean
+    link?: string
+  } | null
+  loading?: boolean
+  requestSent?: boolean
+  onClose: () => void
+  onJoin: () => void
+}) {
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open, onClose])
+
+  if (!open || !invite) return null
+
+  const isRequest = Boolean(invite.createsJoinRequest)
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-md select-none animate-in fade-in duration-150"
+      onClick={onClose}
+    >
+      <div
+        className="relative w-full max-w-sm overflow-hidden rounded-3xl border border-white/10 bg-[#17212b] p-6 shadow-2xl flex flex-col items-center text-center animate-in zoom-in-95 duration-150"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <button
+          onClick={onClose}
+          className="absolute top-4 right-4 size-7 rounded-full bg-white/10 hover:bg-white/20 text-muted hover:text-white flex items-center justify-center transition-colors cursor-pointer"
+          title="Close"
+        >
+          <X size={15} />
+        </button>
+
+        {/* Channel / Group Avatar */}
+        <div className="mt-2 mb-3">
+          {invite.photo ? (
+            <img
+              src={`teleflow://thumb/${invite.photo}`}
+              alt={invite.title}
+              className="size-20 rounded-full object-cover shadow-xl border-2 border-white/15"
+            />
+          ) : (
+            <div className="size-20 rounded-full bg-gradient-to-tr from-cyan-600 to-blue-500 text-white flex items-center justify-center text-2xl font-bold shadow-xl border-2 border-white/15">
+              {invite.title.charAt(0).toUpperCase()}
+            </div>
+          )}
+        </div>
+
+        {/* Channel Title */}
+        <h3 className="text-[17px] font-bold text-white tracking-wide max-w-[280px] truncate" title={invite.title}>
+          {invite.title}
+        </h3>
+
+        {/* Member count */}
+        <p className="text-[12px] text-cyan font-medium mt-1">
+          {invite.members ? `${invite.members.toLocaleString()} members` : 'Telegram Community'}
+        </p>
+
+        {/* Description / About */}
+        {invite.about && (
+          <p className="text-[12px] text-slate-300 mt-3 line-clamp-3 leading-relaxed px-2 break-words">
+            {invite.about}
+          </p>
+        )}
+
+        {/* Request notice or request sent badge */}
+        {requestSent ? (
+          <div className="mt-5 w-full p-3 rounded-2xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-[13px] font-semibold flex items-center justify-center gap-2 shadow-sm">
+            <CheckCircle2 size={18} className="text-emerald-400" />
+            <span>Join Request Sent!</span>
+          </div>
+        ) : isRequest ? (
+          <div className="mt-4 p-2.5 rounded-xl bg-blue-500/10 border border-blue-500/20 text-[11.5px] text-blue-200 flex items-center justify-center gap-1.5 font-medium">
+            <span>An admin will review your request to join</span>
+          </div>
+        ) : null}
+
+        {/* Actions */}
+        <div className="w-full flex flex-col gap-2 mt-5">
+          {requestSent ? (
+            <Button variant="primary" onClick={onClose} className="w-full py-2.5 text-[13.5px] font-semibold rounded-xl">
+              Done
+            </Button>
+          ) : (
+            <>
+              <Button
+                variant="primary"
+                busy={loading}
+                onClick={onJoin}
+                className="w-full py-2.5 text-[13.5px] font-semibold rounded-xl shadow-lg"
+              >
+                {isRequest ? 'Request to Join' : 'Join Channel'}
+              </Button>
+              <Button
+                variant="secondary"
+                onClick={onClose}
+                disabled={loading}
+                className="w-full py-2 text-[12.5px] rounded-xl text-slate-300"
+              >
+                Cancel
+              </Button>
+            </>
           )}
         </div>
       </div>

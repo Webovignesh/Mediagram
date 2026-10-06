@@ -1,7 +1,7 @@
 // Phase 5.6: Settings page per UI.md & User Specs
-import { useState, useRef } from 'react'
-import { Settings as SettingsIcon, Download, Upload, Users, Folder, Bell, Shield, Info, ExternalLink, Trash2, LogOut, Clock, Key, RotateCcw } from 'lucide-react'
-import { call, useCall } from '../api.ts'
+import { useState, useRef, useEffect } from 'react'
+import { Settings as SettingsIcon, Download, Upload, Users, Folder, Bell, Info, ExternalLink, Trash2, LogOut, Clock, Key } from 'lucide-react'
+import { call, useCall, useRoute, navigate } from '../api.ts'
 import { Panel, Toggle, Select, Button, Avatar, Input, Dialog, fmtBytes, fmtDate, confirm, toast } from '../ui.tsx'
 
 export default function Settings() {
@@ -10,6 +10,10 @@ export default function Settings() {
 
   const [editApiId, setEditApiId] = useState('')
   const [editApiHash, setEditApiHash] = useState('')
+  /** Field-level errors for Update Credentials: the message names the field that is wrong, not a toast that vanishes. */
+  const [idError, setIdError] = useState<string | null>(null)
+  const [hashError, setHashError] = useState<string | null>(null)
+  const [apiError, setApiError] = useState<string | null>(null)
 
   const sectionRefs = {
     general: useRef<HTMLDivElement>(null),
@@ -20,14 +24,98 @@ export default function Settings() {
     queue: useRef<HTMLDivElement>(null),
     files: useRef<HTMLDivElement>(null),
     notifications: useRef<HTMLDivElement>(null),
-    privacy: useRef<HTMLDivElement>(null),
     about: useRef<HTMLDivElement>(null),
   }
 
+  const scrollContainerRef = useRef<HTMLDivElement>(null)
+  const isScrollingToRef = useRef(false)
+  const scrollTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+
+  const sectionOrder: (keyof typeof sectionRefs)[] = [
+    'general', 'downloads', 'uploads', 'telegram', 'channels', 'queue', 'files', 'notifications', 'about'
+  ]
+
+  const handleScroll = (e?: { target?: EventTarget | null }) => {
+    if (isScrollingToRef.current) return
+    const container = scrollContainerRef.current
+    if (!container) return
+
+    const scrollEl = (e?.target as HTMLElement | null) || container
+    const activeScrollEl = scrollEl.scrollHeight > scrollEl.clientHeight ? scrollEl : container
+
+    // If scrolled near the bottom, activate the final section (About)
+    const isBottom = activeScrollEl.scrollHeight - activeScrollEl.scrollTop <= activeScrollEl.clientHeight + 80
+    if (isBottom) {
+      setActiveSection('about')
+      return
+    }
+
+    const containerTop = container.getBoundingClientRect().top
+    let active: keyof typeof sectionRefs = 'general'
+
+    for (const key of sectionOrder) {
+      const el = sectionRefs[key]?.current
+      if (!el) continue
+      const topOffset = el.getBoundingClientRect().top - containerTop
+      if (topOffset <= 160) {
+        active = key
+      }
+    }
+    setActiveSection(active)
+  }
+
+  useEffect(() => {
+    const container = scrollContainerRef.current
+    if (!container) return
+
+    const onScroll = (e: Event) => handleScroll(e)
+    container.addEventListener('scroll', onScroll, { passive: true })
+
+    const parentMain = container.closest('main')
+    if (parentMain) {
+      parentMain.addEventListener('scroll', onScroll, { passive: true })
+    }
+    window.addEventListener('scroll', onScroll, { passive: true })
+
+    handleScroll()
+
+    return () => {
+      container.removeEventListener('scroll', onScroll)
+      if (parentMain) parentMain.removeEventListener('scroll', onScroll)
+      window.removeEventListener('scroll', onScroll)
+    }
+  }, [])
+
   const scrollTo = (key: keyof typeof sectionRefs) => {
     setActiveSection(key)
+    isScrollingToRef.current = true
+    if (scrollTimerRef.current) clearTimeout(scrollTimerRef.current)
+
     sectionRefs[key]?.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+
+    scrollTimerRef.current = setTimeout(() => {
+      isScrollingToRef.current = false
+    }, 800)
   }
+
+  useEffect(() => {
+    const navBtn = document.getElementById(`settings-nav-${activeSection}`)
+    if (navBtn) {
+      navBtn.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+    }
+  }, [activeSection])
+
+  // Opened as #/settings?section=<id>: scroll straight to that section on mount.
+  const route = useRoute()
+  useEffect(() => {
+    const query = route.split('?')[1]
+    if (!query) return
+    const params = new URLSearchParams(query)
+    const section = params.get('section') as keyof typeof sectionRefs | null
+    if (!section || !sectionRefs[section]) return
+    scrollTo(section)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only when the page is opened with a target
+  }, [])
 
   const { data: settings, reload: reloadSettings } = useCall<any>('settings.get', {}, ['settings'])
   const { data: auth } = useCall<{ step: string, me: any, connection: string }>('auth.get', {}, ['auth'])
@@ -55,30 +143,73 @@ export default function Settings() {
     }
   }
 
+  const checkId = (raw: string): string | null =>
+    /^\d+$/.test(raw) && Number(raw) >= 1 && Number(raw) <= 2_147_483_647
+      ? null
+      : 'API ID is the whole number from my.telegram.org (1 to 2147483647).'
+  const checkHash = (raw: string): string | null => {
+    const hash = raw.trim()
+    if (/^[0-9a-f]{32}$/i.test(hash)) return null
+    return `API hash is 32 hexadecimal characters (0-9, a-f) — this one has ${hash.length}.`
+  }
+
+  /** Validates both fields before anything leaves the renderer: a hash one character short never reaches TDLib. */
   async function updateCredentials() {
-    if (!editApiId || !editApiHash) return
+    const idMsg = checkId(editApiId.trim())
+    const hashMsg = checkHash(editApiHash)
+    setIdError(idMsg)
+    setHashError(hashMsg)
+    setApiError(null)
+    if (idMsg || hashMsg) return
+    // Keys differing from the ones in use re-check with Telegram by signing back in (auth.credentials takes the
+    // fresh path when they change), so the dialog says so before anything is wiped.
+    if (!(await confirm({
+      title: 'Update API data',
+      message: 'New keys are checked by Telegram with a fresh sign-in — you\'ll enter your phone number and code again. Apply the update?',
+      confirm: 'Update',
+    }))) return
+    const wasSaved = !!settings?.apiHashSaved
     try {
-      await call('auth.credentials', { apiId: Number(editApiId), apiHash: editApiHash.trim() })
-      toast('Telegram API credentials updated!')
+      await call('auth.credentials', { apiId: Number(editApiId.trim()), apiHash: editApiHash.trim() })
+      if (wasSaved) await call('auth.saveKeys') // the saved row keeps up, so it can't hold the previous keys
       setEditApiId('')
       setEditApiHash('')
+      setIdError(null)
+      setHashError(null)
+      toast('API data saved')
+      reloadSettings()
+    } catch (e) {
+      const msg = (e as Error).message
+      if (msg.startsWith('apiId') || /API ID/i.test(msg)) setIdError(msg)
+      else if (msg.startsWith('apiHash') || /hash/i.test(msg)) setHashError(msg)
+      else setApiError(msg)
+      reloadSettings() // a rejection from Telegram also forgets the stored keys; the status line must follow
+    }
+  }
+
+  /** Keeps the keys of this session on disk, encrypted, so the API-keys step is skipped next time. */
+  async function saveKeys() {
+    try {
+      await call('auth.saveKeys')
+      toast.success('Encrypted on this device — signing out keeps it.', { title: 'API data saved' })
       reloadSettings()
     } catch (e) {
       toast((e as Error).message, 'danger')
     }
   }
 
-  async function handleResetCredentials() {
+  /** Erases the API data saved on this device. The signed-in session keeps working until it signs out. */
+  async function deleteApiData() {
     if (await confirm({
-      title: 'Reset Telegram API Credentials',
-      message: 'Reset your Telegram API credentials? You will be logged out and returned to the initial API setup screen.',
-      confirm: 'Reset Credentials',
+      title: 'Delete API data',
+      message: 'Erases the API data saved on this device. Your current sign-in keeps working; you will be asked for it again after signing out.',
+      confirm: 'Delete API data',
       danger: true,
     })) {
       try {
-        await call('auth.resetCredentials')
-        toast('API credentials reset.')
-        window.location.reload()
+        await call('auth.forgetKeys')
+        toast.success('You will be asked for your API data again after signing out.', { title: 'API data deleted' })
+        reloadSettings()
       } catch (e) {
         toast((e as Error).message, 'danger')
       }
@@ -86,7 +217,11 @@ export default function Settings() {
   }
 
   async function logout() {
-    if (await confirm({ title: 'Log out', message: 'Log out of Telegram on this device?', confirm: 'Log out' })) {
+    if (await confirm({
+      title: 'Log out',
+      message: 'Your Telegram session ends on this device. Saved API data stays, so signing back in is quick.',
+      confirm: 'Log out',
+    })) {
       try {
         await call('auth.logout')
         toast('Logged out')
@@ -114,10 +249,11 @@ export default function Settings() {
 
   async function clearData() {
     if (await confirm({
-      title: 'Clear App Data',
-      message: 'Delete history, queue, media index, and settings (download folder resets to default)? Your login and downloaded files stay.',
-      confirm: 'Clear App Data',
+      title: 'Clear app data',
+      message: 'Deletes your history, download queue, media index, and all settings — the download folder resets to the default.',
+      confirm: 'Clear app data',
       danger: true,
+      wait: 3, // the delete button opens after 3 seconds, so a stray click cannot wipe anything
     })) {
       try {
         const res = await call<{ freed: number }>('app.clearData')
@@ -132,6 +268,8 @@ export default function Settings() {
 
   const canPost = chats?.chats.filter((c: any) => c.canPost) || []
   const activeCount = (live?.counts?.download?.active || 0) + (live?.counts?.upload?.active || 0)
+  // Settings is only reachable while signed in; the "Log in" button is a safety net for a dead session.
+  const signedIn = auth?.step === 'ready'
 
   return (
     <div className="flex h-full overflow-hidden">
@@ -162,11 +300,11 @@ export default function Settings() {
           { id: 'queue', icon: Clock, label: 'Queue', subtitle: 'Retries & cleanup' },
           { id: 'files', icon: Folder, label: 'Files & Folders', subtitle: 'App data & logs' },
           { id: 'notifications', icon: Bell, label: 'Notifications', subtitle: 'Desktop alerts' },
-          { id: 'privacy', icon: Shield, label: 'Privacy & Security', subtitle: 'Cache & data' },
           { id: 'about', icon: Info, label: 'About', subtitle: 'Version & info' },
         ].map(({ id, icon: Icon, label, subtitle }) => (
           <button
             key={id}
+            id={`settings-nav-${id}`}
             onClick={() => scrollTo(id as any)}
             className={`flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors ${
               activeSection === id ? 'bg-primary text-text shadow-glow' : 'hover:bg-tile text-text-2 hover:text-text'
@@ -182,11 +320,15 @@ export default function Settings() {
       </div>
 
       {/* Main Settings Panels (Full-Width Flex-1 Center, Right Column Removed) */}
-      <div className="flex-1 overflow-y-auto p-6 space-y-5 w-full">
+      <div 
+        ref={scrollContainerRef}
+        onScroll={handleScroll}
+        className="flex-1 overflow-y-auto p-6 space-y-5 w-full scroll-smooth"
+      >
         <div className="flex items-center justify-between pr-40">
           <div>
             <h1 className="text-[26px] font-bold text-white tracking-wide">Settings</h1>
-            <p className="mt-1 text-[13px] text-text-2">Customize your experience and manage application preferences</p>
+            <p className="mt-1 text-[13px] text-text-2">Change how Mediagram looks and works</p>
           </div>
         </div>
 
@@ -266,6 +408,13 @@ export default function Settings() {
                   <div className="text-[12px] text-muted">Prepend YYYY-MM-DD timestamp to downloaded file names</div>
                 </div>
                 <Toggle checked={settings?.datePrefix || false} onChange={(v) => setSetting('datePrefix', v)} />
+              </div>
+              <div className="flex items-center justify-between py-3">
+                <div>
+                  <div className="text-[13px] font-semibold text-text">Prebuffer video playback</div>
+                  <div className="text-[12px] text-muted">Automatically stream and buffer videos before playback; when off, un-downloaded videos won't prebuffer automatically</div>
+                </div>
+                <Toggle checked={settings?.prebufferVideo ?? true} onChange={(v) => setSetting('prebufferVideo', v)} />
               </div>
               <div className="py-3">
                 <div className="mb-2">
@@ -350,14 +499,25 @@ export default function Settings() {
               </div>
 
               {/* Editable Telegram API Credentials */}
-              <div className="py-4 space-y-3">
+              <div className="space-y-3 py-4">
                 <div className="flex items-center gap-2 text-text font-semibold text-[13px]">
                   <Key size={15} className="text-primary" />
-                  <span>Telegram API Credentials</span>
+                  <span>Telegram API data</span>
                 </div>
                 <p className="text-[12px] text-muted">
-                  Update your custom Telegram Developer API ID and API Hash. Mediagram uses your own developer credentials to communicate with TDLib.
+                  Your own API ID and hash from my.telegram.org — Mediagram uses them to connect to Telegram.
                 </p>
+                <p className={`text-[12px] ${settings?.apiHashSaved ? 'text-success' : 'text-warning'}`}>
+                  {settings?.apiHashSaved
+                    ? 'Saved on this device — kept through sign-out, so you won\'t be asked for these again.'
+                    : 'Not saved yet: these keys are only in this session, so Mediagram will ask for them again next time. A completed sign-in saves them automatically.'}
+                </p>
+                {settings?.apiHashSaved && (
+                  <p className="text-[12px] text-muted">
+                    Saved keys are encrypted with your Windows account (DPAPI) and never leave this device.
+                    Signing out keeps them; Clear All Data erases them.
+                  </p>
+                )}
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <label className="block text-[11px] text-muted mb-1">API ID</label>
@@ -365,21 +525,36 @@ export default function Settings() {
                       type="number"
                       placeholder={settings?.apiId ? String(settings.apiId) : 'API ID'}
                       value={editApiId}
-                      onChange={(e) => setEditApiId(e.target.value)}
-                      className="w-full rounded-[10px] border border-border bg-tile px-3 py-2 text-[13px] text-text focus:border-primary outline-none"
+                      onChange={(e) => { setEditApiId(e.target.value); setIdError(null); setApiError(null) }}
+                      onBlur={() => setIdError(editApiId.trim() ? checkId(editApiId.trim()) : null)}
+                      aria-invalid={!!idError}
+                      className={`w-full rounded-[10px] border ${idError ? 'border-danger' : 'border-border'} bg-tile px-3 py-2 text-[13px] text-text focus:border-primary outline-none`}
                     />
+                    {idError && <p role="alert" className="mt-1 text-[11px] text-danger">{idError}</p>}
+                    {!idError && auth?.step === 'ready' && !!editApiId.trim() && (
+                      <p className="mt-1 text-[11px] text-primary">
+                        Applying updated keys checks them with Telegram straight away: you'll sign back in with your
+                        phone number and code.
+                      </p>
+                    )}
                   </div>
                   <div>
                     <label className="block text-[11px] text-muted mb-1">API Hash</label>
                     <input
-                      type="text"
+                      type="password"
                       placeholder="32-character hex hash"
                       value={editApiHash}
-                      onChange={(e) => setEditApiHash(e.target.value)}
-                      className="w-full rounded-[10px] border border-border bg-tile px-3 py-2 text-[13px] text-text focus:border-primary outline-none"
+                      onChange={(e) => { setEditApiHash(e.target.value); setHashError(null); setApiError(null) }}
+                      onBlur={() => setHashError(editApiHash.trim() ? checkHash(editApiHash) : null)}
+                      aria-invalid={!!hashError}
+                      autoComplete="off"
+                      spellCheck={false}
+                      className={`w-full rounded-[10px] border ${hashError ? 'border-danger' : 'border-border'} bg-tile px-3 py-2 text-[13px] text-text focus:border-primary outline-none`}
                     />
+                    {hashError && <p role="alert" className="mt-1 text-[11px] text-danger">{hashError}</p>}
                   </div>
                 </div>
+                {apiError && <p role="alert" className="text-[12px] text-danger">{apiError}</p>}
                 <div className="flex items-center justify-between pt-1">
                   <a
                     href="https://my.telegram.org"
@@ -387,18 +562,22 @@ export default function Settings() {
                     rel="noreferrer"
                     className="text-[12px] text-primary hover:underline flex items-center gap-1"
                   >
-                    <span>Get credentials at my.telegram.org</span>
+                    <span>Get them at my.telegram.org</span>
                     <ExternalLink size={12} />
                   </a>
                   <div className="flex items-center gap-2">
+                    {settings?.apiHashSaved && (
+                      <Button variant="tint" tone="danger" onClick={deleteApiData} className="py-1 px-3 text-[12px]">
+                        Delete API data
+                      </Button>
+                    )}
                     <Button
-                      variant="tint"
-                      tone="danger"
-                      onClick={handleResetCredentials}
-                      className="py-1 px-3 text-[12px] flex items-center gap-1"
+                      variant="secondary"
+                      disabled={!!settings?.apiHashSaved}
+                      onClick={saveKeys}
+                      className="py-1 px-3 text-[12px]"
                     >
-                      <RotateCcw size={12} />
-                      <span>Reset</span>
+                      {settings?.apiHashSaved ? 'Saved' : 'Save API data'}
                     </Button>
                     <Button
                       variant="primary"
@@ -406,7 +585,7 @@ export default function Settings() {
                       onClick={updateCredentials}
                       className="py-1 px-3 text-[12px]"
                     >
-                      Update Credentials
+                      Update API data
                     </Button>
                   </div>
                 </div>
@@ -523,32 +702,6 @@ export default function Settings() {
           </Panel>
         </div>
 
-        {/* Privacy & Security */}
-        <div ref={sectionRefs.privacy}>
-          <Panel title="Privacy &amp; Security" icon={<Shield size={18} />}>
-            <div className="divide-y divide-border">
-              <div className="flex items-center justify-between py-3">
-                <div>
-                  <div className="text-[13px] font-semibold text-text">Clear cache</div>
-                  <div className="text-[12px] text-muted">Frees temporary TDLib files and thumbnails ({storage ? fmtBytes(storage.cache?.total || 0) : '...'})</div>
-                </div>
-                <Button variant="secondary" disabled={activeCount > 0} onClick={clearCache}>
-                  {activeCount > 0 ? 'Pause active transfers first' : 'Clear cache'}
-                </Button>
-              </div>
-              <div className="flex items-center justify-between py-3">
-                <div>
-                  <div className="text-[13px] font-semibold text-text">Clear app data</div>
-                  <div className="text-[12px] text-muted">Deletes history, queue, and media index ({storage ? fmtBytes(storage.appData || 0) : '...'})</div>
-                </div>
-                <Button variant="secondary" disabled={activeCount > 0} onClick={clearData}>
-                  Clear app data
-                </Button>
-              </div>
-            </div>
-          </Panel>
-        </div>
-
         {/* About */}
         <div ref={sectionRefs.about}>
           <Panel title="About" icon={<Info size={18} />}>
@@ -563,10 +716,27 @@ export default function Settings() {
               </div>
               <div className="flex items-center justify-between py-2.5">
                 <span className="text-muted">Telegram Status</span>
-                <span className={auth?.connection === 'ready' ? 'text-success font-medium flex items-center gap-1.5' : 'text-warning font-medium flex items-center gap-1.5'}>
-                  <span className={`size-2 rounded-full ${auth?.connection === 'ready' ? 'bg-success' : 'bg-warning'}`} />
-                  {auth?.connection === 'ready' ? 'Connected' : 'Connecting'}
-                </span>
+                {auth?.connection === 'ready' ? (
+                  <span className="text-success font-medium flex items-center gap-1.5">
+                    <span className="size-2 rounded-full bg-success" />
+                    Connected
+                  </span>
+                ) : auth?.connection === 'updating' ? (
+                  <span className="text-warning font-medium flex items-center gap-1.5">
+                    <span className="size-2 rounded-full bg-warning animate-pulse" />
+                    Updating
+                  </span>
+                ) : auth?.connection === 'offline' ? (
+                  <span className="text-danger font-medium flex items-center gap-1.5">
+                    <span className="size-2 rounded-full bg-danger" />
+                    Offline
+                  </span>
+                ) : (
+                  <span className="text-warning font-medium flex items-center gap-1.5">
+                    <span className="size-2 rounded-full bg-warning animate-pulse" />
+                    Connecting
+                  </span>
+                )}
               </div>
               {app?.installedAt && (
                 <div className="flex items-center justify-between py-2.5">
@@ -593,14 +763,65 @@ export default function Settings() {
         </div>
 
         {/* Danger Zone */}
-        <Panel title="Danger Zone" icon={<Trash2 size={18} className="text-danger" />} subtitle="These actions are permanent and cannot be undone.">
+        <Panel title="Danger Zone" icon={<Trash2 size={18} className="text-danger" />} subtitle="Sign out or delete data stored on this device.">
           <div className="space-y-3 pt-1">
-            <div className="rounded-xl border border-danger/30 bg-danger/5 p-4 flex items-center justify-between">
+            {/* Account: Log out, or Log in when the session is gone */}
+            <div className="rounded-xl border border-danger/30 bg-danger/5 p-4 flex items-center justify-between gap-4">
               <div>
-                <div className="text-[13px] font-bold text-danger">Disconnect Telegram</div>
-                <div className="text-[12px] text-muted">Remove saved Telegram session from this device</div>
+                <div className="text-[13px] font-bold text-danger">{signedIn ? 'Log out' : 'Log in'}</div>
+                <div className="text-[12px] text-muted">
+                  {signedIn
+                    ? 'Signs you out of Telegram on this device. Your saved API data stays, so signing back in is quick.'
+                    : 'You are not signed in. Sign back in to use Mediagram.'}
+                </div>
               </div>
-              <Button variant="danger" onClick={logout}>Disconnect</Button>
+              {signedIn ? (
+                <Button
+                  variant="danger"
+                  onClick={logout}
+                  className="btn-logout shrink-0 px-4 py-2"
+                  style={{
+                    display: 'inline-flex',
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '8px',
+                    whiteSpace: 'nowrap',
+                    flexShrink: 0,
+                  }}
+                >
+                  <LogOut size={15} style={{ display: 'inline-block', flexShrink: 0 }} />
+                  <span style={{ display: 'inline-block', whiteSpace: 'nowrap' }}>Log out</span>
+                </Button>
+              ) : (
+                <Button variant="primary" onClick={() => navigate('/overview')} className="shrink-0">Log in</Button>
+              )}
+            </div>
+
+            {/* Clear cache */}
+            <div className="rounded-xl border border-border bg-tile/60 p-4 flex items-center justify-between gap-4">
+              <div>
+                <div className="text-[13px] font-semibold text-text">Clear cache</div>
+                <div className="text-[12px] text-muted">
+                  Deletes temporary files and thumbnails ({storage ? fmtBytes(storage.cache?.total || 0) : '...'}). Paused downloads restart from the beginning.
+                </div>
+              </div>
+              <Button variant="secondary" disabled={activeCount > 0} onClick={clearCache}>
+                {activeCount > 0 ? 'Pause active transfers first' : 'Clear cache'}
+              </Button>
+            </div>
+
+            {/* Clear app data */}
+            <div className="rounded-xl border border-danger/30 bg-danger/5 p-4 flex items-center justify-between gap-4">
+              <div>
+                <div className="text-[13px] font-bold text-danger">Clear app data</div>
+                <div className="text-[12px] text-muted">
+                  Deletes history, queue, media index, and settings ({storage ? fmtBytes(storage.appData || 0) : '...'}).
+                </div>
+              </div>
+              <Button variant="danger" disabled={activeCount > 0} onClick={clearData}>
+                {activeCount > 0 ? 'Pause active transfers first' : 'Clear app data'}
+              </Button>
             </div>
           </div>
         </Panel>

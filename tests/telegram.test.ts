@@ -42,9 +42,17 @@ const dir = path.join(temp, 'tdlib')
 const events: AppEvent[] = []
 let archived = false
 let forgot = 0
+/** What the ready gate handed to main to keep for the next start (core/telegram.ts > ready gate). */
+let savedCreds: { apiId: number, apiHash: string } | null = null
 const db = openDb(':memory:')
-tg.init({ dir, version: '9.9.9', db, emit: (e) => events.push(e), showArchived: () => archived, forgetCredentials: () => { forgot++ } })
+tg.init({ dir, version: '9.9.9', db, emit: (e) => events.push(e), showArchived: () => archived, forgetCredentials: () => { forgot++ }, saveCredentials: (c) => { savedCreds = c } })
 const creds = { apiId: 12345, apiHash: 'f'.repeat(32) }
+
+// The credentials gate: `trust` records the fingerprint a real sign-in would leave, so a test can resume a session
+// the way an existing install does; `dropTrust` is an install from before the gate existed.
+const fingerprintFile = path.join(dir, 'session.fingerprint')
+const trust = (c: { apiId: number, apiHash: string } = creds) => { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(fingerprintFile, tg.fingerprint(c)) }
+const dropTrust = () => fs.rmSync(fingerprintFile, { force: true })
 
 const step = () => tg.authState().step
 async function until(ok: () => boolean) {
@@ -64,10 +72,12 @@ const base = (extra: Answer): Answer => (req, cl) => {
   if (req._ === 'getMe') return meUser
   if (req._ === 'getOption') return { _: 'optionValueInteger', value: '2048' }
   if (req._ === 'createPrivateChat') { cl.update({ _: 'updateNewChat', chat: saved }); return saved }
+  if (req._ === 'setAuthenticationPhoneNumber') return { _: 'ok' } // Telegram would accept the number here
   return extra(req, cl)
 }
 async function signIn(extra: Answer = notFound) {
   answer = base(extra)
+  trust() // a session that already signed in under these keys
   await tg.start(creds)
   const cl = last()
   cl.update(auth('authorizationStateReady'))
@@ -81,6 +91,7 @@ test('start: TDLib folders and credentials; invoke is a 503 until getMe and the 
   const meGate = new Promise<void>((r) => { releaseMe = r })
   const signedIn = base(notFound)
   answer = async (req, cl) => (req._ === 'getMe' ? (await meGate, meUser) : signedIn(req, cl))
+  trust() // this session signed in under these keys: the gate lets it open
   await tg.start(creds)
   const cl = last()
   assert.deepEqual(cl.options, { ...cl.options, ...creds, databaseDirectory: path.join(dir, 'db'), filesDirectory: path.join(dir, 'files') })
@@ -106,6 +117,7 @@ test('chatList: main list, archive only when shown, Saved Messages, opened chats
   const cl = await signIn((req) => {
     if (req._ === 'getInternalLinkType') return { _: 'internalLinkTypePublicChat', chat_username: 'fixture_open' }
     if (req._ === 'searchPublicChat') return chatOf(-5)
+    if (req._ === 'joinChat') return { _: 'chatJoinResultSuccess', chat_id: -5 } // a public chat is joined for real
     return notFound()
   })
   for (const chat of [chatOf(-1, [pos(main, '30')]), chatOf(-2, [pos(main, '20'), pos(folder, '7')]), chatOf(-3, [pos(archive, '50')]),
@@ -155,7 +167,7 @@ test('messages: pages getChatHistory by 100 up to limit; more is false once the 
   assert.deepEqual(cl.requests.filter((q) => q._ === 'getChatHistory').map((q) => q.limit), [100, 100, 49])
   const all = await tg.messages(-7, 1000)
   assert.deepEqual([all.messages.length, all.more], [250, false])
-  assert.deepEqual(all.messages[0], { id: history[0].id, date: 250, sender: 'Fixture User', text: 'm250', media: null })
+  assert.deepEqual(all.messages[0], { id: history[0].id, date: 250, sender: 'Fixture User', text: 'm250', media: null, isOutgoing: false })
   await assert.rejects(tg.messages(-8, 10), { status: 404 })
 })
 
@@ -424,6 +436,41 @@ test('openChat invites: preview, request sent → 409, declined → 403, success
   assert.equal(cl.requests.filter((r) => r._ === 'downloadFile').length, 0)
 })
 
+test('openChat public chats: a group or channel is joined for real, a member or a private chat is not, failures answer like an invite', async () => {
+  const cl = await signIn((req) => {
+    if (req._ === 'getInternalLinkType') return { _: 'internalLinkTypePublicChat', chat_username: req.link.split('/').pop() }
+    if (req._ === 'searchPublicChat') {
+      if (req.username === 'member') return chatOf(-41, [pos(main, '90')]) // already in the account's list
+      if (req.username === 'someone') return chatOf(-42, [], { _: 'chatTypePrivate', user_id: 999 })
+      if (req.username === 'req') return chatOf(-43)
+      if (req.username === 'no') return chatOf(-44)
+      return chatOf(-40) // public, not a member: no position at all
+    }
+    if (req._ === 'joinChat') {
+      if (req.chat_id === -43) return { _: 'chatJoinResultRequestSent' }
+      if (req.chat_id === -44) return { _: 'chatJoinResultDeclined' }
+      return { _: 'chatJoinResultSuccess', chat_id: req.chat_id }
+    }
+    if (req._ === 'getChat') return chatOf(req.chat_id, [pos(main, '95')]) // the positions the join just earned
+    return notFound()
+  })
+  const joins = () => cl.requests.filter((r) => r._ === 'joinChat').map((r) => r.chat_id)
+
+  const opened = await tg.openChat('https://t.me/joinme', false)
+  assert.equal((opened as { chat: { id: number } }).chat.id, -40)
+  assert.deepEqual(joins(), [-40])
+  assert.deepEqual(cl.requests.filter((r) => r._ === 'getChat').map((r) => r.chat_id), [-40]) // read back the join's positions
+  assert.ok(tg.chatList().chats.some((c) => c.id === -40))
+
+  await tg.openChat('https://t.me/member', false)
+  await tg.openChat('https://t.me/someone', false)
+  assert.deepEqual(joins(), [-40]) // membership and a private chat need no join
+
+  await assert.rejects(tg.openChat('https://t.me/req', false), { status: 409, message: /request to join was sent/ })
+  await assert.rejects(tg.openChat('https://t.me/no', false), { status: 403 })
+  assert.deepEqual(joins(), [-40, -43, -44])
+})
+
 test('logout: online it waits for the fresh client; offline it deletes the session after 15 s and restarts', async () => {
   const online = await signIn((req, cl) => {
     if (req._ !== 'logOut') return notFound()
@@ -444,4 +491,78 @@ test('logout: online it waits for the fresh client; offline it deletes the sessi
   assert.deepEqual(await out, { local: true })
   assert.ok(offline.closed && !fs.existsSync(path.join(dir, 'db')))
   assert.deepEqual([live().length, last() !== offline, last().options.apiId], [1, true, creds.apiId])
+})
+
+test('reset: after a logout the keys leave memory, so auth returns to the API-keys step', async () => {
+  await signIn((req, cl) => {
+    if (req._ !== 'logOut') return notFound()
+    setImmediate(() => { cl.update(auth('authorizationStateLoggingOut')); cl.update(auth('authorizationStateClosed')); cl.end() })
+    return { _: 'ok' }
+  })
+  assert.deepEqual(await tg.logout(), { local: false })
+  assert.equal(step(), 'starting') // logout restarts the client with the same in-memory keys
+  await tg.reset() // what auth.logout does next
+  assert.equal(tg.credentials(), null)
+  assert.deepEqual([live().length, step(), tg.authState().connection], [0, 'credentials', 'offline'])
+})
+
+// ---- Credentials gate: the keys that made the session are the only keys that open it ----
+
+test('credentials gate: mismatched keys are refused before TDLib starts, an unrecorded session is closed unread', async () => {
+  trust()
+  savedCreds = null // only a sign-in that gets in may hand main its keys to keep
+  const other = { apiId: 777, apiHash: 'e'.repeat(32) }
+
+  // 1. Keys that did not sign in this device: refused before a client is created, with the offer in the state.
+  const before = clients.length
+  await assert.rejects(tg.start(other), { status: 409, message: /don't match the session/ })
+  const refused = tg.authState()
+  assert.ok(refused.step === 'credentials' && refused.needsFresh && /don't match the session/.test(refused.error ?? ''))
+  assert.equal(clients.length, before) // TDLib was never asked to open the session
+
+  // 2. No fingerprint at all (a session from before this gate): TDLib resumes it, the gate closes it before onReady
+  //    can read a single chat, and the renderer is told a fresh sign-in is the way forward.
+  dropTrust()
+  await tg.start(creds)
+  const resumed = last()
+  resumed.update(auth('authorizationStateReady'))
+  await until(() => step() === 'credentials')
+  const blocked = tg.authState()
+  assert.ok(blocked.step === 'credentials' && blocked.needsFresh && /fresh sign-in/.test(blocked.error ?? ''))
+  assert.deepEqual([resumed.closed, tg.credentials(), live().length], [true, null, 0])
+  assert.ok(!resumed.requests.some((r) => r._ === 'getMe')) // nothing of the account was read
+  assert.equal(savedCreds, null) // a refused session keeps nothing for the next start
+
+  // 3. Fresh sign-in: the old session is deleted first, so Telegram checks this pair at the phone/code step, and
+  //    the pair that gets in is fingerprinted for every start after it — and saved with it.
+  fs.mkdirSync(path.join(dir, 'db'), { recursive: true })
+  fs.writeFileSync(path.join(dir, 'db', 'x'), 'x')
+  answer = base(notFound)
+  await tg.start(other, true)
+  const fresh = last()
+  assert.ok(!fs.existsSync(path.join(dir, 'db'))) // the session the gate would not open is gone
+  await tg.sendPhone('19995550123')
+  fresh.update(auth('authorizationStateReady'))
+  await until(() => step() === 'ready')
+  assert.equal(fs.readFileSync(fingerprintFile, 'utf8'), tg.fingerprint(other))
+  assert.deepEqual(savedCreds, other) // the ready gate hands main the keys that made this session
+})
+
+test('sendPhone: a Continue click while the same number is still in flight shares that one TDLib query', async () => {
+  trust() // these keys own the session on disk, so the start below opens it
+  let release!: () => void
+  const held = new Promise<void>((r) => { release = r })
+  answer = (req) => (req._ === 'setAuthenticationPhoneNumber' ? held : notFound())
+  await tg.start(creds)
+  const cl = last()
+  cl.update(auth('authorizationStateWaitPhoneNumber'))
+  const first = tg.sendPhone('911234567890')
+  const duplicate = tg.sendPhone('911234567890') // the auto-send raced by a click on the phone screen
+  const different = tg.sendPhone('919998887777') // "use a different number" is its own query
+  await tick()
+  const phones = cl.requests.filter((r) => r._ === 'setAuthenticationPhoneNumber').map((r) => r.phone_number)
+  assert.deepEqual(phones, ['911234567890', '919998887777']) // the duplicate never reached TDLib
+  release()
+  await Promise.all([first, duplicate, different])
+  assert.equal(step(), 'phone') // the number was accepted; the code step would follow from Telegram
 })

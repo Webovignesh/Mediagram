@@ -50,7 +50,7 @@ test('tdError: TDLib codes map to statuses with readable messages; closed client
   const cases: [number, string, number, string?][] = [
     [400, 'PHONE_CODE_INVALID', 400, 'That code is wrong. Check it and try again.'], [406, 'SOMETHING', 400],
     [401, 'Unauthorized', 403], [403, 'CHAT_WRITE_FORBIDDEN', 403, "You can't post in this chat."], [404, 'Not Found', 404],
-    [500, 'Request aborted', 500],
+    [500, 'Request aborted', 503, 'Telegram was interrupted before answering. Try again.'],
   ]
   for (const [code, message, status, text] of cases) {
     const e = tdError(new tdl.TDLibError(code, message)) as Error & { status: number }
@@ -134,7 +134,8 @@ const view = (c: Td.chat) => { const x = toChat(c, cache); return x && [x.kind, 
 test('toChat and rights: kind, Saved Messages, username, canPost, and upload media rights', () => {
   const sg = (id: number, is_channel = false) => ({ _: 'chatTypeSupergroup', supergroup_id: id, is_channel })
   assert.deepEqual(view(chatOf(100, { _: 'chatTypePrivate', user_id: 100 })), ['saved', 'Saved Messages', null, true, [true, true, true]])
-  assert.deepEqual(view(chatOf(200, { _: 'chatTypePrivate', user_id: 200 })), ['private', 'Chat 200', 'fixture_friend', false, [false, false, false]])
+  assert.deepEqual(view(chatOf(200, { _: 'chatTypePrivate', user_id: 200 })), ['private', 'Chat 200', 'fixture_friend', true, [true, false, true]])
+  assert.deepEqual(view(chatOf(201, { _: 'chatTypePrivate', user_id: 201 }, { permissions: perms(false, false, false) })), ['private', 'Chat 201', null, false, [false, false, false]])
   assert.deepEqual(view(chatOf(-10, { _: 'chatTypeBasicGroup', basic_group_id: 10 })), ['group', 'Chat -10', null, true, [true, false, true]]) // chat permissions
   assert.deepEqual(view(chatOf(-11, { _: 'chatTypeBasicGroup', basic_group_id: 11 })), ['group', 'Chat -11', null, true, [true, true, true]])
   assert.deepEqual(view(chatOf(-20, sg(20, true))), ['channel', 'Chat -20', 'fixture_news', true, [true, true, true]])

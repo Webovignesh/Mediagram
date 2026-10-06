@@ -63,7 +63,7 @@ test('getSettings: defaults, stored values win; apiHash, window, and startWithSy
   assert.deepEqual({ ...s, downloadRoot: undefined }, {
     downloadRoot: undefined, maxDownloads: 2, skipExisting: true, datePrefix: false, folderTemplate: '{chat}', defaultUploadChat: null,
     uploadAlbum: true, keepNames: true, maxUploads: 1, showArchived: false, autoRetry: true, retryAttempts: 3, stallSeconds: 10,
-    clearCompletedDays: 0, notifyComplete: true, notifyFailed: true, closeToTray: false, apiId: null,
+    clearCompletedDays: 0, notifyComplete: true, notifyFailed: true, closeToTray: false, apiId: null, prebufferVideo: true,
   })
   putSetting(db, 'apiId', 777)
   putSetting(db, 'apiHash', 'c0ffee'.repeat(5) + 'ab')
@@ -78,7 +78,7 @@ test('getSettings: defaults, stored values win; apiHash, window, and startWithSy
 })
 
 test('checkSettings: accepts and rejects each key by its rule, naming the key', () => {
-  const booleans = ['skipExisting', 'datePrefix', 'uploadAlbum', 'keepNames', 'showArchived', 'autoRetry', 'notifyComplete', 'notifyFailed', 'closeToTray', 'startWithSystem']
+  const booleans = ['skipExisting', 'datePrefix', 'uploadAlbum', 'keepNames', 'showArchived', 'autoRetry', 'notifyComplete', 'notifyFailed', 'closeToTray', 'startWithSystem', 'prebufferVideo']
   const good: Record<string, unknown[]> = {
     maxDownloads: [1, 5], maxUploads: [1, 3], retryAttempts: [1, 10], stallSeconds: [5, 10, 30, 60], clearCompletedDays: [0, 1, 7, 30],
     defaultUploadChat: [null, 42, -1009876543210], downloadRoot: ['X:\\Fixture'],

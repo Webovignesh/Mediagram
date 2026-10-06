@@ -36,12 +36,12 @@ test('resolvePaths: TELEFLOW_HOME wins over packaged and dev defaults; the layou
   }
   const p = resolvePaths({ env: { TELEFLOW_HOME: 'D:\\tf-home' }, packaged: true, appDir: repo })
   assert.deepEqual([p.db, p.tdlib, p.thumbs, p.tmp, p.logs, p.chromium],
-    ['teleflow.db', 'tdlib', 'thumbs', 'tmp', 'logs', 'chromium'].map((x) => `D:\\tf-home\\${x}`))
+    ['mediagram.db', 'tdlib', 'thumbs', 'tmp', 'logs', 'chromium'].map((x) => `D:\\tf-home\\${x}`))
 })
 
-test('resolvePaths: packaged uses %LOCALAPPDATA%\\TeleFlow, dev uses TeleFlow-dev', () => {
-  assert.equal(resolvePaths({ env, packaged: true, appDir: 'C:\\Users\\u\\AppData\\Local\\Programs\\TeleFlow' }).home, 'C:\\Users\\u\\AppData\\Local\\TeleFlow')
-  assert.equal(resolvePaths({ env, packaged: false, appDir: repo }).home, 'C:\\Users\\u\\AppData\\Local\\TeleFlow-dev')
+test('resolvePaths: packaged uses %LOCALAPPDATA%\\Mediagram, dev uses Mediagram-dev', () => {
+  assert.equal(resolvePaths({ env, packaged: true, appDir: 'C:\\Users\\u\\AppData\\Local\\Programs\\Mediagram' }).home, 'C:\\Users\\u\\AppData\\Local\\Mediagram')
+  assert.equal(resolvePaths({ env, packaged: false, appDir: repo }).home, 'C:\\Users\\u\\AppData\\Local\\Mediagram-dev')
 })
 
 test('resolvePaths and checkDownloadRoot: app data and downloads never land in this repo', () => {
@@ -96,6 +96,7 @@ const lists = {
 test('checkDownloadRoot: rejects relative, invalid, drive roots, app/system folders, the profile, known folders, and their ancestors', () => {
   const cases: [string, RegExp][] = [
     ['Media', /full folder path/], ['C:Media', /full folder path/], ['\\Media', /full folder path/], ['D:\\Me<dia', /full folder path/], ['D:\\a|b', /full folder path/],
+    ['\\\\server\\share', /full folder path/], ['\\\\localhost\\c$\\Media', /full folder path/], ['//server/share/Media', /full folder path/], // network shares
     ['C:\\', /subfolder/], ['D:\\', /subfolder/],
     ['C:\\Users\\u\\AppData\\Local\\TeleFlow', /system or app data/], // home
     ['D:\\Tools\\TeleFlow', /system or app data/], ['D:\\Tools\\TeleFlow\\Media', /system or app data/], ['D:\\Tools', /system or app data/], // appDir, inside, ancestor
@@ -151,6 +152,11 @@ test('libraryFile: inside the root, or a recorded download path after a root cha
   addHistory(db, 7, 1, path.join(elsewhere, 'b.mp4')) // downloaded before the root moved
   assert.equal(await libraryFile(db, root, path.join(elsewhere, 'B.mp4')), path.join(elsewhere, 'B.mp4'))
   await assert.rejects(libraryFile(db, root, path.join(elsewhere, 'c.mp4')), notFound)
+  // The recorded path itself must still be where it says: a junction that took its name is not the file.
+  addHistory(db, 7, 1, path.join(root, 'moved.mp4'))
+  fs.symlinkSync(path.join(elsewhere, 'b.mp4'), path.join(root, 'moved.mp4'), 'junction')
+  await assert.rejects(libraryFile(db, root, path.join(root, 'moved.mp4')), notFound)
+  await assert.rejects(libraryFile(db, root, '\\\\server\\share\\b.mp4'), notFound) // a share is never the library
 })
 
 test('libraryMissing: only the latest completed download of each message counts', async () => {
@@ -202,6 +208,13 @@ test('dirSize and storageReport: sizes by area and library type, injected Chromi
   assert.deepEqual(r.library, { video: 4, image: 0, audio: 0, document: 0, archive: 2, files: 2, total: 6 })
   assert.deepEqual(r.cache, { tdlib: 10, thumbs: 5, tmp: 3, chromium: 7, total: 25 })
   assert.ok(r.appData > 0)
+  // The reported size is the database + its write-ahead log only: -shm is fixed-size WAL bookkeeping, not data,
+  // so a 32 KB one appearing must not move the number the user sees.
+  const sized = ['', '-wal'].map((s) => { try { return fs.statSync(paths.db + s).size } catch { return 0 } }).reduce((a, b) => a + b, 0)
+  const seen = (await storageReport(root, paths, async () => 7)).appData
+  assert.equal(seen, sized)
+  fs.writeFileSync(paths.db + '-shm', Buffer.alloc(32768))
+  assert.equal((await storageReport(root, paths, async () => 7)).appData, seen)
 })
 
 test('storageReport: a download root on a missing drive reports the drive as 0 / 0; cache and app data still answer', async () => {

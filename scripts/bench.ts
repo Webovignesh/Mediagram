@@ -151,7 +151,7 @@ async function benchScan(runs: number, rtt: number, total: number, mediaRatio: n
   for (let r = 0; r < runs; r++) {
     const dbFile = path.join(home, `scan-${r}.db`)
     const db = openDb(dbFile)
-    tg.init({ dir: path.join(home, 'tdlib'), version: '0.0.0', db, emit: () => {}, showArchived: () => false, forgetCredentials: () => {} })
+    tg.init({ dir: path.join(home, 'tdlib'), version: '0.0.0', db, emit: () => {}, showArchived: () => false, forgetCredentials: () => {}, saveCredentials: () => {} })
     clients = []
     answer = async (req) => {
       if (req._ !== 'getChatHistory' && req._ !== 'searchChatMessages' && req._ !== 'getChatMessageCount') return auth(req)
@@ -167,6 +167,10 @@ async function benchScan(runs: number, rtt: number, total: number, mediaRatio: n
       return { _: 'foundChatMessages', total_count: matches.length, messages: page,
         next_from_message_id: page.length ? page[page.length - 1]!.id : 0 }
     }
+    // The bench "signs in" by flipping TDLib to ready: leave the same fingerprint a real sign-in would record, so
+    // the credentials gate lets the session open.
+    fs.mkdirSync(path.join(home, 'tdlib'), { recursive: true })
+    fs.writeFileSync(path.join(home, 'tdlib', 'session.fingerprint'), tg.fingerprint({ apiId: 1, apiHash: 'a'.repeat(32) }))
     await tg.start({ apiId: 1, apiHash: 'a'.repeat(32) })
     const cl = clients[clients.length - 1]!
     cl.update({ _: 'updateAuthorizationState', authorization_state: { _: 'authorizationStateReady' } })

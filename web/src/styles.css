@@ -40,6 +40,15 @@
   :focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
 }
 
+.emoji-glyph {
+  font-family: "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", "Twemoji Mozilla", sans-serif;
+  font-style: normal;
+  font-weight: normal;
+  display: inline-block;
+  line-height: 1;
+  color: initial;
+}
+
 @keyframes pulse-subtle {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.65; }
@@ -71,6 +80,77 @@
 
 .fly-to-queue-plane {
   animation: flyToQueue 0.65s cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
+}
+
+/* Login -> dashboard hand-off transitions (inspired by Telegram Desktop & Linear) */
+@keyframes loginExit {
+  0% { opacity: 1; transform: scale(1); filter: blur(0px); }
+  100% { opacity: 0; transform: scale(0.96); filter: blur(4px); }
+}
+
+.login-exit {
+  animation: loginExit 0.45s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes loginEnter {
+  0% { opacity: 0; transform: scale(0.96) translateY(8px); filter: blur(4px); }
+  100% { opacity: 1; transform: scale(1) translateY(0); filter: blur(0px); }
+}
+
+.login-enter {
+  animation: loginEnter 0.45s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes appEnter {
+  0% { opacity: 0; transform: translateY(10px) scale(0.99); filter: blur(2px); }
+  100% { opacity: 1; transform: translateY(0) scale(1); filter: blur(0px); }
+}
+
+.app-enter {
+  animation: appEnter 0.45s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes fadeEnter {
+  0% { opacity: 0; transform: scale(0.97); }
+  100% { opacity: 1; transform: scale(1); }
+}
+
+.fade-enter {
+  animation: fadeEnter 0.35s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes splashPulse {
+  0%, 100% { transform: scale(1); opacity: 0.92; }
+  50% { transform: scale(1.07); opacity: 1; filter: drop-shadow(0 0 30px rgba(59, 130, 246, 0.65)); }
+}
+
+.splash-icon {
+  animation: splashPulse 2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+@keyframes logoutPulse {
+  0%, 100% { transform: scale(1); opacity: 0.92; }
+  50% { transform: scale(1.07); opacity: 1; filter: drop-shadow(0 0 30px rgba(239, 68, 68, 0.65)); }
+}
+
+.logout-icon {
+  animation: logoutPulse 2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+/* Logout Button layout protection: guaranteed horizontal layout */
+.btn-logout {
+  display: inline-flex !important;
+  flex-direction: row !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 8px !important;
+  white-space: nowrap !important;
+}
+
+.btn-logout > svg {
+  display: inline-block !important;
+  vertical-align: middle !important;
+  flex-shrink: 0 !important;
 }
 
 /* Window drag region */
@@ -107,4 +187,32 @@
 @keyframes shrinkWidth {
   from { width: 100%; }
   to { width: 0%; }
+}
+
+/* Telegram Iconic Dark Chat Wallpaper with High-Visibility Vector Doodle Pattern */
+.telegram-chat-wallpaper {
+  background-color: #070c14;
+  background-image:
+    radial-gradient(ellipse 95% 85% at 50% 15%, rgba(20, 36, 58, 0.5) 0%, rgba(10, 18, 30, 0.8) 60%, rgba(6, 10, 18, 0.96) 100%),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='400' viewBox='0 0 400 400' fill='none' stroke='%23a4c4e8' stroke-width='1.25' stroke-linecap='round' stroke-linejoin='round' opacity='0.22'%3E%3Cpath d='M35 150 C35 140 45 130 65 130 C85 130 95 145 95 155 C95 165 75 170 55 170 C40 170 35 160 35 150 Z M95 150 C105 142 115 140 115 135 M95 152 C105 155 115 160 115 165 M60 130 C60 120 55 115 50 115 M60 125 C65 118 70 118 75 125' /%3E%3Cpath d='M305 55 C305 35 320 20 320 20 C320 20 335 35 335 55 L335 75 L305 75 Z M305 70 L295 80 L305 80 M335 70 L345 80 L335 80 M320 42 A4 4 0 1 0 320 50 A4 4 0 1 0 320 42 M315 80 L320 90 L325 80' /%3E%3Cpath d='M65 52 A14 14 0 1 0 65 24 A14 14 0 1 0 65 52 Z M45 40 C53 32 77 32 85 40 C77 48 53 48 45 40' /%3E%3Cpath d='M140 152 C130 152 125 157 125 164 C125 172 135 177 155 177 C175 177 185 172 185 164 C185 157 180 152 170 152 Z M150 152 V144 H158 M140 164 A1.8 1.8 0 1 0 140 166 M152 164 A1.8 1.8 0 1 0 152 166 M164 164 A1.8 1.8 0 1 0 164 166' /%3E%3Cpath d='M275 178 Q277 158 273 143 M273 143 Q260 135 253 143 M273 143 Q267 128 263 125 M273 143 Q283 128 287 125 M273 143 Q290 135 295 145' /%3E%3Cpath d='M160 48 V28 H166 V32 H172 V28 H178 V32 H184 V28 H190 V48 Z M175 40 V48 M148 53 C148 46 158 46 163 50 C168 44 183 44 188 50 C193 46 203 48 203 53 Z' /%3E%3Cpath d='M245 42 A12 12 0 1 0 245 18 A12 12 0 1 0 245 42 Z M245 30 A5 5 0 1 0 245 20 A5 5 0 1 0 245 30 Z M245 26 A1.5 1.5 0 1 0 245 23 M245 30 A2 2 0 1 0 245 26' /%3E%3Cpath d='M45 255 C35 255 30 259 30 262 C30 265 40 268 55 268 C70 268 80 265 80 262 C80 259 75 255 65 255 Z M47 255 C47 248 63 248 63 255' /%3E%3Cpath d='M35 345 L78 360 L44 372 L36 392 L32 368 Z M44 372 L78 360' /%3E%3Cpath d='M140 250 C140 240 150 233 165 233 C180 233 190 240 190 250 C190 260 180 268 165 268 C160 268 155 270 150 273 L151 266 C144 263 140 257 140 250 Z' /%3E%3Cpath d='M335 155 C329 155 323 159 323 165 L325 180 C326 183 329 185 332 185 L337 179 L345 179 L350 185 C353 185 356 183 357 180 L359 165 C359 159 353 155 347 155 Z M341 164 H349 M345 160 V168' /%3E%3Cpath d='M235 255 H261 V273 C261 281 255 285 248 285 C241 285 235 281 235 273 Z M261 259 H268 C272 259 274 262 274 266 C274 270 272 273 268 273 H261 M231 289 H265' /%3E%3Cpath d='M140 345 V367 C138 365 134 365 131 367 C127 369 125 373 127 377 C129 381 134 383 138 381 C141 379 143 375 143 371 V353 H165 V367 C163 365 159 365 156 367 C152 369 150 373 152 377 C154 381 159 383 163 381 C166 379 168 375 168 371 V345 Z' /%3E%3Cpath d='M315 260 C310 250 296 254 296 264 C296 275 315 288 315 288 C315 288 334 275 334 264 C334 254 320 250 315 260 Z' /%3E%3Cpath d='M245 355 A15 15 0 1 0 245 325 A15 15 0 1 0 245 355 Z M245 332 V340 L251 343' /%3E%3Cpath d='M335 350 A16 16 0 1 0 335 318 A16 16 0 1 0 335 350 Z M329 330 A1.5 1.5 0 1 0 329 333 A1.5 1.5 0 1 0 329 330 Z M341 330 A1.5 1.5 0 1 0 341 333 A1.5 1.5 0 1 0 341 330 Z M328 338 C331 344 339 344 342 338' /%3E%3Cpath d='M45 95 Q50 95 50 90 Q50 95 55 95 Q50 95 50 100 Q50 95 45 95 Z' /%3E%3Cpath d='M365 105 Q370 105 370 100 Q370 105 375 105 Q370 105 370 110 Q370 105 365 105 Z' /%3E%3Cpath d='M205 185 Q210 185 210 180 Q210 185 215 185 Q210 185 210 190 Q210 185 205 185 Z' /%3E%3C/svg%3E");
+  background-repeat: no-repeat, repeat;
+  background-size: 100% 100%, 400px 400px;
+  background-attachment: local, local;
+}
+
+@keyframes emojiBounceIn {
+  0% { transform: scale(0.65) translateY(10px); opacity: 0; }
+  60% { transform: scale(1.15) translateY(-2px); opacity: 1; }
+  100% { transform: scale(1) translateY(0); opacity: 1; }
+}
+
+@keyframes emojiFloat {
+  0%, 100% { transform: translateY(0px) scale(1); }
+  50% { transform: translateY(-5px) scale(1.02); }
+}
+
+.animate-emoji-standalone {
+  animation: emojiBounceIn 0.35s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards, emojiFloat 3.6s ease-in-out infinite 0.35s;
+  will-change: transform;
+  display: inline-block;
 }

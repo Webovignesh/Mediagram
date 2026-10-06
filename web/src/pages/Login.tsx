@@ -1,8 +1,8 @@
-import { useState, type FormEvent, useEffect } from 'react'
-import { Send, ArrowLeft, ChevronDown, Key } from 'lucide-react'
+import { useState, type FormEvent, type ReactNode, useEffect, useRef } from 'react'
+import { Send, ArrowLeft, ChevronDown, Check, Loader2, AlertTriangle, ExternalLink } from 'lucide-react'
 import type { AuthState } from '../../../core/shapes.ts'
 import { call, useCall } from '../api.ts'
-import { Input, Button, toast } from '../ui.tsx'
+import { Input, Button, toast, MediagramLogo } from '../ui.tsx'
 
 const COUNTRY_CODES = [
   { code: '+91', country: 'India' },
@@ -35,12 +35,31 @@ const COUNTRY_CODES = [
   { code: '+380', country: 'Ukraine' },
 ]
 
+/** One row of the processing screen: ticked when done, spinning while it runs, a quiet dot until its turn. */
+function Stage({ state, children }: { state: 'done' | 'active' | 'pending', children: ReactNode }) {
+  return (
+    <li className="flex items-center gap-3">
+      <span className={`grid size-5 shrink-0 place-items-center rounded-full ${
+        state === 'done' ? 'bg-success/15 text-success' : state === 'active' ? 'bg-primary/15 text-primary' : 'bg-tile text-muted'}`}>
+        {state === 'done' ? <Check size={12} strokeWidth={3} />
+          : state === 'active' ? <Loader2 size={12} className="animate-spin" />
+          : <span className="size-1.5 rounded-full bg-current" />}
+      </span>
+      <span className={`text-[13px] ${state === 'pending' ? 'text-muted' : 'text-text'}`}>{children}</span>
+    </li>
+  )
+}
+
 // Phase 4.6: Full login flow with all auth steps
 export default function Login() {
   const { data: auth, reload } = useCall<AuthState>('auth.get', undefined, ['auth'])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [overrideStep, setOverrideStep] = useState<string | null>(null)
+  /** The third screen: the keys are with TDLib/Telegram — engine boot, connection, and the code request on its way. */
+  const [processing, setProcessing] = useState(false)
+  /** The number is in flight to Telegram: stage three of the processing screen, and what holds Continue. */
+  const [sending, setSending] = useState(false)
 
   // Credentials step
   const [apiId, setApiId] = useState('')
@@ -49,6 +68,10 @@ export default function Login() {
   // Phone step
   const [countryCode, setCountryCode] = useState('+91')
   const [phone, setPhone] = useState('')
+  /** The number dialed on the phone screen, kept while the API step asks for the keys that can send its code. */
+  const [dialled, setDialled] = useState('')
+  const [showApi, setShowApi] = useState(false)
+  const sent = useRef(false)
 
   // Code step
   const [code, setCode] = useState('')
@@ -56,21 +79,97 @@ export default function Login() {
   // Password step
   const [password, setPassword] = useState('')
 
+  // Telegram cannot text a code before it knows this app's API ID and hash, so with nothing stored the screen
+  // opens on the phone number and the keys are asked for only when Continue finds no client to send it with.
+  const raw = auth?.step ?? 'credentials'
+  const authError = (auth as { error?: string } | undefined)?.error
+  const current = overrideStep || (raw === 'credentials'
+    ? (showApi || authError ? 'credentials' : 'phone')
+    : raw)
+  /** The socket TDLib opened (or is syncing over): the send stage can be shown truthfully. */
+  const connected = auth?.connection === 'ready' || auth?.connection === 'updating'
+
   useEffect(() => {
     setError('')
-  }, [auth?.step, overrideStep])
+    // What was typed belongs to its step: the keys, the code, and the password leave React state as soon as the
+    // step is left (ARCHITECTURE > Security > Credentials).
+    if (current !== 'credentials') { setApiId(''); setApiHash('') }
+    if (current !== 'code') setCode('')
+    if (current !== 'password') setPassword('')
+    if (raw !== 'credentials') setShowApi(false)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- resets on the step the user is looking at
+  }, [current, raw])
 
-  async function submitCredentials(e: FormEvent) {
-    e.preventDefault()
+  // The processing screen opens while TDLib starts and closes when Telegram answers with a real step: the code
+  // screen, or the phone form after a logout or Settings change restarted the engine (nothing typed before it).
+  useEffect(() => {
+    if (raw === 'starting') { setProcessing(true); return }
+    if (processing && (raw === 'code' || raw === 'password' || raw === 'ready' || (raw === 'phone' && !dialled && !sending)))
+      setProcessing(false)
+  }, [raw, processing, dialled, sending])
+
+  // The keys only start TDLib: once it asks for a number, send the one typed before them and land on the code.
+  // Sending waits for the connection so the processing screen can show it truthfully; the fallback timer covers a
+  // socket that never reports ready (TDLib queues the request internally either way).
+  useEffect(() => {
+    if (!dialled || sent.current || auth?.step !== 'phone') return
+    const send = () => {
+      if (sent.current) return
+      sent.current = true
+      setBusy(true)
+      setSending(true)
+      void call('auth.phone', { phone: dialled })
+        .then(() => { setOverrideStep(null); reload() })
+        .catch((err) => { setError((err as Error).message); reload() })
+        .finally(() => { setBusy(false); setSending(false) })
+    }
+    if (connected) { send(); return }
+    const timer = setTimeout(send, 4000)
+    return () => clearTimeout(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only right after the keys reached TDLib
+  }, [auth?.step, auth?.connection, dialled])
+
+  /** Both Continue and the fresh-sign-in offer land here; only the second one may delete the saved session. */
+  async function sendCredentials(fresh: boolean) {
     if (!apiId.trim() || !apiHash.trim()) {
-      toast('Telegram API ID and API Hash are required to use Mediagram', 'danger')
-      setError('Telegram API ID and API Hash are required to use Mediagram. Please provide valid Telegram API credentials.')
+    toast('Enter your API ID and API hash to continue', 'danger')
+    setError('Enter your API ID and API hash — Mediagram needs them to sign you in.')
       return
     }
     setBusy(true)
     setError('')
+    setProcessing(true) // the processing screen takes over; its Back returns here when Telegram refuses the keys
     try {
-      await call('auth.credentials', { apiId: Number(apiId), apiHash: apiHash.trim() })
+      await call('auth.credentials', { apiId: Number(apiId), apiHash: apiHash.trim(), ...(fresh && { fresh: true }) })
+      setOverrideStep(null)
+      sent.current = false // corrected keys restart TDLib: the phone screen must auto-send the number again
+      reload()
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  function submitCredentials(e: FormEvent) {
+    e.preventDefault()
+    void sendCredentials(false)
+  }
+
+  async function submitPhone(e: FormEvent) {
+    e.preventDefault()
+    const trimmed = phone.trim().replace(/[\s()-]/g, '')
+    const fullPhone = trimmed.startsWith('+') ? trimmed : `${countryCode}${trimmed.replace(/^0+/, '')}`
+    setBusy(true)
+    setError('')
+    try {
+      if (raw === 'credentials') {
+        // No TDLib client to send it with yet: ask for the keys first, then the effect above sends this number.
+        setDialled(fullPhone)
+        setShowApi(true)
+        return
+      }
+      await call('auth.phone', { phone: fullPhone })
       setOverrideStep(null)
       reload()
     } catch (err) {
@@ -80,21 +179,11 @@ export default function Login() {
     }
   }
 
-  async function submitPhone(e: FormEvent) {
-    e.preventDefault()
-    setBusy(true)
+  function backToPhone() {
+    setShowApi(false)
+    setApiId('')
+    setApiHash('')
     setError('')
-    try {
-      const trimmed = phone.trim().replace(/[\s()-]/g, '')
-      const fullPhone = trimmed.startsWith('+') ? trimmed : `${countryCode}${trimmed.replace(/^0+/, '')}`
-      await call('auth.phone', { phone: fullPhone })
-      setOverrideStep(null)
-      reload()
-    } catch (err) {
-      setError((err as Error).message)
-    } finally {
-      setBusy(false)
-    }
   }
 
   async function submitCode(e: FormEvent) {
@@ -146,29 +235,114 @@ export default function Login() {
     setOverrideStep('phone')
   }
 
+  /** Back from the processing screen: to the keys when that is where the trouble is, otherwise to the number
+   *  itself — and the phone form takes over sending, so nothing fires behind the user's back. */
+  function leaveProcessing() {
+    setProcessing(false)
+    setError('')
+    if (raw === 'credentials') setShowApi(true)
+    else sent.current = true
+  }
+
   if (!auth) return null
 
-  const step = overrideStep || auth.step
+  // The processing screen covers every moment TDLib/Telegram hold the keys — and a sign-in that succeeded on an
+  // auto-start rests on the success note (App keeps this page mounted through the hand-off to the dashboard).
+  const step = raw === 'ready' ? 'signed-in' : (processing || raw === 'starting') ? 'processing' : current
   const a = auth as any
+  const activeError = error || authError
+  const engineDone = raw !== 'starting'
+  const linkDone = engineDone && (connected || sending || raw !== 'phone')
+  const sendDone = raw === 'code' || raw === 'password' || raw === 'ready'
 
   return (
     <div className="flex h-full flex-col">
-      <div className="drag h-10 shrink-0" />
+      {/* The 40px drag strip keeps clear of the native window buttons drawn by titleBarOverlay */}
+      <div
+        className="drag h-10 shrink-0"
+        style={{ paddingRight: 'calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw))' }}
+      />
       <main className="grid flex-1 place-items-center overflow-auto p-6">
         <div className="w-[420px] max-w-full rounded-[14px] border border-border bg-panel p-6">
           <div className="mb-6 flex items-center gap-2">
-            <span className="grid size-9 place-items-center rounded-xl bg-primary"><Send size={18} aria-hidden /></span>
+            <MediagramLogo size={36} className="rounded-xl shadow-md shrink-0" />
             <span className="text-lg font-bold">Mediagram</span>
           </div>
 
+          {step === 'processing' && (
+            <div>
+              <h1 className="text-xl font-semibold">
+                {activeError ? 'Sign-in could not continue' : 'Signing in to Telegram'}
+              </h1>
+              <p className="mt-1 text-text-2">
+                {activeError
+                  ? 'Telegram answered with a problem — go back, correct it, and try again.'
+                  : dialled
+                    ? <>Signing in as <span className="font-medium text-text">{dialled}</span>.</>
+                    : 'Getting the connection ready.'}
+              </p>
+
+              {activeError ? (
+                <>
+                  <div role="alert" className="mt-5 flex items-start gap-3 rounded-[10px] border border-danger/40 bg-danger/10 p-3.5">
+                    <AlertTriangle size={16} className="mt-0.5 shrink-0 text-danger" aria-hidden />
+                    <p className="text-[13px] leading-relaxed text-danger">{activeError}</p>
+                  </div>
+                  <div className="mt-5">
+                    <Button variant="secondary" onClick={leaveProcessing}>
+                      <ArrowLeft size={16} className="inline mr-1" /> Back
+                    </Button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <ul className="mt-5 space-y-3">
+                    <Stage state={engineDone ? 'done' : 'active'}>Starting the Telegram engine</Stage>
+                    <Stage state={!engineDone ? 'pending' : linkDone ? 'done' : 'active'}>Connecting to Telegram</Stage>
+                    <Stage state={!linkDone ? 'pending' : sendDone ? 'done' : 'active'}>Checking your API ID and hash — sending your code</Stage>
+                  </ul>
+                  {engineDone && !sendDone && (
+                    <p className="mt-4 text-[12px] leading-relaxed text-text-2">
+                      Validating your connection and API data with Telegram — on a slow connection this can take up to a minute. Keep the app open.
+                    </p>
+                  )}
+                  {raw !== 'starting' && (
+                    <div className="mt-5">
+                      <Button variant="secondary" onClick={leaveProcessing}>
+                        <ArrowLeft size={16} className="inline mr-1" /> Back
+                      </Button>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          )}
+
+          {step === 'signed-in' && (
+            <div className="py-6 text-center">
+              <span className="mx-auto grid size-12 place-items-center rounded-full bg-success/15 text-success">
+                <Check size={22} strokeWidth={3} aria-hidden />
+              </span>
+              <h1 className="mt-4 text-xl font-semibold">Signed in</h1>
+              <p className="mt-1 text-text-2">Opening Mediagram…</p>
+            </div>
+          )}
+
           {step === 'credentials' && (
             <form onSubmit={submitCredentials}>
-              <h1 className="text-xl font-semibold">Connect to Telegram</h1>
-              <p className="mt-1 text-text-2">Enter the API ID and API hash of your Telegram app.</p>
+              <h1 className="text-xl font-semibold">Connect your Telegram app</h1>
+              <p className="mt-1 text-text-2">
+                Telegram needs your app's API ID and hash before it can send you a code. You only do this once.
+              </p>
+              {dialled && (
+                <p className="mt-1 text-text-2">
+                  Then we'll continue signing in as <span className="font-medium text-text">{dialled}</span>.
+                </p>
+              )}
               <div className="mt-5">
                 <Input 
                   label="API ID"
-                  placeholder="e.g. 2040 or 94575"
+                  placeholder="e.g. 2040"
                   value={apiId} 
                   onChange={setApiId} 
                   inputMode="numeric" 
@@ -179,7 +353,8 @@ export default function Login() {
               <div className="mt-3">
                 <Input 
                   label="API hash"
-                  placeholder="e.g. a3406de8d171bb422bb6ddf3bbd800e2"
+                  type="password"
+                  placeholder="32-character hash from my.telegram.org"
                   value={apiHash} 
                   onChange={setApiHash} 
                   autoComplete="off" 
@@ -187,27 +362,52 @@ export default function Login() {
                   required 
                 />
               </div>
-              <button
-                type="button"
-                onClick={() => {
-                  setApiId('94575')
-                  setApiHash('a3406de8d171bb422bb6ddf3bbd800e2')
-                  toast('Filled sample Telegram API key')
-                }}
-                className="mt-2.5 flex items-center justify-center gap-1.5 w-full text-center text-xs text-primary hover:underline py-1"
-              >
-                <Key size={12} />
-                <span>Fill sample developer key</span>
-              </button>
               {(error || a.error) && <p role="alert" className="mt-3 text-danger">{error || a.error}</p>}
-              <div className="mt-5">
+              {/* The one thing a first-time user cannot guess: where these two values come from. */}
+              <div className="mt-4 rounded-xl border border-border bg-tile/70 p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="text-[13px] font-semibold text-text">Where do I get these?</div>
+                  <a href="https://my.telegram.org" target="_blank" rel="noreferrer" className="flex items-center gap-1 text-[12px] text-primary hover:underline">
+                    Open my.telegram.org <ExternalLink size={12} />
+                  </a>
+                </div>
+                <ol className="mt-2 list-decimal space-y-1.5 pl-5 text-[12px] leading-relaxed text-text-2">
+                  <li>
+                    Go to{' '}
+                    <a href="https://my.telegram.org" target="_blank" rel="noreferrer" className="text-primary hover:underline">my.telegram.org</a>{' '}
+                    and log in with your phone number — Telegram sends you a code inside the app.
+                  </li>
+                  <li>Click <span className="font-medium text-text">API development tools</span>.</li>
+                  <li>Fill in an app title and short name (any text you like, e.g. “Mediagram”) and create the app.</li>
+                  <li>Copy <span className="font-medium text-text">App api_id</span> into <span className="font-medium text-text">API ID</span> above.</li>
+                  <li>Copy <span className="font-medium text-text">App api_hash</span> into <span className="font-medium text-text">API hash</span> above.</li>
+                </ol>
+                <p className="mt-2.5 text-[11px] text-muted">
+                  These values stay on this device (saved encrypted with your Windows account) and are only sent to Telegram.
+                </p>
+              </div>
+              <div className="mt-5 flex gap-2">
+                {!a.error && (
+                  <Button variant="secondary" onClick={backToPhone} disabled={busy}>
+                    <ArrowLeft size={16} className="inline mr-1" /> Back
+                  </Button>
+                )}
                 <Button type="submit" busy={busy} disabled={busy}>
                   {busy ? 'Connecting…' : 'Continue'}
                 </Button>
               </div>
-              <a href="https://my.telegram.org" target="_blank" rel="noreferrer" className="mt-4 block text-center text-text-2 underline hover:text-text">
-                Get them at my.telegram.org
-              </a>
+              {/* The keys on record for the saved session do not match what was typed: wiping the local session and
+                  signing in again is the only way Telegram gets to check this pair for real (the OTP step). */}
+              {a.needsFresh && (
+                <Button
+                  variant="secondary"
+                  className="mt-2 w-full"
+                  disabled={busy || !apiId.trim() || !apiHash.trim()}
+                  onClick={() => void sendCredentials(true)}
+                >
+                  Start a fresh sign-in (checks these keys with Telegram)
+                </Button>
+              )}
             </form>
           )}
 
@@ -247,7 +447,7 @@ export default function Login() {
               {(error || a.error) && <p role="alert" className="mt-3 text-danger">{error || a.error}</p>}
               <div className="mt-5">
                 <Button type="submit" busy={busy} disabled={busy || !phone.trim()}>
-                  {busy ? 'Sending…' : 'Send Code'}
+                  {busy ? 'Sending…' : 'Continue'}
                 </Button>
               </div>
             </form>
@@ -310,10 +510,8 @@ export default function Login() {
             </form>
           )}
 
-          {(step === 'starting' || step === 'logging-out') && (
-            <div className="py-8 text-center text-text-2">
-              {step === 'starting' ? 'Starting…' : 'Logging out…'}
-            </div>
+          {step === 'logging-out' && (
+            <div className="py-8 text-center text-text-2">Logging out…</div>
           )}
         </div>
       </main>

@@ -11,16 +11,37 @@ export const within = (parent: string, child: string) => {
   return !path.isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${path.sep}`)
 }
 
-/** Where TeleFlow keeps its data. Never inside the repo or the install folder (ARCHITECTURE > Runtime data). */
+/** Where Mediagram keeps its data. Never inside the repo or the install folder (ARCHITECTURE > Runtime data). */
 export function resolvePaths(o: { env: Record<string, string | undefined>, packaged: boolean, appDir: string }) {
   const local = o.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local')
-  const home = path.resolve(o.env.TELEFLOW_HOME || path.join(local, o.packaged ? 'TeleFlow' : 'TeleFlow-dev'))
+  const legacyHome = path.join(local, o.packaged ? 'TeleFlow' : 'TeleFlow-dev')
+  const newHome = path.join(local, o.packaged ? 'Mediagram' : 'Mediagram-dev')
+
+  // Seamless migration: If old TeleFlow data folder exists on user's machine and Mediagram does not, migrate it
+  if (!o.env.MEDIAGRAM_HOME && !o.env.TELEFLOW_HOME) {
+    try {
+      if (fs.existsSync(legacyHome) && !fs.existsSync(newHome)) {
+        fs.renameSync(legacyHome, newHome)
+      }
+    } catch {
+      // Ignore if rename fails (e.g. process lock)
+    }
+  }
+
+  const chosenDefault = fs.existsSync(newHome) ? newHome : (fs.existsSync(legacyHome) ? legacyHome : newHome)
+  const home = path.resolve(o.env.MEDIAGRAM_HOME || o.env.TELEFLOW_HOME || chosenDefault)
   const appDir = path.resolve(o.appDir)
   if (within(appDir, home)) {
-    throw new Error(`TeleFlow can't keep its data inside its own folder (${home}). Set TELEFLOW_HOME to a folder outside ${appDir}.`)
+    throw new Error(`Mediagram can't keep its data inside its own folder (${home}). Set MEDIAGRAM_HOME to a folder outside ${appDir}.`)
   }
   const at = (...p: string[]) => path.join(home, ...p)
-  return { home, appDir, db: at('teleflow.db'), tdlib: at('tdlib'), thumbs: at('thumbs'), tmp: at('tmp'), logs: at('logs'), chromium: at('chromium') }
+  const dbFile = at('mediagram.db')
+  const legacyDbFile = at('teleflow.db')
+  if (fs.existsSync(legacyDbFile) && !fs.existsSync(dbFile)) {
+    try { fs.renameSync(legacyDbFile, dbFile) } catch {}
+  }
+  const db = fs.existsSync(dbFile) ? dbFile : (fs.existsSync(legacyDbFile) ? legacyDbFile : dbFile)
+  return { home, appDir, db, tdlib: at('tdlib'), thumbs: at('thumbs'), tmp: at('tmp'), logs: at('logs'), chromium: at('chromium') }
 }
 export type Paths = ReturnType<typeof resolvePaths>
 
@@ -39,6 +60,11 @@ export function openLog(dir: string) {
   if ((fs.statSync(logFile, { throwIfNoEntry: false })?.size ?? 0) > 5 * 2 ** 20) fs.renameSync(logFile, path.join(dir, 'main.old.log'))
 }
 
+/** True for \\server\share and //server/share: a network path. A share must never hold the library — Clear All Data
+ *  deletes everything under the root, and `\\localhost\c$` would sidestep the protected-folder rules entirely.
+ *  The \\?\ and \\.\ device prefixes are local paths, not shares. */
+export const isUnc = (p: string) => /^[\\/]{2}(?![?.][\\/])/.test(p)
+
 /** Callers never pass secrets; a 32-hex value (the API hash format) is masked as a backstop. Never throws. */
 export function log(level: 'info' | 'warn' | 'error', message: string) {
   const line = `${new Date().toISOString()} ${level} ${message.replace(/\b[0-9a-f]{32}\b/gi, '[redacted]')}\n`
@@ -49,18 +75,18 @@ export function log(level: 'info' | 'warn' | 'error', message: string) {
 // ---- Download root ----
 
 export type RootLists = { sealed: string[], guarded: string[] }
-const pickSubfolder = 'Pick or create a subfolder, for example Downloads\\TeleFlow'
+const pickSubfolder = 'Pick or create a subfolder, for example Downloads\\Mediagram'
 
 /** Clear All Data may delete everything under the root, so it must only ever hold the user's media. Returns the
  *  normalized path or throws a 400 with the reason (ARCHITECTURE > Runtime data). Validates only. */
 export function checkDownloadRoot(p: string, lists: RootLists) {
-  if (!path.isAbsolute(p) || path.parse(p).root.length < 3 || /[<>:"|?*\x00-\x1f]/.test(p.replace(/^[a-z]:/i, ''))) {
-    throw fail(400, 'Pick a full folder path, for example D:\\Media')
+  if (!path.isAbsolute(p) || path.parse(p).root.length < 3 || /[<>:"|?*\x00-\x1f]/.test(p.replace(/^[a-z]:/i, '')) || isUnc(p)) {
+    throw fail(400, 'Pick a full folder path on this computer, for example D:\\Media')
   }
   const root = path.resolve(p)
   if (path.parse(root).root === root || lists.guarded.some((g) => within(root, g))) throw fail(400, pickSubfolder)
   if (lists.sealed.some((s) => within(s, root) || within(root, s))) {
-    throw fail(400, "TeleFlow can't use a system or app data folder. Pick a folder for your media, for example Downloads\\TeleFlow")
+    throw fail(400, "Mediagram can't use a system or app data folder. Pick a folder for your media, for example Downloads\\Mediagram")
   }
   return root
 }
@@ -249,14 +275,20 @@ export async function libraryMissing(db: DB, entries: LibraryEntry[], thumbs: st
   return rows.filter((r) => !present.has(r.path as string)).map((r) => historyItem(r, thumbs))
 }
 
-/** The `library.*` path rule: an existing file inside the root after realpath, or a recorded download path
- *  (downloads made before a root change). Anything else is a 404. Returns the absolute path. */
+/** The `library.*` and `teleflow://file` path rule: an existing file inside the root after realpath, or a recorded
+ *  download path (downloads made before a root change) whose own name still resolves to itself — a junction that
+ *  took the name must not stand in for it. UNC paths and anything else are a 404. Returns the path as given. */
 export async function libraryFile(db: DB, root: string, p: string) {
   const file = path.resolve(root, p)
+  if (isUnc(file)) throw fail(404, 'File not found')
   const real = await fs.promises.realpath(file).catch(() => null)
   if (real && (await fs.promises.stat(real)).isFile()) {
     const realRoot = await fs.promises.realpath(root).catch(() => null)
-    if ((realRoot && within(realRoot, real)) || isRecordedDownload(db, file)) return file
+    if (realRoot && within(realRoot, real)) return file
+    // Compare after realpath on purpose: it expands 8.3 names and casing, so the folder's real path plus the name
+    // has to be the file itself (ARCHITECTURE > Runtime data).
+    const realDir = await fs.promises.realpath(path.dirname(file)).catch(() => null)
+    if (isRecordedDownload(db, file) && realDir && path.join(realDir, path.basename(file)).toLowerCase() === real.toLowerCase()) return file
   }
   throw fail(404, 'File not found')
 }
@@ -290,7 +322,8 @@ export type StorageReport = {
   appData: number,
 }
 
-const appDataSize = async (paths: Paths) => (await statAll(['', '-wal', '-shm'].map((s) => paths.db + s))).reduce((sum, [, st]) => sum + st.size, 0)
+// The database and its write-ahead log (both data); -shm is fixed-size WAL bookkeeping, not user data.
+const appDataSize = async (paths: Paths) => (await statAll(['', '-wal'].map((s) => paths.db + s))).reduce((sum, [, st]) => sum + st.size, 0)
 
 export async function storageReport(root: string, paths: Paths, cacheSize: () => Promise<number>): Promise<StorageReport> {
   const drive = path.parse(root).root
@@ -322,12 +355,17 @@ export async function moveFile(src: string, dest: string, part: string) {
     if ((e as NodeJS.ErrnoException).code !== 'EXDEV') throw e
     await fs.promises.rm(part, { force: true }) // a stale part from an interrupted run
     try {
-      await fs.promises.copyFile(src, part)
-      await markOfTheWeb(part)
-      await fs.promises.rename(part, dest)
+      // Never a file that appeared between the rm and this copy: if something else owns the part name, the copy
+      // fails instead of overwriting its bytes (and only this job's part file is ever removed on failure).
+      await fs.promises.copyFile(src, part, fs.constants.COPYFILE_EXCL)
     } catch (copyError) {
-      await fs.promises.rm(part, { force: true })
+      if ((copyError as NodeJS.ErrnoException).code !== 'EEXIST') await fs.promises.rm(part, { force: true })
       throw copyError
+    }
+    await markOfTheWeb(part)
+    try { await fs.promises.rename(part, dest) } catch (renameError) {
+      await fs.promises.rm(part, { force: true })
+      throw renameError
     }
   }
 }

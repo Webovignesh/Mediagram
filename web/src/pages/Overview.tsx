@@ -230,7 +230,7 @@ export default function Overview() {
       <div className="flex items-center justify-between pr-40">
         <div>
           <h1 className="text-[26px] font-bold text-white tracking-wide">Welcome to Mediagram</h1>
-          <p className="mt-1 text-[13px] text-text-2">Manage your Telegram video downloads and uploads in one powerful workspace.</p>
+          <p className="mt-1 text-[13px] text-text-2">Your Telegram videos, downloads, and uploads — all in one place.</p>
         </div>
       </div>
 
