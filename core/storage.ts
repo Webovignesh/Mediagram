@@ -159,7 +159,7 @@ export async function scanLibrary(root: string): Promise<LibraryEntry[]> {
 }
 
 // The cached scan is dropped when the root changes, when something is cleared, and when the watcher below sees a file
-// change outside TeleFlow, so the Library no longer waits up to 60 s for a copy or an external move to show up.
+// change outside Mediagram, so the Library no longer waits up to 60 s for a copy or an external move to show up.
 let cache: { key: string, at: number, entries: LibraryEntry[] } | null = null
 let scanning: { key: string, promise: Promise<LibraryEntry[]> } | null = null
 let watching: string | null = null

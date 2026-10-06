@@ -253,7 +253,7 @@ export const latestDownloads = (db: DB) => db.prepare(`
   SELECT * FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY chat_id, message_id ORDER BY id DESC) AS n
     FROM history WHERE kind = 'download' AND status = 'completed' AND path IS NOT NULL) WHERE n = 1`).all() as Row[]
 
-/** Chat data for files TeleFlow downloaded, keyed by lowercased path; the latest row wins. */
+/** Chat data for files Mediagram downloaded, keyed by lowercased path; the latest row wins. */
 export function downloadsByPath(db: DB, paths: string[]) {
   const rows = db.prepare(`
     SELECT lower(path) AS key, id, chat_id, chat_title, message_id FROM history

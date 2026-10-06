@@ -40,11 +40,23 @@ function emit(e: AppEvent) {
   if (e.type === 'auth') engine?.onAuth(e.auth)
   if (e.type === 'stats') trayTooltip(e.stats)
   if (e.type !== 'invalidate') return send(e)
+  let fast = false
   for (const topic of e.topics) {
-    if (topic === 'chats') chatsTimer ??= setTimeout(() => { chatsTimer = undefined; send({ type: 'invalidate', topics: ['chats'] }) }, 2000)
-    else pending.add(topic)
+    if (topic === 'chats') {
+      chatsTimer ??= setTimeout(() => { chatsTimer = undefined; send({ type: 'invalidate', topics: ['chats'] }) }, 250)
+    } else {
+      pending.add(topic)
+      if (topic.startsWith('messages:')) fast = true
+    }
   }
-  if (pending.size) flushTimer ??= setTimeout(() => { flushTimer = undefined; send({ type: 'invalidate', topics: [...pending] }); pending.clear() }, 500)
+  if (pending.size) {
+    if (fast) {
+      clearTimeout(flushTimer)
+      flushTimer = setTimeout(() => { flushTimer = undefined; send({ type: 'invalidate', topics: [...pending] }); pending.clear() }, 50)
+    } else {
+      flushTimer ??= setTimeout(() => { flushTimer = undefined; send({ type: 'invalidate', topics: [...pending] }); pending.clear() }, 400)
+    }
+  }
 }
 
 const units = [['gigabyte', 2 ** 30], ['megabyte', 2 ** 20], ['kilobyte', 1024], ['byte', 1]] as const
@@ -87,8 +99,10 @@ function startup() {
   // 3. Windows toast identity (same as appId). 4. One process per home: TDLib locks its database.
   app.setAppUserModelId('com.mediagram.app')
   if (!app.requestSingleInstanceLock()) return app.quit()
-  // 5.
-  protocol.registerSchemesAsPrivileged([{ scheme: 'teleflow', privileges: { standard: true, secure: true, stream: true, supportFetchAPI: true } }])
+  protocol.registerSchemesAsPrivileged([
+    { scheme: 'mediagram', privileges: { standard: true, secure: true, stream: true, supportFetchAPI: true } },
+    { scheme: 'teleflow', privileges: { standard: true, secure: true, stream: true, supportFetchAPI: true } },
+  ])
 
   // tdjson.dll is loaded by the OS loader, which cannot read inside app.asar.
   telegram.configure(getTdjson().replace('app.asar', 'app.asar.unpacked'), path.join(paths.logs, 'tdlib.log'))
@@ -241,13 +255,24 @@ function startup() {
       'X-Content-Type-Options': 'nosniff',
       'Content-Security-Policy': "default-src 'none'; sandbox",
     }
-    protocol.handle('teleflow', async (req) => {
+    const thumbBufferCache = new Map<string, Buffer>()
+    const MAX_THUMB_CACHE = 300
+
+    const handleMediaProtocol = async (req: Request) => {
       try {
         const file = req.method === 'GET' ? await protocolFile(req.url, ctx) : null
         if (!file) return new Response(null, { status: 404 })
-        if (req.url.startsWith('teleflow://thumb/')) {
-          const buf = await fs.promises.readFile(file)
-          return new Response(buf, { headers: { ...mediaHeaders, 'Content-Type': 'image/jpeg', 'Cache-Control': 'public, max-age=2592000, immutable' } })
+        if (req.url.startsWith('mediagram://thumb/') || req.url.startsWith('teleflow://thumb/')) {
+          let buf = thumbBufferCache.get(file)
+          if (!buf) {
+            buf = await fs.promises.readFile(file)
+            if (thumbBufferCache.size >= MAX_THUMB_CACHE) {
+              const oldestKey = thumbBufferCache.keys().next().value
+              if (oldestKey) thumbBufferCache.delete(oldestKey)
+            }
+            thumbBufferCache.set(file, buf)
+          }
+          return new Response(new Uint8Array(buf), { headers: { ...mediaHeaders, 'Content-Type': 'image/jpeg', 'Cache-Control': 'public, max-age=2592000, immutable' } })
         }
         const stat = await fs.promises.stat(file)
         const size = stat.size
@@ -294,7 +319,10 @@ function startup() {
           }
         })
       } catch { return new Response(null, { status: 404 }) } // not signed in, bad URL, file gone
-    })
+    }
+
+    protocol.handle('mediagram', handleMediaProtocol)
+    protocol.handle('teleflow', handleMediaProtocol)
     ipcMain.handle('call', (e, req) => {
       let sender: string | null = null
       try { sender = e.senderFrame?.url ?? null } catch {} // disposed frame → reject
@@ -307,6 +335,16 @@ function startup() {
       try { sender = e.senderFrame?.url ?? null } catch {}
       if (!fromRenderer(rendererKey, sender)) return false
       grants.add(paths)
+      return true
+    })
+    ipcMain.handle('theme', (e, { color, symbolColor }) => {
+      let sender: string | null = null
+      try { sender = e.senderFrame?.url ?? null } catch {}
+      if (!fromRenderer(rendererKey, sender)) return false
+      if (win && !win.isDestroyed() && process.platform === 'win32') {
+        win.setTitleBarOverlay({ color, symbolColor: symbolColor || '#94a3b8', height: 36 })
+        win.setBackgroundColor(color)
+      }
       return true
     })
     // 8. Saved keys (if the user chose to keep them) start TDLib straight into the session immediately

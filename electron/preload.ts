@@ -16,8 +16,10 @@ const bridge = {
     if (p) ipcRenderer.invoke('grant', [p]).catch(() => {})
     return p
   },
+  setTheme: (color: string, symbolColor?: string): Promise<unknown> => ipcRenderer.invoke('theme', { color, symbolColor }),
 }
 
+contextBridge.exposeInMainWorld('mediagram', bridge)
 contextBridge.exposeInMainWorld('teleflow', bridge)
 
 export type Bridge = typeof bridge

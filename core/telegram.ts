@@ -247,7 +247,12 @@ async function onReady(cl: Client) {
   try {
     const [user, cap] = await Promise.all([call({ _: 'getMe' }), call({ _: 'getOption', name: 'message_caption_length_max' })])
     if (client !== cl) return
-    me = toMe(user, cap._ === 'optionValueInteger' ? Number(cap.value) : 0)
+    let bio = ''
+    try {
+      const full = await call({ _: 'getUserFullInfo', user_id: user.id })
+      bio = (full as any)?.bio?.text || (typeof (full as any)?.bio === 'string' ? (full as any)?.bio : '') || ''
+    } catch {}
+    me = toMe(user, cap._ === 'optionValueInteger' ? Number(cap.value) : 0, bio)
     cache.meId = me.id
     changed()
     await invoke({ _: 'createPrivateChat', user_id: me.id, force: false }) // Saved Messages exists even if never used
@@ -255,6 +260,36 @@ async function onReady(cl: Client) {
   } catch (e) {
     log('error', `Loading the Telegram account failed: ${(e as Error).stack ?? String(e)}`)
   }
+}
+
+/** Update profile details (first name, last name, bio, username) */
+export async function updateProfile(args: { firstName?: string, lastName?: string, bio?: string, username?: string }) {
+  if (args.firstName !== undefined || args.lastName !== undefined) {
+    const first = args.firstName !== undefined ? args.firstName : (me?.firstName || '')
+    const last = args.lastName !== undefined ? args.lastName : (me?.lastName || '')
+    await invoke({ _: 'setName', first_name: first, last_name: last })
+  }
+  if (args.bio !== undefined) {
+    await invoke({ _: 'setBio', bio: args.bio })
+  }
+  if (args.username !== undefined) {
+    await invoke({ _: 'setUsername', username: args.username.replace(/^@/, '') })
+  }
+  const cl = client
+  if (cl) {
+    const [user, cap] = await Promise.all([call({ _: 'getMe' }), call({ _: 'getOption', name: 'message_caption_length_max' })])
+    if (client === cl) {
+      let bio = ''
+      try {
+        const full = await call({ _: 'getUserFullInfo', user_id: user.id })
+        bio = (full as any)?.bio?.text || (typeof (full as any)?.bio === 'string' ? (full as any)?.bio : '') || ''
+      } catch {}
+      me = toMe(user, cap._ === 'optionValueInteger' ? Number(cap.value) : 0, bio)
+      cache.meId = me.id
+      changed()
+    }
+  }
+  return me
 }
 
 /** loadChats until 404 for the main list, each folder, and the archive when shown. */
@@ -335,14 +370,18 @@ function onTdUpdate(cl: Client, u: Td.Update) {
     case 'updateConnectionState': setConnection(mapConnection(u.state)); changed(); break
     case 'updateNewMessage': upkeep(u.message); break
     case 'updateDeleteMessages':
-      if (!u.is_permanent || u.from_cache) break // TDLib cache evictions are not deletions (FileGram lesson)
-      if (deleteMedia(deps.db, u.chat_id, u.message_ids)) mediaChanged(u.chat_id)
+      if (u.is_permanent && !u.from_cache) {
+        if (deleteMedia(deps.db, u.chat_id, u.message_ids)) mediaChanged(u.chat_id)
+      }
       deps.emit({ type: 'invalidate', topics: [`messages:${u.chat_id}`] })
       break
     case 'updateMessageContent':
       deps.emit({ type: 'invalidate', topics: [`messages:${u.chat_id}`] })
       break
     case 'updateMessageEdited':
+      deps.emit({ type: 'invalidate', topics: [`messages:${u.chat_id}`] })
+      break
+    case 'updateMessageSendAcknowledged':
       deps.emit({ type: 'invalidate', topics: [`messages:${u.chat_id}`] })
       break
     case 'updateMessageSendSucceeded':
@@ -356,6 +395,10 @@ function onTdUpdate(cl: Client, u: Td.Update) {
       deps.emit({ type: 'invalidate', topics: [`messages:${u.chat_id}`] })
       break
     case 'updateMessageInteractionInfo':
+    case 'updateMessageReaction':
+    case 'updateMessageReactions':
+    case 'updateMessageUnreadReactions':
+    case 'updateChatUnreadReactionCount':
       deps.emit({ type: 'invalidate', topics: [`messages:${u.chat_id}`] })
       break
     case 'updateMessageIsPinned':
@@ -376,11 +419,17 @@ function onTdUpdate(cl: Client, u: Td.Update) {
     case 'updateChatPhoto': patch(u.chat_id, (c) => { c.photo = u.photo }); break
     case 'updateChatPermissions': patch(u.chat_id, (c) => { c.permissions = u.permissions }); break
     case 'updateChatPosition': patch(u.chat_id, (c) => setPosition(c, u.position)); break
-    case 'updateChatLastMessage': patch(u.chat_id, (c) => { c.last_message = u.last_message; c.positions = u.positions }); break
+    case 'updateChatLastMessage':
+      patch(u.chat_id, (c) => { c.last_message = u.last_message; c.positions = u.positions })
+      deps.emit({ type: 'invalidate', topics: [`messages:${u.chat_id}`] })
+      break
     case 'updateChatDraftMessage': patch(u.chat_id, (c) => { c.positions = u.positions }); break // positions only
     case 'updateChatAddedToList': patch(u.chat_id, (c) => { c.chat_lists = [...c.chat_lists.filter((l) => !sameList(l, u.chat_list)), u.chat_list] }); break
     case 'updateChatRemovedFromList': patch(u.chat_id, (c) => { c.chat_lists = c.chat_lists.filter((l) => !sameList(l, u.chat_list)) }); break
-    case 'updateChatReadInbox': patch(u.chat_id, (c) => { c.unread_count = u.unread_count }); break
+    case 'updateChatReadInbox':
+      patch(u.chat_id, (c) => { c.unread_count = u.unread_count })
+      deps.emit({ type: 'invalidate', topics: [`messages:${u.chat_id}`] })
+      break
     case 'updateChatFolders':
       folders = u.chat_folders.map(folderOf)
       chatsChanged()
@@ -647,6 +696,18 @@ function extractReactions(m: Td.message): ReactionItem[] {
         count: r.total_count ?? 1,
         chosen: Boolean(r.is_chosen),
       })
+    } else if (r.type?._ === 'reactionTypePaid') {
+      out.push({
+        emoji: '⭐',
+        count: r.total_count ?? 1,
+        chosen: Boolean(r.is_chosen),
+      })
+    } else if (r.type?._ === 'reactionTypeCustomEmoji') {
+      out.push({
+        emoji: '✨',
+        count: r.total_count ?? 1,
+        chosen: Boolean(r.is_chosen),
+      })
     }
   }
   return out
@@ -779,6 +840,7 @@ export async function messages(chatId: number, limit: number, fromMessageId = 0)
   if (auth.step !== 'ready') throw fail(503, 'Telegram is not connected yet')
   if (!chats.has(chatId)) throw fail(404, 'Chat not found')
   const c = chats.get(chatId)
+  void invoke({ _: 'openChat', chat_id: chatId }).catch(() => {})
   const out: Td.message[] = []
   for (let from = fromMessageId; out.length < limit;) {
     const page = await invoke({ _: 'getChatHistory', chat_id: chatId, from_message_id: from, offset: 0, limit: Math.min(100, limit - out.length), only_local: false })
@@ -786,6 +848,7 @@ export async function messages(chatId: number, limit: number, fromMessageId = 0)
     if (!got.length) {
       const msgs = out.map((m) => toMessage(m, c))
       prefetchThumbs(msgs.map((m) => m.media?.thumb))
+      prefetchPhotos(msgs.filter((m) => m.media?.type === 'photo').slice(0, 10).map((m) => m.media?.file?.id))
       if (out.length) {
         void invoke({ _: 'viewMessages', chat_id: chatId, message_ids: out.map((m) => m.id), force_read: false }).catch(() => {})
         void invoke({ _: 'openChat', chat_id: chatId }).catch(() => {})
@@ -797,6 +860,7 @@ export async function messages(chatId: number, limit: number, fromMessageId = 0)
   }
   const msgs = out.map((m) => toMessage(m, c))
   prefetchThumbs(msgs.map((m) => m.media?.thumb))
+  prefetchPhotos(msgs.filter((m) => m.media?.type === 'photo').slice(0, 10).map((m) => m.media?.file?.id))
   if (out.length) {
     void invoke({ _: 'viewMessages', chat_id: chatId, message_ids: out.map((m) => m.id), force_read: false }).catch(() => {})
     void invoke({ _: 'openChat', chat_id: chatId }).catch(() => {})
@@ -804,33 +868,102 @@ export async function messages(chatId: number, limit: number, fromMessageId = 0)
   return { messages: msgs, more: true }
 }
 
-/** Prepares media for fast instant playback: checks if already in TDLib cache, or starts downloading with priority 32 */
+/** Prepares media for fast instant playback and full-quality viewing: checks cache, downloads images synchronously with priority 32, streams videos */
 export async function prepareMedia(chatId: number, messageId: number) {
   if (auth.step !== 'ready') throw fail(503, 'Telegram is not connected yet')
   const m = await invoke({ _: 'getMessage', chat_id: chatId, message_id: messageId })
   const media = extractMedia(m)
   if (!media) throw fail(404, 'No media found in this message')
+
+  // Instant check: if this file was already downloaded to the library or transfers, return immediately
+  if (deps?.db) {
+    try {
+      const jobRow = deps.db.prepare(
+        "SELECT path FROM jobs WHERE chat_id = ? AND message_id = ? AND status = 'completed' AND path IS NOT NULL LIMIT 1"
+      ).get(chatId, messageId) as { path: string } | undefined
+      if (jobRow?.path && fs.existsSync(jobRow.path)) {
+        return {
+          path: jobRow.path,
+          fileId: media.file.id,
+          completed: true,
+          size: media.size,
+          downloaded: media.size,
+          name: media.name,
+          type: media.type,
+          duration: media.duration,
+        }
+      }
+      const histRow = deps.db.prepare(
+        "SELECT path FROM history WHERE chat_id = ? AND message_id = ? AND status = 'completed' AND path IS NOT NULL ORDER BY finished_at DESC LIMIT 1"
+      ).get(chatId, messageId) as { path: string } | undefined
+      if (histRow?.path && fs.existsSync(histRow.path)) {
+        return {
+          path: histRow.path,
+          fileId: media.file.id,
+          completed: true,
+          size: media.size,
+          downloaded: media.size,
+          name: media.name,
+          type: media.type,
+          duration: media.duration,
+        }
+      }
+    } catch {}
+  }
+
   let f = await invoke({ _: 'getFile', file_id: media.file.id })
   if (f.local.is_downloading_completed && f.local.path && fs.existsSync(f.local.path)) {
     return {
       path: f.local.path,
       fileId: f.id,
       completed: true,
-      size: f.size,
+      size: f.size || f.expected_size || media.size,
       downloaded: f.size,
       name: media.name,
       type: media.type,
       duration: media.duration,
     }
   }
-  // Download with priority 32 (maximum speed)
-  f = await invoke({ _: 'downloadFile', file_id: f.id, priority: 32, offset: 0, limit: 0, synchronous: false })
+
+  // Check TDLib files directory directly in case TDLib already completed the file locally
+  if (deps?.dir) {
+    const candidateDirs = ['photos', 'documents', 'videos', 'temp']
+    for (const sub of candidateDirs) {
+      const candidatePath = path.join(deps.dir, 'files', sub, media.name)
+      if (fs.existsSync(candidatePath)) {
+        return {
+          path: candidatePath,
+          fileId: f.id,
+          completed: true,
+          size: f.size || f.expected_size || media.size,
+          downloaded: f.size || media.size,
+          name: media.name,
+          type: media.type,
+          duration: media.duration,
+        }
+      }
+    }
+  }
+  const isImage = media.type === 'photo' || ['jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif'].includes(media.ext)
+  if (isImage) {
+    try {
+      f = await Promise.race([
+        invoke({ _: 'downloadFile', file_id: f.id, priority: 32, offset: 0, limit: 0, synchronous: true }),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), 3500)),
+      ])
+    } catch {
+      f = await invoke({ _: 'downloadFile', file_id: f.id, priority: 32, offset: 0, limit: 0, synchronous: false }).catch(() => f)
+    }
+  } else {
+    // Download with priority 32 (maximum speed)
+    f = await invoke({ _: 'downloadFile', file_id: f.id, priority: 32, offset: 0, limit: 0, synchronous: false })
+  }
   const localExists = Boolean(f.local.path && fs.existsSync(f.local.path))
   return {
     path: (f.local.is_downloading_completed || localExists) && f.local.path && fs.existsSync(f.local.path) ? f.local.path : null,
     fileId: f.id,
-    completed: f.local.is_downloading_completed,
-    size: f.size || f.expected_size,
+    completed: f.local.is_downloading_completed || localExists,
+    size: f.size || f.expected_size || media.size,
     downloaded: f.local.downloaded_size,
     name: media.name,
     type: media.type,
@@ -1023,6 +1156,21 @@ export async function markMessagesRead(chatId: number, messageIds: number[]) {
     c.unread_count = 0
     chatsChanged()
   }
+}
+
+/** Forward messages to another chat */
+export async function forwardMessages(fromChatId: number, toChatId: number, messageIds: number[], sendCopy = false) {
+  if (auth.step !== 'ready') throw fail(503, 'Telegram is not connected yet')
+  if (!messageIds.length) return
+  await invoke({
+    _: 'forwardMessages',
+    chat_id: toChatId,
+    from_chat_id: fromChatId,
+    message_ids: messageIds,
+    send_copy: sendCopy,
+    remove_caption: false,
+  })
+  deps.emit({ type: 'invalidate', topics: [`messages:${toChatId}`, 'chats'] })
 }
 
 /** Send an outgoing chat action (typing indicator) */
@@ -1330,6 +1478,18 @@ function upkeep(m: Td.message) {
 
 const thumbPathCache = new Map<string, string>()
 
+/** Prefetch recent full photo files in background with low priority so opening image view is instantaneous */
+export function prefetchPhotos(fileIds: (number | null | undefined)[]) {
+  for (const id of fileIds) {
+    if (!id || typeof id !== 'number') continue
+    void invoke({ _: 'getFile', file_id: id }).then((f) => {
+      if (!f.local.is_downloading_completed && !f.local.is_downloading_active) {
+        return invoke({ _: 'downloadFile', file_id: f.id, priority: 1, offset: 0, limit: 0, synchronous: false })
+      }
+    }).catch(() => {})
+  }
+}
+
 /** Prefetch remote thumbnail files asynchronously in background with low priority so active downloads get maximum bandwidth */
 export function prefetchThumbs(remoteIds: (string | null | undefined)[]) {
   for (const id of remoteIds) {
@@ -1339,7 +1499,7 @@ export function prefetchThumbs(remoteIds: (string | null | undefined)[]) {
       // protocol), so a poisoned index cannot pull an arbitrary file down in the background.
       if ((f.expected_size || f.size) > 2 * 2 ** 20) return
       if (!f.local.is_downloading_completed) {
-        return invoke({ _: 'downloadFile', file_id: f.id, priority: 1, offset: 0, limit: 0, synchronous: false })
+        return invoke({ _: 'downloadFile', file_id: f.id, priority: 16, offset: 0, limit: 0, synchronous: false })
       } else if (f.local.path && fs.existsSync(f.local.path)) {
         thumbPathCache.set(id, f.local.path)
       }

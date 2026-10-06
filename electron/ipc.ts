@@ -136,9 +136,10 @@ const FILTER_ADD_MAX = 10_000
 
 const downloadsArgs = (args: unknown) => {
   const keys = args && typeof args === 'object' ? Object.keys(args) : []
-  if (keys.includes('link')) return shape({ link: text(300, 2) })(args)
-  if (keys.includes('filters')) return shape({ chatId: id, filters: fields(filterSpec) })(args)
-  return shape({ items: list(message, 1, 10_000), force: flag })(args)
+  const hasCustom = keys.includes('customPath')
+  if (keys.includes('link')) return shape({ link: text(300, 2), ...(hasCustom ? { customPath: text(4096) } : {}) })(args)
+  if (keys.includes('filters')) return shape({ chatId: id, filters: fields(filterSpec), ...(hasCustom ? { customPath: text(4096) } : {}) })(args)
+  return shape({ items: list(message, 1, 10_000), force: flag, ...(hasCustom ? { customPath: text(4096) } : {}) })(args)
 }
 const actionArgs = (args: unknown) => {
   const a = shape({ action: oneOf('pause', 'resume', 'retry', 'cancel', 'up', 'down', 'clear-completed'), ids: opt(list(id, 1, 1000)) })(args)
@@ -251,6 +252,17 @@ export function createMethods(ctx: Ctx) {
       return { freed, local }
     }),
 
+    'account.updateProfile': method(shape({
+      firstName: opt(text(64, 1)),
+      lastName: opt(text(64, 0)),
+      bio: opt(text(140, 0)),
+      username: opt(text(32, 0)),
+    }), async (args) => {
+      const me = await tg.updateProfile(args)
+      invalidate('auth')
+      return { me }
+    }),
+
     'chats.list': method(shape({}), () => tg.chatList()),
     'chats.open': method(shape({ link: text(300, 2), join: flag }), ({ link, join }) => tg.openChat(link, join)),
     'chats.leave': method(shape({ chatId: id }), async ({ chatId }) => {
@@ -283,6 +295,10 @@ export function createMethods(ctx: Ctx) {
     }),
     'messages.pin': method(shape({ chatId: id, messageId: id, unpin: opt(bool) }), async ({ chatId, messageId, unpin }) => {
       await tg.pinChatMessage(chatId, messageId, unpin ?? false)
+      return { ok: true }
+    }),
+    'messages.forward': method(shape({ fromChatId: id, toChatId: id, messageIds: list(id, 1, 100), sendCopy: opt(bool) }), async ({ fromChatId, toChatId, messageIds, sendCopy }) => {
+      await tg.forwardMessages(fromChatId, toChatId, messageIds, sendCopy ?? false)
       return { ok: true }
     }),
     'messages.react': method(shape({ chatId: id, messageId: id, reaction: text(32, 1), remove: opt(bool) }), async ({ chatId, messageId, reaction, remove }) => {
@@ -452,7 +468,7 @@ export function createMethods(ctx: Ctx) {
 }
 export type Methods = ReturnType<typeof createMethods>
 
-/** teleflow:// URL → local file, or null for a 404 (ARCHITECTURE > teleflow:// protocol). */
+/** mediagram:// or teleflow:// URL → local file, or null for a 404 (ARCHITECTURE > mediagram:// protocol). */
 export async function protocolFile(url: string, ctx: Pick<Ctx, 'tg' | 'paths' | 'settings' | 'db'>): Promise<string | null> {
   const u = new URL(url)
   const arg = decodeURIComponent(u.pathname.slice(1))

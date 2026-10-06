@@ -100,7 +100,7 @@ export function isRetryable(e: unknown) {
 export const retryDelay = (attempts: number) => Math.min(30_000 * 2 ** Math.max(0, attempts - 1), 600_000)
 
 const fsText: Record<string, string> = {
-  ENOSPC: 'The disk is full', EACCES: "TeleFlow can't write to the download folder", EPERM: "TeleFlow can't write to the download folder",
+  ENOSPC: 'The disk is full', EACCES: "Mediagram can't write to the download folder", EPERM: "Mediagram can't write to the download folder",
   EBUSY: 'The file is in use by another app',
 }
 const errorText = (e: unknown) => { const err = e as Partial<AppError> & { code?: string }; return (err.code && fsText[err.code]) || err.message || String(e) }
@@ -545,7 +545,7 @@ export function createEngine(d: EngineDeps) {
   }
 
   /** Checks disk and history for exact duplicates (filename + byte size + duration) before downloading */
-  async function checkDuplicates(a: { items?: { chatId: number, messageId: number }[], chatId?: number, filters?: MediaFilters, link?: string }) {
+  async function checkDuplicates(a: { items?: { chatId: number, messageId: number }[], chatId?: number, filters?: MediaFilters, link?: string, customPath?: string }) {
     let candidates: { chatId: number, messageId: number, name: string, size: number, duration: number, date: number }[] = []
     let targetChatId = a.chatId ?? 0
 
@@ -594,9 +594,12 @@ export function createEngine(d: EngineDeps) {
 
     const s = d.settings()
     const chat = targetChatId ? d.chat(targetChatId) : null
-    const targetDir = chat
+    const defaultDir = chat
       ? path.join(s.downloadRoot, folderFor(s.folderTemplate, { id: chat.id, title: chat.title }))
       : s.downloadRoot
+    const targetDir = a.customPath && typeof a.customPath === 'string' && a.customPath.trim()
+      ? path.resolve(a.customPath.trim())
+      : defaultDir
 
     let filesScanned = 0
     const diskFiles = new Map<string, string[]>()

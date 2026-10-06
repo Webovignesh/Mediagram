@@ -12,7 +12,7 @@ const licenses = shipped.map((name) => {
 })
 
 // Build only: dev HMR needs inline scripts (ARCHITECTURE > Security). No frame-ancestors: a <meta> policy ignores it.
-const csp = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' teleflow: blob: data:; media-src 'self' teleflow: blob: data:; font-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'"
+const csp = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' mediagram: teleflow: blob: data:; media-src 'self' mediagram: teleflow: blob: data:; font-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'"
 
 export default defineConfig({
   main: {

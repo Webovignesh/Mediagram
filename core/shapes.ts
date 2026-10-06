@@ -1,11 +1,11 @@
-// TDLib objects → TeleFlow shapes (ARCHITECTURE > Shared shapes, > Telegram): auth and connection states, errors, Me,
+// TDLib objects → Mediagram shapes (ARCHITECTURE > Shared shapes, > Telegram): auth and connection states, errors, Me,
 // chats and rights, media extraction, links. Pure, so node:test covers them without a TDLib client.
 import path from 'node:path'
 import tdl from 'tdl'
 import type * as Td from 'tdlib-types'
 import { type AppError, fail, type MediaRow, type MediaType } from './db.ts'
 
-export type Me = { id: number, name: string, firstName: string, username: string | null,
+export type Me = { id: number, name: string, firstName: string, lastName?: string, bio?: string, username: string | null,
   phone: string /* masked */, photo: string | null /* remote file id */, premium: boolean,
   captionMax: number, uploadMax: number }
 type Step =
@@ -156,7 +156,7 @@ export function mapAuth(s: Td.AuthorizationState | null, me: Me | null): Step {
     case 'authorizationStateWaitPassword': return { step: 'password', hint: s.password_hint }
     case 'authorizationStateReady': return me ? { step: 'ready', me } : { step: 'starting' }
     case 'authorizationStateLoggingOut': case 'authorizationStateClosing': case 'authorizationStateClosed': return { step: 'logging-out' }
-    default: return { step: 'phone', error: `Telegram needs ${unsupported[s._]} for this number, which TeleFlow does not support yet. Finish it in the official Telegram app, then try again.` }
+    default: return { step: 'phone', error: `Telegram needs ${unsupported[s._]} for this number, which Mediagram does not support yet. Finish it in the official Telegram app, then try again.` }
   }
 }
 
@@ -168,8 +168,9 @@ export function maskPhone(phone: string) {
   return '+' + [m.slice(0, 2), m.slice(2, 5), m.slice(5, tail), m.slice(tail)].filter(Boolean).join(' ')
 }
 
-export const toMe = (u: Td.user, captionMax: number): Me => ({
+export const toMe = (u: Td.user, captionMax: number, bio = ''): Me => ({
   id: u.id, name: [u.first_name, u.last_name].filter(Boolean).join(' '), firstName: u.first_name,
+  lastName: u.last_name || '', bio,
   username: u.usernames?.active_usernames[0] ?? null, phone: maskPhone(u.phone_number),
   photo: u.profile_photo?.small.remote.id || null, premium: u.is_premium, captionMax,
   uploadMax: u.is_premium ? 4_194_304_000 : 2_097_152_000,
@@ -267,8 +268,8 @@ export function rights(c: Td.chat, k: Cache) {
   return p ? { post: p.can_send_basic_messages ?? p.can_send_documents ?? true, photos: p.can_send_photos ?? true, videos: p.can_send_videos ?? true } : none
 }
 
-const folderIds = (c: Td.chat) => [...new Set([...c.positions.map((p) => p.list), ...c.chat_lists]
-  .flatMap((l) => (l._ === 'chatListFolder' ? [l.chat_folder_id] : [])))]
+const folderIds = (c: Td.chat) => [...new Set([...(c.positions || []).map((p) => p.list), ...(c.chat_lists || [])]
+  .flatMap((l) => (l && l._ === 'chatListFolder' ? [(l as Td.chatListFolder).chat_folder_id] : [])))]
 
 export function toChat(c: Td.chat, k: Cache): Chat | null {
   const t = c.type

@@ -79,11 +79,11 @@ export function createUploads(core: Core) {
     ? d.invoke({ _: 'deleteMessages', chat_id, message_ids, revoke: true }).then(() => {}, (e: Error) => log('warn', `Deleting pending messages failed: ${e.message}`))
     : Promise.resolve()
 
-  /** uploads.add after its checks: one job per group; with keepNames off each file is posted as TeleFlow_<time>_<n>.<ext>. */
+  /** uploads.add after its checks: one job per group; with keepNames off each file is posted as Mediagram_<time>_<n>.<ext>. */
   function add(chat: Chat, files: { path: string, name: string, size: number }[], o: { caption: string, album: boolean, keepNames: boolean, photos: boolean, videos: boolean }) {
     const at = stamp(new Date())
     let n = 0
-    const groups = groupUploads(files, o).map((g) => g.map((f) => (o.keepNames ? f : { ...f, name: `TeleFlow_${at}_${++n}${path.extname(f.path).toLowerCase()}` })))
+    const groups = groupUploads(files, o).map((g) => g.map((f) => (o.keepNames ? f : { ...f, name: `Mediagram_${at}_${++n}${path.extname(f.path).toLowerCase()}` })))
     enqueue(db, groups.map((g, i) => ({ kind: 'upload' as const, chatId: chat.id, chatTitle: chat.title, messageId: null, name: jobName(g),
       type: jobType(g), size: total(g), files: g, caption: i === 0 && o.caption ? o.caption : null })))
     core.invalidate('jobs')
