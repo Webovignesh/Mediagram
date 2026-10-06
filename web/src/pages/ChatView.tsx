@@ -779,7 +779,7 @@ export function ChatView({
   const canPost = activeChat?.canPost !== false
 
   return (
-    <div className="relative flex-1 min-h-0 rounded-2xl border border-white/[0.08] telegram-chat-wallpaper backdrop-blur-md p-4 flex flex-col justify-between overflow-hidden shadow-2xl">
+    <div className="relative flex-1 min-h-0 rounded-2xl border border-border/70 telegram-chat-wallpaper flex flex-col overflow-hidden shadow-2xl">
       {/* Hidden file input for attachment upload */}
       <input
         ref={fileInputRef}
@@ -789,8 +789,8 @@ export function ChatView({
         onChange={handleAttachFiles}
       />
 
-      {/* Chat View Header */}
-      <div className="flex items-center justify-between gap-3 pb-3 border-b border-border mb-2 flex-wrap bg-panel/90 z-20">
+      {/* Chat View Header - Seamless edge-to-edge */}
+      <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-border bg-panel/95 backdrop-blur-md z-20 shrink-0">
         <div className="flex items-center gap-3 min-w-0">
           <Avatar src={activeChat?.photo} name={activeChat?.title || 'Chat'} size={40} />
           <div className="min-w-0">
@@ -856,16 +856,18 @@ export function ChatView({
 
       {/* Sticky Pinned Message Header Banner */}
       {activeChat?.pinnedMessageId && (
-        <div
-          onClick={() => jumpToMessage(activeChat.pinnedMessageId)}
-          className="flex items-center justify-between rounded-xl border border-primary/20 bg-primary/10 px-3.5 py-2 text-[12px] text-text mb-2 cursor-pointer hover:bg-primary/15 transition-colors select-none"
-        >
-          <div className="flex items-center gap-2 min-w-0">
-            <Pin size={13} className="text-primary shrink-0" />
-            <span className="font-semibold text-primary shrink-0">Pinned Message:</span>
-            <span className="truncate opacity-90">Click to view pinned message</span>
+        <div className="px-4 pt-2 shrink-0 z-10">
+          <div
+            onClick={() => jumpToMessage(activeChat.pinnedMessageId)}
+            className="flex items-center justify-between rounded-xl border border-primary/25 bg-panel/95 backdrop-blur-sm px-3.5 py-2 text-[12px] text-text cursor-pointer hover:bg-panel transition-colors select-none shadow-sm"
+          >
+            <div className="flex items-center gap-2 min-w-0">
+              <Pin size={13} className="text-primary shrink-0" />
+              <span className="font-semibold text-primary shrink-0">Pinned Message:</span>
+              <span className="truncate opacity-90">Click to view pinned message</span>
+            </div>
+            <span className="text-[11px] text-primary font-medium shrink-0 ml-2">Jump →</span>
           </div>
-          <span className="text-[11px] text-primary font-medium shrink-0 ml-2">Jump →</span>
         </div>
       )}
 
@@ -877,7 +879,7 @@ export function ChatView({
           const isNearBottom = target.scrollHeight - target.scrollTop - target.clientHeight < 120
           setShowScrollBottom(!isNearBottom)
         }}
-        className="flex-1 overflow-y-auto overflow-x-hidden space-y-3.5 pr-2 select-text"
+        className="flex-1 overflow-y-auto overflow-x-hidden p-4 space-y-3.5 select-text z-10"
       >
         {/* Load older messages button */}
         {hasMore && (
@@ -1809,7 +1811,7 @@ export function ChatView({
       )}
 
       {/* Input Area Toolbar (Replying Banner / Editing Banner + Textarea + Attach + Send) */}
-      <div className="mt-2 pt-2 border-t border-white/[0.08] flex flex-col gap-1.5">
+      <div className="p-3 border-t border-border bg-panel/95 backdrop-blur-md flex flex-col gap-1.5 shrink-0 z-20">
         {/* Reply Preview Bar */}
         {replyingTo && (
           <div className="flex items-center justify-between rounded-xl bg-primary/10 border border-primary/20 px-3 py-1.5 text-[12px] animate-in slide-in-from-bottom-2 duration-150">

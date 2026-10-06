@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import {
   type AppError, checkSettings, type DB, downloadStates, type Emit, fail, jobsList, mediaExts, type MediaItem, mediaQuery,
-  readSetting, setSettings, statsActivity, statsChats, statsOverview, type StoredSettings,
+  putSetting, readSetting, setSettings, statsActivity, statsChats, statsOverview, type StoredSettings,
 } from '../core/db.ts'
 import { type Chat, extractMedia, isTelegramLink, linkKind, mediaRow } from '../core/shapes.ts'
 import {
@@ -228,10 +228,15 @@ export function createMethods(ctx: Ctx) {
       const creds = tg.credentials()
       if (!creds) throw fail(409, 'Enter your API ID and hash first')
       ctx.native.keys.save(creds.apiId, creds.apiHash)
+      putSetting(db, 'lastUser')
       invalidate('settings')
       return { saved: true }
     }),
     'auth.forgetKeys': method(shape({}), () => {
+      const auth = tg.authState()
+      if (auth.step === 'ready' && auth.me) {
+        putSetting(db, 'lastUser', auth.me.username ? `@${auth.me.username}` : (auth.me.name || auth.me.firstName || 'your account'))
+      }
       ctx.native.keys.forget()
       invalidate('settings')
       return { saved: false }
@@ -433,8 +438,11 @@ export function createMethods(ctx: Ctx) {
       return { trashed: r.trashed, freed: r.freed }
     }),
 
-    // apiHashSaved is a flag only: the stored value itself never leaves main (ARCHITECTURE > IPC contract).
-    'settings.get': method(shape({}), () => ({ ...settings(), apiHashSaved: readSetting(db, 'apiHash') !== undefined })),
+    'settings.get': method(shape({}), () => ({
+      ...settings(),
+      apiHashSaved: readSetting(db, 'apiHash') !== undefined,
+      lastUser: (readSetting(db, 'lastUser') as string | undefined) ?? null,
+    })),
     // Every key is validated (incl. the download root rules and canPost) before anything is written.
     'settings.set': method(checkSettings, async (patch) => {
       const before = ctx.settings()

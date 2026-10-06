@@ -653,26 +653,22 @@ export default function Settings() {
                     <Pencil size={13} className="text-primary" />
                     <span>Edit Profile</span>
                   </button>
-                  <div className="flex items-center gap-2 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-3 py-1 text-[12px] font-medium text-emerald-400">
-                    <span className="size-2 rounded-full bg-emerald-400 animate-pulse" />
-                    <span>{auth?.connection === 'ready' ? 'Connected' : (auth?.connection || 'Connected')}</span>
-                  </div>
                 </div>
               </div>
 
               {/* Editable Telegram API Credentials */}
               <div className="space-y-4 pt-1">
                 {/* Windows DPAPI Encryption & Security Status Banner */}
-                <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-4 space-y-2.5">
+                <div className="rounded-xl border border-primary/25 bg-primary/5 p-4 space-y-2.5">
                   <div className="flex items-center justify-between flex-wrap gap-2">
                     <div className="flex items-center gap-3">
-                      <div className="size-9 rounded-xl bg-emerald-500/15 text-emerald-400 flex items-center justify-center border border-emerald-500/25 shrink-0 shadow-sm">
+                      <div className="size-9 rounded-xl bg-primary/15 text-primary flex items-center justify-center border border-primary/25 shrink-0 shadow-sm">
                         <ShieldCheck size={20} />
                       </div>
                       <div>
                         <div className="text-[14px] font-bold text-text flex items-center gap-2 flex-wrap">
                           <span>Telegram Credentials Stored & Active</span>
-                          <span className="text-[10.5px] font-semibold px-2 py-0.5 rounded-full border border-emerald-500/30 bg-emerald-500/15 text-emerald-400">
+                          <span className="text-[10.5px] font-semibold px-2 py-0.5 rounded-full border border-primary/30 bg-primary/15 text-primary">
                             Saved in Windows Account
                           </span>
                         </div>
@@ -682,8 +678,8 @@ export default function Settings() {
                       </div>
                     </div>
 
-                    <div className="flex items-center gap-1.5 text-[11px] font-medium text-emerald-400 bg-emerald-500/10 border border-emerald-500/25 px-2.5 py-1 rounded-full shrink-0">
-                      <span className="size-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                    <div className="flex items-center gap-1.5 text-[11px] font-medium text-primary bg-primary/10 border border-primary/25 px-2.5 py-1 rounded-full shrink-0">
+                      <span className="size-1.5 rounded-full bg-primary animate-pulse" />
                       <span>Active & Encrypted</span>
                     </div>
                   </div>

@@ -149,7 +149,7 @@ function startup() {
       return typeof apiId === 'number' && apiHash ? { apiId, apiHash } : null
     },
   }
-  const hasSaved = typeof readSetting(db, 'apiId') === 'number' || fs.existsSync(path.join(paths.tdlib, 'session.fingerprint'))
+  const hasSaved = typeof readSetting(db, 'apiId') === 'number' && Boolean(decode(readSetting(db, 'apiHash')))
   telegram.init({
     dir: paths.tdlib, version: app.getVersion(), db, emit, showArchived: () => settings().showArchived,
     forgetCredentials: keys.forget,

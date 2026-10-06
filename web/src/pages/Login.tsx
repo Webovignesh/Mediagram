@@ -53,6 +53,7 @@ function Stage({ state, children }: { state: 'done' | 'active' | 'pending', chil
 // Phase 4.6: Full login flow with all auth steps
 export default function Login() {
   const { data: auth, reload } = useCall<AuthState>('auth.get', undefined, ['auth'])
+  const { data: settings } = useCall<{ lastUser?: string | null }>('settings.get', {}, ['settings'])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [overrideStep, setOverrideStep] = useState<string | null>(null)
@@ -332,6 +333,14 @@ export default function Login() {
 
           {step === 'credentials' && (
             <form onSubmit={submitCredentials}>
+              {settings?.lastUser && (
+                <div className="mb-4 rounded-xl border border-primary/30 bg-primary/10 p-3.5 text-[12.5px] flex items-start gap-2.5 animate-in fade-in duration-200">
+                  <div className="size-2 rounded-full bg-primary animate-pulse shrink-0 mt-1" />
+                  <div className="text-text leading-relaxed">
+                    API data was removed from this device by <strong className="text-primary font-semibold">{settings.lastUser}</strong>. Enter your API credentials to sign back in.
+                  </div>
+                </div>
+              )}
               <h1 className="text-xl font-semibold">Connect your Telegram app</h1>
               <p className="mt-1 text-text-2">
                 Telegram needs your app's API ID and hash before it can send you a code. You only do this once.
@@ -418,7 +427,7 @@ export default function Login() {
                   </Button>
                 )}
                 <Button type="submit" busy={busy} disabled={busy}>
-                  {busy ? 'Connecting…' : 'Continue'}
+                  {busy ? 'Connecting…' : (settings?.lastUser ? 'Sign in' : 'Continue')}
                 </Button>
               </div>
               {/* The keys on record for the saved session do not match what was typed: wiping the local session and
