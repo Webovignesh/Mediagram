@@ -265,8 +265,8 @@ export default function Login() {
         className="drag flex h-9 shrink-0 items-center justify-between px-3 bg-bg border-b border-border/40 select-none z-30"
         style={{ paddingRight: 'calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw))' }}
       />
-      <main className="grid flex-1 place-items-center overflow-auto p-6">
-        <div className="w-[420px] max-w-full rounded-[14px] border border-border bg-panel p-6">
+      <main className="flex flex-1 flex-col items-center justify-center overflow-y-auto p-6 gap-4">
+        <div className="w-[420px] max-w-full rounded-[14px] border border-border bg-panel p-6 shadow-md shrink-0">
           <div className="mb-6 flex items-center gap-2">
             <MediagramLogo size={36} className="rounded-xl shadow-md shrink-0" />
             <span className="text-lg font-bold">Mediagram</span>
@@ -332,8 +332,7 @@ export default function Login() {
           )}
 
           {step === 'credentials' && (
-            <>
-              <form onSubmit={submitCredentials}>
+            <form onSubmit={submitCredentials}>
               {settings?.lastUser && (
                 <div className="mb-4 rounded-xl border border-primary/30 bg-primary/10 p-3.5 text-[12.5px] flex items-start gap-2.5 animate-in fade-in duration-200">
                   <div className="size-2 rounded-full bg-primary animate-pulse shrink-0 mt-1" />
@@ -423,43 +422,6 @@ export default function Login() {
                 </Button>
               )}
             </form>
-
-            {/* Separate rectangular guide card under the API credentials box */}
-            <div className="mt-4 rounded-xl border border-border/80 bg-tile/60 p-4 shadow-sm">
-              <div className="flex items-center justify-between gap-3">
-                <div className="flex items-center gap-2">
-                  <div className="size-2 rounded-full bg-primary" />
-                  <span className="text-[12.5px] font-semibold text-text">How to get your Telegram API credentials</span>
-                </div>
-                <a
-                  href="https://my.telegram.org"
-                  target="_blank"
-                  rel="noreferrer"
-                  className="flex items-center gap-1 text-[11.5px] font-medium text-primary hover:underline"
-                >
-                  <span>my.telegram.org</span>
-                  <ExternalLink size={12} />
-                </a>
-              </div>
-              <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11.5px] text-text-2">
-                <div className="p-2 rounded-lg bg-panel/70 border border-border/40">
-                  <span className="font-semibold text-text">1. Sign In:</span> Open <a href="https://my.telegram.org" target="_blank" rel="noreferrer" className="text-primary hover:underline">my.telegram.org</a> with your Telegram phone number.
-                </div>
-                <div className="p-2 rounded-lg bg-panel/70 border border-border/40">
-                  <span className="font-semibold text-text">2. Tools:</span> Click <strong>API development tools</strong>.
-                </div>
-                <div className="p-2 rounded-lg bg-panel/70 border border-border/40">
-                  <span className="font-semibold text-text">3. Create App:</span> Enter title (e.g. “Mediagram”) to generate keys.
-                </div>
-                <div className="p-2 rounded-lg bg-panel/70 border border-border/40">
-                  <span className="font-semibold text-text">4. Copy Keys:</span> Paste <strong>api_id</strong> and <strong>api_hash</strong> into the fields above.
-                </div>
-              </div>
-              <p className="mt-2 text-[10.5px] text-muted">
-                These values are stored encrypted with Windows DPAPI on this device and only shared directly with Telegram.
-              </p>
-            </div>
-            </>
           )}
 
           {step === 'phone' && (
@@ -565,6 +527,50 @@ export default function Login() {
             <div className="py-8 text-center text-text-2">Logging out…</div>
           )}
         </div>
+
+        {/* Fully separate, short height & wider instructions box */}
+        {step === 'credentials' && (
+          <div className="w-[740px] max-w-full rounded-2xl border border-border/80 bg-panel/95 backdrop-blur-md px-5 py-3.5 shadow-sm shrink-0 animate-in fade-in slide-in-from-bottom-2 duration-150">
+            <div className="flex items-center justify-between gap-3 mb-2 px-1">
+              <div className="flex items-center gap-2">
+                <div className="size-2 rounded-full bg-primary" />
+                <span className="text-[12px] font-semibold text-text">How to get your Telegram API credentials</span>
+              </div>
+              <a
+                href="https://my.telegram.org"
+                target="_blank"
+                rel="noreferrer"
+                className="flex items-center gap-1 text-[11px] font-semibold text-primary hover:underline"
+              >
+                <span>my.telegram.org</span>
+                <ExternalLink size={11} />
+              </a>
+            </div>
+
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-[11px] text-text-2">
+              <div className="p-2 rounded-xl bg-tile border border-border/60">
+                <span className="font-semibold text-text block text-[11px]">1. Sign In</span>
+                <span className="text-[10px] text-muted leading-tight mt-0.5 block">Open <span className="text-primary font-medium">my.telegram.org</span> with your phone</span>
+              </div>
+              <div className="p-2 rounded-xl bg-tile border border-border/60">
+                <span className="font-semibold text-text block text-[11px]">2. Tools</span>
+                <span className="text-[10px] text-muted leading-tight mt-0.5 block">Click <strong>API development tools</strong></span>
+              </div>
+              <div className="p-2 rounded-xl bg-tile border border-border/60">
+                <span className="font-semibold text-text block text-[11px]">3. Create App</span>
+                <span className="text-[10px] text-muted leading-tight mt-0.5 block">Enter title (e.g. “Mediagram”)</span>
+              </div>
+              <div className="p-2 rounded-xl bg-tile border border-border/60">
+                <span className="font-semibold text-text block text-[11px]">4. Copy Keys</span>
+                <span className="text-[10px] text-muted leading-tight mt-0.5 block">Paste <strong>api_id</strong> &amp; <strong>api_hash</strong> above</span>
+              </div>
+            </div>
+
+            <p className="mt-1.5 text-[9.5px] text-muted text-center leading-tight">
+              Values are stored encrypted with Windows DPAPI on this device and only shared directly with Telegram.
+            </p>
+          </div>
+        )}
       </main>
     </div>
   )

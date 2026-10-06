@@ -588,20 +588,6 @@ export default function Settings() {
               </div>
               <div className="flex items-center justify-between py-3">
                 <div>
-                  <div className="text-[13px] font-semibold text-text">Upload as album</div>
-                  <div className="text-[12px] text-muted">Group multiple photos or videos as a single album</div>
-                </div>
-                <Toggle checked={settings?.uploadAlbum || false} onChange={(v) => setSetting('uploadAlbum', v)} />
-              </div>
-              <div className="flex items-center justify-between py-3">
-                <div>
-                  <div className="text-[13px] font-semibold text-text">Keep original file names</div>
-                  <div className="text-[12px] text-muted">Preserve original file names when uploading</div>
-                </div>
-                <Toggle checked={settings?.keepNames || false} onChange={(v) => setSetting('keepNames', v)} />
-              </div>
-              <div className="flex items-center justify-between py-3">
-                <div>
                   <div className="text-[13px] font-semibold text-text">Max concurrent uploads</div>
                   <div className="text-[12px] text-muted">Number of files to upload at the same time (1–3)</div>
                 </div>

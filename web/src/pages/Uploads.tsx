@@ -3,7 +3,7 @@ import { useState, useRef, useEffect, type DragEvent } from 'react'
 import { UploadCloud, X, Upload, Zap, Clock, CheckCircle2, FileText } from 'lucide-react'
 import { call, useCall, useLive, navigate } from '../api.ts'
 import type { LiveStats } from '../../../core/transfers.ts'
-import { Panel, SearchInput, Chip, Button, Avatar, Toggle, TypeChip, Empty, Skeleton, ErrorState, fmtBytes, toast, triggerFlyToQueue } from '../ui.tsx'
+import { Panel, SearchInput, Chip, Button, Avatar, TypeChip, Empty, Skeleton, ErrorState, fmtBytes, toast, triggerFlyToQueue } from '../ui.tsx'
 
 export default function Uploads() {
   const [chatId, setChatId] = useState<number | null>(() => {
@@ -19,18 +19,14 @@ export default function Uploads() {
   const [destKind, setDestKind] = useState<'all' | 'channels' | 'groups' | 'saved'>('all')
 
   const [files, setFiles] = useState<File[]>([])
-  const [caption, setCaption] = useState('')
-  const [asAlbum, setAsAlbum] = useState(false)
-  const [keepNames, setKeepNames] = useState(false)
   const [isDragging, setIsDragging] = useState(false)
   const [busy, setBusy] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const { data: chatsData, error: chatsErr, reload: chatsReload } = useCall<{ chats: any[] }>('chats.list', {}, ['chats'])
-  const { data: authData } = useCall<{ me?: { captionMax?: number, uploadMax?: number } }>('auth.get', {}, ['auth'])
+  const { data: authData } = useCall<{ me?: { uploadMax?: number } }>('auth.get', {}, ['auth'])
   const { data: settings } = useCall<any>('settings.get', {}, ['settings'])
 
-  const captionMax = authData?.me?.captionMax || 1024
   const uploadMax = authData?.me?.uploadMax || 2097152000
 
   const allChats = chatsData?.chats ?? []
@@ -80,13 +76,12 @@ export default function Uploads() {
       const res = await call<{ added: number }>('uploads.add', {
         chatId: selectedChatId,
         paths,
-        caption: caption.trim(),
-        album: asAlbum,
-        keepNames,
+        caption: '',
+        album: false,
+        keepNames: true,
       })
       toast(`Queued ${res.added} uploads to ${selectedChat?.title || 'chat'}`)
       setFiles([])
-      setCaption('')
       if (res.added > 0) {
         triggerFlyToQueue(e)
       }
@@ -240,28 +235,6 @@ export default function Uploads() {
                 </div>
               </div>
             )}
-
-            {/* Caption textarea */}
-            <div className="space-y-1.5">
-              <div className="flex items-center justify-between text-[12px] text-muted">
-                <span>Caption (optional)</span>
-                <span className="tabular-nums">{caption.length} / {captionMax}</span>
-              </div>
-              <textarea
-                value={caption}
-                maxLength={captionMax}
-                onChange={(e) => setCaption(e.target.value)}
-                placeholder="Add a caption to your upload…"
-                rows={2}
-                className="w-full rounded-[10px] border border-border bg-tile p-2.5 text-[13px] text-text placeholder:text-muted focus:border-primary outline-none"
-              />
-            </div>
-
-            {/* Upload options */}
-            <div className="space-y-3 pt-1">
-              <Toggle label="Upload as album (groups matching files)" checked={asAlbum} onChange={setAsAlbum} />
-              <Toggle label="Keep original file names (default sends with Mediagram prefix)" checked={keepNames} onChange={setKeepNames} />
-            </div>
 
             {/* Submit button */}
             <div className="pt-2">
