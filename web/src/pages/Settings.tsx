@@ -195,15 +195,16 @@ export default function Settings() {
       message: 'New keys are checked by Telegram with a fresh sign-in — you\'ll enter your phone number and code again. Apply the update?',
       confirm: 'Update',
     }))) return
-    const wasSaved = !!settings?.apiHashSaved
+    const newId = Number(editApiId.trim())
+    const newHash = editApiHash.trim()
     try {
-      await call('auth.credentials', { apiId: Number(editApiId.trim()), apiHash: editApiHash.trim() })
-      if (wasSaved) await call('auth.saveKeys') // the saved row keeps up, so it can't hold the previous keys
+      await call('auth.credentials', { apiId: newId, apiHash: newHash, fresh: true })
       setEditApiId('')
       setEditApiHash('')
       setIdError(null)
       setHashError(null)
-      toast('API data saved')
+      setIsEditingApi(false)
+      toast('API credentials updated. Please verify your phone number.')
       reloadSettings()
     } catch (e) {
       const msg = (e as Error).message

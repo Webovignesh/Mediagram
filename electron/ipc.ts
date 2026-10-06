@@ -220,6 +220,21 @@ export function createMethods(ctx: Ctx) {
       const current = tg.credentials()
       const same = !!current && current.apiId === creds.apiId && current.apiHash.toLowerCase() === creds.apiHash.toLowerCase()
       if (!fresh && same) return tg.authState()
+
+      // When fresh is explicitly requested (e.g. from Settings update or fresh sign-in):
+      // 1. Immediately save the credentials to disk encrypted so they persist across any restarts
+      // 2. Clear any lastUser warning so login doesn't ask for credentials again
+      if (fresh) {
+        ctx.native.keys.save(creds.apiId, creds.apiHash)
+        putSetting(db, 'lastUser')
+        invalidate('settings')
+      }
+
+      // If there's an active signed-in session and fresh is requested, cleanly log out first
+      if (fresh && current && tg.authState().step === 'ready') {
+        await tg.logout().catch(() => {})
+      }
+
       await tg.start(creds, fresh || !!current)
       return tg.authState()
     }),

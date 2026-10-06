@@ -59,7 +59,7 @@ export const onUpdate = (fn: (u: Td.Update) => void) => { listeners.add(fn); ret
 
 function changed() {
   const next: AuthState = client ? { connection, ...mapAuth(tdAuth, me) }
-    : { connection: 'offline', step: 'credentials', ...(credError && { error: credError }), ...(offerFresh && { needsFresh: true }) }
+    : { connection: 'offline', step: creds ? 'starting' : 'credentials', ...(credError && { error: credError }), ...(offerFresh && { needsFresh: true }) }
   if (JSON.stringify(next) === JSON.stringify(auth)) return
   if (next.step !== auth.step) log('info', `Telegram: ${next.step}`)
   auth = next

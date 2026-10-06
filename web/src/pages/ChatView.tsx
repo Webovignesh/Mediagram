@@ -821,18 +821,20 @@ export function ChatView({
         {/* Search & Media filter */}
         <div className="flex items-center gap-2">
           <div className="relative w-52">
+            <Search size={13} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
             <input
               type="text"
               placeholder="Search in chat…"
               value={chatMsgSearch}
               onChange={(e) => setChatMsgSearch(e.target.value)}
-              className="w-full rounded-xl border border-white/10 bg-white/5 px-3 py-1.5 text-[12px] text-text placeholder:text-muted focus:border-primary outline-none transition-colors"
+              className="w-full rounded-xl border border-border bg-tile py-1.5 pl-8 pr-7 text-[12px] text-text placeholder:text-muted focus:border-primary focus:ring-1 focus:ring-primary/30 outline-none transition-all shadow-2xs"
             />
             {chatMsgSearch && (
               <button
                 type="button"
                 onClick={() => setChatMsgSearch('')}
-                className="absolute right-2 top-2 text-muted hover:text-white"
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted hover:text-text cursor-pointer transition-colors"
+                title="Clear search"
               >
                 <X size={13} />
               </button>
@@ -841,10 +843,10 @@ export function ChatView({
           <button
             type="button"
             onClick={() => setMediaOnly(!mediaOnly)}
-            className={`flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-[12px] font-medium border transition-all ${
+            className={`flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-[12px] font-medium border transition-all cursor-pointer ${
               mediaOnly
                 ? 'bg-primary text-white border-primary shadow-glow'
-                : 'bg-white/5 border-white/10 text-muted hover:text-white hover:bg-white/10'
+                : 'bg-tile border-border text-text-2 hover:text-text hover:bg-tile/80 hover:border-primary/40'
             }`}
             title="Filter media files only"
           >
@@ -1856,7 +1858,7 @@ export function ChatView({
                 setEditingMessage(null)
                 setInputText('')
               }}
-              className="p-1 rounded-full text-muted hover:text-white hover:bg-white/10 transition-colors"
+              className="p-1 rounded-full text-muted hover:text-text hover:bg-tile transition-colors cursor-pointer"
               title="Cancel editing"
             >
               <X size={13} />
@@ -2057,7 +2059,7 @@ export function ChatView({
                 value={forwardSearch}
                 onChange={(e) => setForwardSearch(e.target.value)}
                 placeholder="Search chats and channels..."
-                className="w-full rounded-xl bg-black/40 border border-white/10 pl-9 pr-3 py-2 text-[13px] text-text placeholder:text-muted focus:border-primary focus:outline-none"
+                className="w-full rounded-xl bg-tile border border-border pl-9 pr-3 py-2 text-[13px] text-text placeholder:text-muted focus:border-primary focus:outline-none"
               />
             </div>
 
@@ -2099,11 +2101,11 @@ export function ChatView({
                 ))}
             </div>
 
-            <div className="flex justify-end pt-2 border-t border-white/10">
+            <div className="flex justify-end pt-2 border-t border-border">
               <button
                 type="button"
                 onClick={() => setForwardingMessage(null)}
-                className="px-4 py-1.5 rounded-xl border border-white/10 bg-white/5 text-[12.5px] text-text hover:bg-white/10 transition-colors cursor-pointer"
+                className="px-4 py-1.5 rounded-xl border border-border bg-tile text-[12.5px] text-text hover:bg-tile/80 transition-colors cursor-pointer"
               >
                 Cancel
               </button>

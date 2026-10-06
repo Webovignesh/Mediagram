@@ -173,7 +173,7 @@ export function Pill({
   label?: string
 }) {
   if (label) {
-    return <span className="inline-flex h-6 items-center justify-center rounded-full border border-white/10 bg-white/5 px-3 text-[11px] font-medium text-text-2 whitespace-nowrap shrink-0">{label}</span>
+    return <span className="inline-flex h-6 items-center justify-center rounded-full border border-border bg-tile px-3 text-[11px] font-medium text-text-2 whitespace-nowrap shrink-0">{label}</span>
   }
   if (finalizing) {
     return (
@@ -217,7 +217,7 @@ export function Pill({
   }
   if (status === 'queued') {
     return (
-      <span className="inline-flex h-6 items-center justify-center gap-1.5 rounded-full border border-white/10 bg-white/5 px-3 text-[11px] font-semibold text-text-2 whitespace-nowrap shrink-0">
+      <span className="inline-flex h-6 items-center justify-center gap-1.5 rounded-full border border-border bg-tile px-3 text-[11px] font-semibold text-text-2 whitespace-nowrap shrink-0">
         <span className="size-1.5 rounded-full bg-muted" />
         Queued
       </span>
@@ -239,7 +239,7 @@ export function Pill({
       </span>
     )
   }
-  return <span className="inline-flex h-6 items-center justify-center rounded-full border border-white/10 bg-white/5 px-3 text-[11px] font-medium text-muted whitespace-nowrap shrink-0">Not downloaded</span>
+  return <span className="inline-flex h-6 items-center justify-center rounded-full border border-border bg-tile px-3 text-[11px] font-medium text-muted whitespace-nowrap shrink-0">Not downloaded</span>
 }
 
 export function Progress({ done, size, tone = 'primary' }: { done: number, size: number, tone?: Tone }) {
