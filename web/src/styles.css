@@ -23,11 +23,11 @@
 }
 
 :root, [data-theme="dark"] {
-  --color-bg: #0f172a;
-  --color-sidebar: #111c35;
-  --color-panel: rgb(30 41 59 / 0.88);
-  --color-tile: #1e293b;
-  --color-border: rgb(148 163 184 / 0.16);
+  --color-bg: #0b1329;
+  --color-sidebar: #0f172a;
+  --color-panel: rgb(17 26 48 / 0.92);
+  --color-tile: #15223e;
+  --color-border: rgb(148 163 184 / 0.18);
   --color-text: #f8fafc;
   --color-text-2: #cbd5e1;
   --color-muted: #94a3b8;
@@ -35,10 +35,29 @@
   --color-primary-hover: #60a5fa;
   --color-cyan: #38bdf8;
   --shadow-glow: 0 0 0 1px #3b82f6, 0 0 16px rgb(59 130 246 / 0.35);
-  --chat-bg: #070c14;
+  --chat-bg: #070d1a;
   --chat-gradient: radial-gradient(ellipse 95% 85% at 50% 15%, rgba(20, 36, 58, 0.5) 0%, rgba(10, 18, 30, 0.8) 60%, rgba(6, 10, 18, 0.96) 100%);
   --chat-doodle-color: #94a3b8;
   --chat-doodle-opacity: 0.16;
+}
+
+[data-theme="fulldark"], [data-theme="tokyo"] {
+  --color-bg: #000000;
+  --color-sidebar: #09090b;
+  --color-panel: #111113;
+  --color-tile: #17171a;
+  --color-border: rgb(255 255 255 / 0.14);
+  --color-text: #ffffff;
+  --color-text-2: #e4e4e7;
+  --color-muted: #a1a1aa;
+  --color-primary: #38bdf8;
+  --color-primary-hover: #0ea5e9;
+  --color-cyan: #38bdf8;
+  --shadow-glow: 0 0 0 1px #38bdf8, 0 0 16px rgb(56 189 248 / 0.35);
+  --chat-bg: #030303;
+  --chat-gradient: radial-gradient(ellipse 95% 85% at 50% 15%, rgba(18, 18, 20, 0.7) 0%, rgba(3, 3, 3, 0.98) 100%);
+  --chat-doodle-color: #38bdf8;
+  --chat-doodle-opacity: 0.14;
 }
 
 [data-theme="telegram"] {
@@ -46,10 +65,10 @@
   --color-sidebar: #0e1621;
   --color-panel: rgb(24 37 51 / 0.95);
   --color-tile: #242f3d;
-  --color-border: rgb(255 255 255 / 0.09);
-  --color-text: #f5f5f5;
-  --color-text-2: #a2b5c7;
-  --color-muted: #708499;
+  --color-border: rgb(255 255 255 / 0.12);
+  --color-text: #ffffff;
+  --color-text-2: #cbd5e1;
+  --color-muted: #94a3b8;
   --color-primary: #5288c1;
   --color-primary-hover: #6ba3de;
   --color-cyan: #5288c1;
@@ -65,10 +84,10 @@
   --color-sidebar: #0b152d;
   --color-panel: rgb(15 28 56 / 0.92);
   --color-tile: #16274e;
-  --color-border: rgb(56 189 248 / 0.16);
-  --color-text: #f0f9ff;
+  --color-border: rgb(56 189 248 / 0.18);
+  --color-text: #ffffff;
   --color-text-2: #bae6fd;
-  --color-muted: #7dd3fc;
+  --color-muted: #93c5fd;
   --color-primary: #0ea5e9;
   --color-primary-hover: #38bdf8;
   --color-cyan: #38bdf8;
@@ -85,9 +104,9 @@
   --color-panel: #ffffff;
   --color-tile: #ffffff;
   --color-border: #cbd5e1;
-  --color-text: #0f172a;
-  --color-text-2: #334155;
-  --color-muted: #64748b;
+  --color-text: #090d16;
+  --color-text-2: #243042;
+  --color-muted: #53647d;
   --color-primary: #0284c7;
   --color-primary-hover: #0369a1;
   --color-cyan: #0284c7;
@@ -103,10 +122,10 @@
   --color-sidebar: #f3ece0;
   --color-panel: #ffffff;
   --color-tile: #f8f3eb;
-  --color-border: rgb(196 178 156 / 0.38);
-  --color-text: #292524;
-  --color-text-2: #57534e;
-  --color-muted: #8c7e70;
+  --color-border: rgb(196 178 156 / 0.45);
+  --color-text: #1c1917;
+  --color-text-2: #44403c;
+  --color-muted: #78716c;
   --color-primary: #c27803;
   --color-primary-hover: #a16207;
   --color-cyan: #c27803;
@@ -114,25 +133,6 @@
   --chat-bg: #f4ecdf;
   --chat-gradient: radial-gradient(ellipse 95% 85% at 50% 15%, rgba(255, 252, 246, 0.95) 0%, rgba(246, 238, 227, 0.88) 60%, rgba(238, 226, 210, 0.98) 100%);
   --chat-doodle-color: #9c8469;
-  --chat-doodle-opacity: 0.18;
-}
-
-[data-theme="tokyo"] {
-  --color-bg: #1a1b26;
-  --color-sidebar: #16161e;
-  --color-panel: rgb(36 40 59 / 0.95);
-  --color-tile: #2f354f;
-  --color-border: rgb(122 162 247 / 0.2);
-  --color-text: #c0caf5;
-  --color-text-2: #9aa5ce;
-  --color-muted: #565f89;
-  --color-primary: #7aa2f7;
-  --color-primary-hover: #bb9af7;
-  --color-cyan: #7dcfff;
-  --shadow-glow: 0 0 0 1px #7aa2f7, 0 0 16px rgb(122 162 247 / 0.35);
-  --chat-bg: #13141f;
-  --chat-gradient: radial-gradient(ellipse 95% 85% at 50% 15%, rgba(26, 27, 38, 0.7) 0%, rgba(19, 20, 31, 0.95) 100%);
-  --chat-doodle-color: #7aa2f7;
   --chat-doodle-opacity: 0.18;
 }
 

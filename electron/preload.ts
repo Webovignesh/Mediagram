@@ -16,7 +16,7 @@ const bridge = {
     if (p) ipcRenderer.invoke('grant', [p]).catch(() => {})
     return p
   },
-  setTheme: (color: string, symbolColor?: string): Promise<unknown> => ipcRenderer.invoke('theme', { color, symbolColor }),
+  setTheme: (color: string, symbolColor?: string, id?: string): Promise<unknown> => ipcRenderer.invoke('theme', { color, symbolColor, id }),
 }
 
 contextBridge.exposeInMainWorld('mediagram', bridge)

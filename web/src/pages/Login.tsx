@@ -332,7 +332,8 @@ export default function Login() {
           )}
 
           {step === 'credentials' && (
-            <form onSubmit={submitCredentials}>
+            <>
+              <form onSubmit={submitCredentials}>
               {settings?.lastUser && (
                 <div className="mb-4 rounded-xl border border-primary/30 bg-primary/10 p-3.5 text-[12.5px] flex items-start gap-2.5 animate-in fade-in duration-200">
                   <div className="size-2 rounded-full bg-primary animate-pulse shrink-0 mt-1" />
@@ -397,29 +398,7 @@ export default function Login() {
                 </div>
               </div>
               {(error || a.error) && <p role="alert" className="mt-3 text-danger">{error || a.error}</p>}
-              {/* The one thing a first-time user cannot guess: where these two values come from. */}
-              <div className="mt-4 rounded-xl border border-border bg-tile/70 p-4">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="text-[13px] font-semibold text-text">Where do I get these?</div>
-                  <a href="https://my.telegram.org" target="_blank" rel="noreferrer" className="flex items-center gap-1 text-[12px] text-primary hover:underline">
-                    Open my.telegram.org <ExternalLink size={12} />
-                  </a>
-                </div>
-                <ol className="mt-2 list-decimal space-y-1.5 pl-5 text-[12px] leading-relaxed text-text-2">
-                  <li>
-                    Go to{' '}
-                    <a href="https://my.telegram.org" target="_blank" rel="noreferrer" className="text-primary hover:underline">my.telegram.org</a>{' '}
-                    and log in with your phone number — Telegram sends you a code inside the app.
-                  </li>
-                  <li>Click <span className="font-medium text-text">API development tools</span>.</li>
-                  <li>Fill in an app title and short name (any text you like, e.g. “Mediagram”) and create the app.</li>
-                  <li>Copy <span className="font-medium text-text">App api_id</span> into <span className="font-medium text-text">API ID</span> above.</li>
-                  <li>Copy <span className="font-medium text-text">App api_hash</span> into <span className="font-medium text-text">API hash</span> above.</li>
-                </ol>
-                <p className="mt-2.5 text-[11px] text-muted">
-                  These values stay on this device (saved encrypted with your Windows account) and are only sent to Telegram.
-                </p>
-              </div>
+
               <div className="mt-5 flex gap-2">
                 {!a.error && (
                   <Button variant="secondary" onClick={backToPhone} disabled={busy}>
@@ -430,6 +409,7 @@ export default function Login() {
                   {busy ? 'Connecting…' : (settings?.lastUser ? 'Sign in' : 'Continue')}
                 </Button>
               </div>
+
               {/* The keys on record for the saved session do not match what was typed: wiping the local session and
                   signing in again is the only way Telegram gets to check this pair for real (the OTP step). */}
               {a.needsFresh && (
@@ -443,6 +423,43 @@ export default function Login() {
                 </Button>
               )}
             </form>
+
+            {/* Separate rectangular guide card under the API credentials box */}
+            <div className="mt-4 rounded-xl border border-border/80 bg-tile/60 p-4 shadow-sm">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <div className="size-2 rounded-full bg-primary" />
+                  <span className="text-[12.5px] font-semibold text-text">How to get your Telegram API credentials</span>
+                </div>
+                <a
+                  href="https://my.telegram.org"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="flex items-center gap-1 text-[11.5px] font-medium text-primary hover:underline"
+                >
+                  <span>my.telegram.org</span>
+                  <ExternalLink size={12} />
+                </a>
+              </div>
+              <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11.5px] text-text-2">
+                <div className="p-2 rounded-lg bg-panel/70 border border-border/40">
+                  <span className="font-semibold text-text">1. Sign In:</span> Open <a href="https://my.telegram.org" target="_blank" rel="noreferrer" className="text-primary hover:underline">my.telegram.org</a> with your Telegram phone number.
+                </div>
+                <div className="p-2 rounded-lg bg-panel/70 border border-border/40">
+                  <span className="font-semibold text-text">2. Tools:</span> Click <strong>API development tools</strong>.
+                </div>
+                <div className="p-2 rounded-lg bg-panel/70 border border-border/40">
+                  <span className="font-semibold text-text">3. Create App:</span> Enter title (e.g. “Mediagram”) to generate keys.
+                </div>
+                <div className="p-2 rounded-lg bg-panel/70 border border-border/40">
+                  <span className="font-semibold text-text">4. Copy Keys:</span> Paste <strong>api_id</strong> and <strong>api_hash</strong> into the fields above.
+                </div>
+              </div>
+              <p className="mt-2 text-[10.5px] text-muted">
+                These values are stored encrypted with Windows DPAPI on this device and only shared directly with Telegram.
+              </p>
+            </div>
+            </>
           )}
 
           {step === 'phone' && (

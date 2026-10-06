@@ -495,7 +495,7 @@ export async function protocolFile(url: string, ctx: Pick<Ctx, 'tg' | 'paths' | 
     // 1. TDLib cache/downloads directory: allow direct instant playback
     const tdFiles = path.join(ctx.paths.tdlib, 'files')
     const resolved = path.resolve(arg)
-    if (within(tdFiles, resolved) && await isFile(resolved)) return resolved
+    if ((within(tdFiles, resolved) || within(ctx.paths.tdlib, resolved) || within(ctx.paths.tmp, resolved)) && await isFile(resolved)) return resolved
 
     // 2. Playback URLs carry absolute paths, so they go through the library rule: an existing file inside the root
     // after realpath, or a recorded download. A forged URL names nothing outside those two (ARCHITECTURE > Security).

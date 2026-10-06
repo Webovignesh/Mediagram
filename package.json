@@ -80,6 +80,8 @@
       "createStartMenuShortcut": true,
       "deleteAppDataOnUninstall": false,
       "include": "assets/installer.nsh",
+      "installerSidebar": "assets/installerSidebar.bmp",
+      "uninstallerSidebar": "assets/installerSidebar.bmp",
       "artifactName": "Mediagram-Setup-${version}.${ext}"
     }
   }

@@ -1514,7 +1514,7 @@ export function MediaPreviewModal({
           setActualSize(res.size)
         }
         if (res.path) {
-          if (isImage || !shouldPrebuffer) {
+          if (!isImage && !shouldPrebuffer) {
             setPreparedPath(res.path)
           } else if (res.completed) {
             setPreparedPath(res.path)
@@ -1534,7 +1534,7 @@ export function MediaPreviewModal({
           setActualSize(event.total)
         }
         if (event.path) {
-          if (isImage || !shouldPrebuffer) {
+          if (!isImage && !shouldPrebuffer) {
             setPreparedPath(event.path)
           } else if (event.completed) {
             setPreparedPath(event.path)
@@ -1557,6 +1557,17 @@ export function MediaPreviewModal({
     if (audioRef.current) audioRef.current.playbackRate = speed
   }, [speed, preparedPath])
 
+  // Synchronize native titleBarOverlay to black theater while MediaModal is open
+  useEffect(() => {
+    if (!open) return
+    const bridge = window.mediagram || window.teleflow
+    bridge?.setTheme?.('#000000', '#ffffff')?.catch(() => {})
+    return () => {
+      const active = getActiveTheme()
+      bridge?.setTheme?.(active.overlayColor, active.symbolColor, active.id)?.catch(() => {})
+    }
+  }, [open])
+
   if (!open || !item) return null
 
   const resolvedPath = item.path || preparedPath
@@ -1570,7 +1581,7 @@ export function MediaPreviewModal({
     >
       {/* 1. Seamless native window drag bar across the top matching titleBarOverlay */}
       <div
-        className="drag flex h-9 shrink-0 items-center justify-between px-3 bg-bg select-none z-30 border-b border-border/40"
+        className="drag flex h-9 shrink-0 items-center justify-between px-3 bg-black/90 select-none z-30 border-b border-white/10"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="no-drag" />
@@ -1580,20 +1591,20 @@ export function MediaPreviewModal({
 
       {/* 2. Floating metadata and action controls toolbar */}
       <div
-        className="w-full flex items-center justify-between px-6 py-2.5 bg-panel/90 backdrop-blur-md border-b border-border z-20 cursor-default"
+        className="w-full flex items-center justify-between px-6 py-2.5 bg-black/80 backdrop-blur-md border-b border-white/10 z-20 cursor-default"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="min-w-0 flex-1 mr-4">
-          <h3 className="truncate text-[13.5px] font-semibold text-text tracking-wide" title={item.name}>
+          <h3 className="truncate text-[13.5px] font-semibold text-white tracking-wide" title={item.name}>
             {item.name}
           </h3>
           <div className="mt-0.5 flex items-center gap-2 text-[11.5px] text-slate-300">
-            {actualSize > 0 ? <span className="font-mono text-white/90 font-medium">{fmtBytes(actualSize)}</span> : null}
+            {actualSize > 0 ? <span className="font-mono text-white font-medium">{fmtBytes(actualSize)}</span> : null}
             {naturalDims ? <span>• {naturalDims.width} × {naturalDims.height}</span> : null}
             {item.duration ? <span>• {fmtDuration(item.duration)}</span> : null}
             <TypeChip ext={ext.toUpperCase()} />
             {isImage && !isFullLoaded && !imgError && (
-              <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10.5px] font-medium bg-primary/15 text-primary border border-primary/25">
+              <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10.5px] font-medium bg-primary/20 text-primary border border-primary/30">
                 <span className="size-2 rounded-full border border-primary/40 border-t-primary animate-spin" />
                 <span>Loading photo… {prepProgress && prepProgress.total > 0 ? `${Math.round((prepProgress.downloaded / prepProgress.total) * 100)}%` : ''}</span>
               </span>
@@ -1732,6 +1743,9 @@ export function MediaPreviewModal({
                   setIsFullLoaded(true)
                 }}
                 onError={() => {
+                  if (prepProgress && prepProgress.downloaded < (prepProgress.total || 1)) {
+                    return
+                  }
                   setImgError(true)
                 }}
                 className={`max-h-[85vh] max-w-[95vw] w-auto h-auto min-w-[320px] md:min-w-[480px] object-contain rounded-lg shadow-2xl transition-opacity duration-300 ${
@@ -1754,18 +1768,18 @@ export function MediaPreviewModal({
 
             {/* 3. Sleek Loading Stage Overlay */}
             {!isFullLoaded && !imgError && (
-              <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/40 backdrop-blur-[2px] rounded-2xl pointer-events-none z-10 gap-3 p-6">
-                <div className="size-14 rounded-full bg-panel/90 backdrop-blur-md border border-border flex items-center justify-center text-primary shadow-2xl">
+              <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/60 backdrop-blur-[2px] rounded-2xl pointer-events-none z-10 gap-3 p-6">
+                <div className="size-14 rounded-full bg-slate-900/90 backdrop-blur-md border border-white/20 flex items-center justify-center text-primary shadow-2xl">
                   <Loader2 size={26} className="animate-spin text-primary" />
                 </div>
                 <div className="flex flex-col items-center gap-1 text-center">
-                  <span className="text-[13px] font-semibold text-text shadow-sm">Loading photo…</span>
+                  <span className="text-[13px] font-semibold text-white shadow-sm">Loading photo…</span>
                   {prepProgress && prepProgress.total > 0 ? (
-                    <span className="text-[11px] font-mono text-muted tabular-nums">
+                    <span className="text-[11px] font-mono text-slate-300 tabular-nums">
                       {fmtBytes(prepProgress.downloaded)} of {fmtBytes(prepProgress.total)} ({Math.round((prepProgress.downloaded / prepProgress.total) * 100)}%)
                     </span>
                   ) : actualSize > 0 ? (
-                    <span className="text-[11px] font-mono text-muted">{fmtBytes(actualSize)}</span>
+                    <span className="text-[11px] font-mono text-slate-300">{fmtBytes(actualSize)}</span>
                   ) : null}
                 </div>
               </div>
@@ -1773,13 +1787,13 @@ export function MediaPreviewModal({
 
             {/* 4. Resilient Error Fallback Card */}
             {imgError && (
-              <div className="flex flex-col items-center justify-center gap-4 p-8 rounded-2xl bg-panel/95 border border-border shadow-2xl text-center max-w-md">
+              <div className="flex flex-col items-center justify-center gap-4 p-8 rounded-2xl bg-slate-900/95 border border-white/15 shadow-2xl text-center max-w-md">
                 <div className="size-16 rounded-2xl bg-danger/15 text-danger flex items-center justify-center border border-danger/30 shadow-inner">
                   <ImageOff size={32} />
                 </div>
                 <div>
-                  <div className="text-[15px] font-bold text-text truncate max-w-sm">{item.name}</div>
-                  <div className="text-[12px] text-muted mt-1">
+                  <div className="text-[15px] font-bold text-white truncate max-w-sm">{item.name}</div>
+                  <div className="text-[12px] text-slate-300 mt-1">
                     Photo preview could not be displayed. You can download the file directly to view it.
                   </div>
                 </div>
@@ -1795,7 +1809,7 @@ export function MediaPreviewModal({
                       setImgError(false)
                       setPreparedPath(null)
                     }}
-                    className="py-2 px-4 text-[12.5px]"
+                    className="py-2 px-4 text-[12.5px] bg-white/10 hover:bg-white/20 text-white border-white/20"
                   >
                     Retry
                   </Button>

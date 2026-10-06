@@ -667,25 +667,32 @@ export default function Settings() {
                       </div>
                       <div>
                         <div className="text-[14px] font-bold text-text flex items-center gap-2 flex-wrap">
-                          <span>Telegram Credentials Stored & Active</span>
-                          <span className="text-[10.5px] font-semibold px-2 py-0.5 rounded-full border border-primary/30 bg-primary/15 text-primary">
-                            Saved in Windows Account
-                          </span>
+                          <span>Telegram API Credentials</span>
                         </div>
                         <div className="text-[11.5px] text-muted">
-                          Protected by Windows DPAPI encryption • Active local session
+                          {settings?.apiHashSaved
+                            ? 'Protected by Windows DPAPI encryption • Active local session'
+                            : 'Credentials removed from disk storage • Session only'}
                         </div>
                       </div>
                     </div>
 
-                    <div className="flex items-center gap-1.5 text-[11px] font-medium text-primary bg-primary/10 border border-primary/25 px-2.5 py-1 rounded-full shrink-0">
-                      <span className="size-1.5 rounded-full bg-primary animate-pulse" />
-                      <span>Active & Encrypted</span>
-                    </div>
+                    {settings?.apiHashSaved ? (
+                      <div className="flex items-center gap-1.5 text-[11px] font-medium text-primary bg-primary/10 border border-primary/25 px-2.5 py-1 rounded-full shrink-0">
+                        <span className="size-1.5 rounded-full bg-primary animate-pulse" />
+                        <span>Active & Encrypted</span>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-1.5 text-[11px] font-medium text-muted bg-tile border border-border px-2.5 py-1 rounded-full shrink-0">
+                        <span>Session Only • Not Saved</span>
+                      </div>
+                    )}
                   </div>
 
                   <p className="text-[12px] text-muted leading-relaxed">
-                    Your Telegram API ID and API Hash are encrypted with the Windows Data Protection API (DPAPI) and stored directly in your local Windows profile. They never leave your device, cannot be read by other user accounts, and actively power your Mediagram connection.
+                    {settings?.apiHashSaved
+                      ? 'Your Telegram API ID and API Hash are encrypted with the Windows Data Protection API (DPAPI) and stored directly in your local Windows profile. They never leave your device, cannot be read by other user accounts, and actively power your Mediagram connection.'
+                      : 'Your API credentials were wiped from disk storage on this device. Your current active session will remain connected until you log out or exit.'}
                   </p>
                 </div>
 
@@ -701,10 +708,14 @@ export default function Settings() {
                             <Lock size={22} className="text-primary" />
                           </div>
                           <div className="text-[14px] font-bold text-text tracking-wide">
-                            Telegram API Keys Configured & Protected
+                            {settings?.apiHashSaved
+                              ? 'Telegram API Keys Configured & Protected'
+                              : 'API Keys Not Saved on Device'}
                           </div>
                           <p className="text-[12px] text-muted max-w-md mt-1 mb-4 leading-relaxed">
-                            Your credentials from initial setup are already active and securely stored in your Windows account. You only need to edit if you want to switch to different Telegram developer keys.
+                            {settings?.apiHashSaved
+                              ? 'Your credentials from initial setup are active and securely encrypted in your Windows account. You only need to edit if you want to switch to different Telegram developer keys.'
+                              : 'Credentials were removed. You can enter new Telegram developer keys to save them securely to this device.'}
                           </p>
                           <button
                             type="button"

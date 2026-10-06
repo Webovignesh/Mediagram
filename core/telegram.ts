@@ -958,13 +958,15 @@ export async function prepareMedia(chatId: number, messageId: number) {
     // Download with priority 32 (maximum speed)
     f = await invoke({ _: 'downloadFile', file_id: f.id, priority: 32, offset: 0, limit: 0, synchronous: false })
   }
-  const localExists = Boolean(f.local.path && fs.existsSync(f.local.path))
+  const localStat = f.local.path ? fs.statSync(f.local.path, { throwIfNoEntry: false }) : null
+  const localCompleted = Boolean(f.local.is_downloading_completed || (localStat && localStat.size > 0 && (!f.size || localStat.size >= f.size)))
+  const canUsePath = isImage ? localCompleted : Boolean(localCompleted || (localStat && localStat.size > 0))
   return {
-    path: (f.local.is_downloading_completed || localExists) && f.local.path && fs.existsSync(f.local.path) ? f.local.path : null,
+    path: canUsePath && f.local.path && fs.existsSync(f.local.path) ? f.local.path : null,
     fileId: f.id,
-    completed: f.local.is_downloading_completed || localExists,
+    completed: localCompleted,
     size: f.size || f.expected_size || media.size,
-    downloaded: f.local.downloaded_size,
+    downloaded: localCompleted ? (f.size || media.size) : (f.local.downloaded_size || (localStat?.size ?? 0)),
     name: media.name,
     type: media.type,
     duration: media.duration,

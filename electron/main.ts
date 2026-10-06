@@ -337,10 +337,13 @@ function startup() {
       grants.add(paths)
       return true
     })
-    ipcMain.handle('theme', (e, { color, symbolColor }) => {
+    ipcMain.handle('theme', (e, { color, symbolColor, id: themeId }) => {
       let sender: string | null = null
       try { sender = e.senderFrame?.url ?? null } catch {}
       if (!fromRenderer(rendererKey, sender)) return false
+      if (themeId && typeof themeId === 'string') {
+        try { putSetting(db, 'theme', themeId) } catch {}
+      }
       if (win && !win.isDestroyed() && process.platform === 'win32') {
         win.setTitleBarOverlay({ color, symbolColor: symbolColor || '#94a3b8', height: 36 })
         win.setBackgroundColor(color)
@@ -402,13 +405,29 @@ function initialBounds(saved: Partial<WindowState> | undefined) {
   return { width, height, x: area.x + Math.round((area.width - width) / 2), y: area.y + Math.round((area.height - height) / 2) }
 }
 
+function getThemeColors(id?: string) {
+  const map: Record<string, { color: string, symbolColor: string }> = {
+    dark: { color: '#0b1329', symbolColor: '#cbd5e1' },
+    fulldark: { color: '#000000', symbolColor: '#ffffff' },
+    tokyo: { color: '#000000', symbolColor: '#ffffff' },
+    cream: { color: '#faf6ee', symbolColor: '#292524' },
+    emerald: { color: '#faf6ee', symbolColor: '#292524' },
+    sunset: { color: '#faf6ee', symbolColor: '#292524' },
+    ocean: { color: '#070e1e', symbolColor: '#38bdf8' },
+    telegram: { color: '#17212b', symbolColor: '#ffffff' },
+    light: { color: '#f8fafc', symbolColor: '#0f172a' },
+  }
+  return map[id || ''] || map.dark
+}
+
 function createWindow(url: string, db: DB, hidden: boolean, closeToTray: () => boolean) {
   const saved = readSetting(db, 'window') as Partial<WindowState> | undefined
+  const initialTheme = getThemeColors(readSetting(db, 'theme') as string | undefined)
   const w = new BrowserWindow({
     ...initialBounds(saved), minWidth: 1024, minHeight: 640, icon, show: !hidden,
-    backgroundColor: '#0f172a',
+    backgroundColor: initialTheme.color,
     titleBarStyle: 'hidden',
-    titleBarOverlay: { color: '#0f172a', symbolColor: '#94a3b8', height: 36 },
+    titleBarOverlay: { color: initialTheme.color, symbolColor: initialTheme.symbolColor, height: 36 },
     webPreferences: {
       preload: path.join(import.meta.dirname, '../preload/preload.cjs'),
       contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true,
