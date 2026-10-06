@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback } from 'react'
-import { Plus, RotateCcw, Download, Folder, CheckSquare, Square, FolderOpen, Send, ExternalLink, Copy, Filter, FileText, MessageSquare, ChevronDown, Play, Pause, Music, SlidersHorizontal, ArrowDown, Trash2, Film, LogOut, MoreVertical } from 'lucide-react'
+import { Plus, RotateCcw, Download, Folder, CheckSquare, Square, FolderOpen, Send, ExternalLink, Copy, Filter, FileText, MessageSquare, ChevronDown, Play, Pause, Music, SlidersHorizontal, ArrowDown, Trash2, Film, LogOut, MoreVertical, RefreshCw, AlertCircle, Clock } from 'lucide-react'
 import { call, useCall, useLive, useTyping, navigate } from '../api.ts'
 import { Panel, SearchInput, Chip, Select, Button, Avatar, Pill, Thumb, TypeChip, Pagination, Empty, Skeleton, ErrorState, OpenChatDialog, MediaPreviewModal, Dialog, fmtBytes, fmtAgo, fmtDate, fmtDuration, toast, triggerFlyToQueue, confirm, CheckDuplicatesModal, MediagramLogo, TelegramInviteModal, type DuplicateCheckResult } from '../ui.tsx'
 import { ChatView } from './ChatView.tsx'
@@ -1327,49 +1327,134 @@ export default function Downloads() {
           </div>
         )}
 
-        {/* Media index bar: how fast and how much is left while it runs, and why it stopped when it did */}
+        {/* Media index bar: modern elevated SaaS status card */}
         {scan && (scan.state === 'scanning' || scan.state === 'failed' || scan.state === 'paused') && (
           <div
             role="status"
             aria-live="polite"
-            className={`rounded-lg border p-2.5 text-[12px] text-text ${
-              scan.state === 'failed' ? 'border-danger/40 bg-danger/10'
-                : scan.state === 'paused' ? 'border-amber-400/40 bg-amber-400/10'
-                : 'border-primary/30 bg-primary/10'
+            className={`rounded-xl border p-3 shadow-xs transition-all duration-300 ${
+              scan.state === 'failed'
+                ? 'border-danger/35 bg-danger/10'
+                : scan.state === 'paused'
+                ? 'border-amber-400/35 bg-amber-400/10'
+                : 'border-primary/35 bg-card/90 backdrop-blur-md shadow-[0_2px_12px_rgba(59,130,246,0.06)]'
             }`}
           >
-            <div className="flex items-center justify-between gap-3">
-              <span className="min-w-0 truncate">
-                {scan.state === 'scanning' && (
-                  <>
-                    Indexing media… {scan.indexed.toLocaleString()}
-                    {scan.total ? ` of about ${scan.total.toLocaleString()}` : ''}
-                    {scanEta !== null ? ` · ${fmtLeft(scanEta)} left` : ''}
-                  </>
-                )}
-                {scan.state === 'failed' && <>Indexing stopped: {scan.error || 'Telegram refused the request'}</>}
-                {scan.state === 'paused' && (
-                  <>Indexing paused at {scan.indexed.toLocaleString()}
-                  {scan.total ? ` of about ${scan.total.toLocaleString()}` : ''} files</>
-                )}
-              </span>
-              {scan.state === 'scanning' && (
-                <Button variant="secondary" className="py-1 px-2.5 text-[11px] shrink-0" onClick={() => rescan('chats.stopScan')}>Stop</Button>
-              )}
-              {scan.state !== 'scanning' && (
-                <Button
-                  variant="primary"
-                  className="py-1 px-2.5 text-[11px] shrink-0"
-                  onClick={() => rescan('chats.rescan')}
-                >
-                  {scan.state === 'failed' ? 'Retry' : 'Resume'}
-                </Button>
-              )}
-            </div>
-            {scan.state !== 'failed' && (
-              <div className="mt-1.5 h-1.5 w-full rounded-full bg-border/60 overflow-hidden">
+            <div className="flex items-center justify-between gap-3 flex-wrap sm:flex-nowrap">
+              <div className="flex items-center gap-3 min-w-0">
                 <div
-                  className={`h-full rounded-full transition-all duration-300 ${scan.total ? 'bg-primary' : 'w-1/2 animate-pulse bg-primary/70'}`}
+                  className={`size-8 rounded-lg flex items-center justify-center shrink-0 border ${
+                    scan.state === 'failed'
+                      ? 'bg-danger/15 text-danger border-danger/30'
+                      : scan.state === 'paused'
+                      ? 'bg-amber-400/15 text-amber-500 border-amber-400/30'
+                      : 'bg-primary/15 text-primary border-primary/30'
+                  }`}
+                >
+                  {scan.state === 'scanning' && <RefreshCw size={15} className="animate-spin text-primary" />}
+                  {scan.state === 'paused' && <Pause size={15} className="text-amber-500" />}
+                  {scan.state === 'failed' && <AlertCircle size={15} className="text-danger" />}
+                </div>
+
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[12.5px] font-semibold text-text leading-tight">
+                      {scan.state === 'scanning'
+                        ? 'Indexing Channel Media'
+                        : scan.state === 'paused'
+                        ? 'Indexing Paused'
+                        : 'Indexing Interrupted'}
+                    </span>
+                    <span
+                      className={`inline-flex items-center gap-1 px-1.5 py-0.2 rounded-full text-[10px] font-semibold border ${
+                        scan.state === 'failed'
+                          ? 'bg-danger/15 text-danger border-danger/30'
+                          : scan.state === 'paused'
+                          ? 'bg-amber-400/15 text-amber-500 border-amber-400/30'
+                          : 'bg-primary/15 text-primary border-primary/30'
+                      }`}
+                    >
+                      {scan.state === 'scanning' && <span className="size-1.5 rounded-full bg-primary animate-pulse" />}
+                      {scan.state === 'scanning' ? 'Live' : scan.state === 'paused' ? 'Paused' : 'Stopped'}
+                    </span>
+                  </div>
+
+                  <div className="flex items-center gap-2 mt-0.5 text-[11px] text-muted flex-wrap">
+                    {scan.state === 'scanning' && (
+                      <>
+                        <span className="font-mono text-text tabular-nums font-medium">
+                          {scan.indexed.toLocaleString()}
+                          {scan.total ? ` of ~${scan.total.toLocaleString()} items` : ' items found'}
+                        </span>
+                        {scan.total ? (
+                          <span className="font-mono text-primary font-semibold">({scanPct}%)</span>
+                        ) : null}
+                        {scanEta !== null ? (
+                          <span className="inline-flex items-center gap-1 text-muted/90 bg-border/40 px-1.5 py-0.2 rounded text-[10.5px]">
+                            <Clock size={10} className="opacity-75" /> {fmtLeft(scanEta)} left
+                          </span>
+                        ) : null}
+                      </>
+                    )}
+                    {scan.state === 'paused' && (
+                      <span className="font-mono text-text tabular-nums">
+                        Paused at {scan.indexed.toLocaleString()}
+                        {scan.total ? ` of ~${scan.total.toLocaleString()} items` : ' files'}
+                        {scan.total ? ` (${scanPct}%)` : ''}
+                      </span>
+                    )}
+                    {scan.state === 'failed' && (
+                      <span className="text-danger/90">
+                        {scan.error || 'Telegram refused the request or connection reset'}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 shrink-0 ml-auto">
+                {scan.state === 'scanning' && (
+                  <Button
+                    variant="secondary"
+                    className="py-1 px-3 text-[11px] shrink-0 flex items-center gap-1.5 cursor-pointer shadow-xs"
+                    onClick={() => rescan('chats.stopScan')}
+                    title="Stop indexing media in this channel"
+                  >
+                    <Pause size={12} className="opacity-80" />
+                    <span>Stop</span>
+                  </Button>
+                )}
+                {scan.state !== 'scanning' && (
+                  <Button
+                    variant="primary"
+                    className="py-1 px-3.5 text-[11px] shrink-0 flex items-center gap-1.5 cursor-pointer shadow-sm font-semibold"
+                    onClick={() => rescan('chats.rescan')}
+                    title={scan.state === 'failed' ? 'Retry indexing' : 'Resume indexing'}
+                  >
+                    {scan.state === 'failed' ? (
+                      <>
+                        <RotateCcw size={12} />
+                        <span>Retry</span>
+                      </>
+                    ) : (
+                      <>
+                        <Play size={12} fill="currentColor" />
+                        <span>Resume</span>
+                      </>
+                    )}
+                  </Button>
+                )}
+              </div>
+            </div>
+
+            {scan.state !== 'failed' && (
+              <div className="mt-2 h-1.5 w-full rounded-full bg-border/50 overflow-hidden">
+                <div
+                  className={`h-full rounded-full transition-all duration-300 ${
+                    scan.total
+                      ? 'bg-gradient-to-r from-primary to-blue-500 shadow-xs'
+                      : 'w-1/2 animate-pulse bg-primary/75'
+                  }`}
                   style={scan.total ? { width: `${scanPct}%` } : undefined}
                 />
               </div>

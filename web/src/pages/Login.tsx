@@ -535,14 +535,16 @@ export default function Login() {
               <div className="flex items-center gap-2">
                 <div className="size-2 rounded-full bg-primary" />
                 <span className="text-[12px] font-semibold text-text">How to get your Telegram API credentials</span>
+                <span className="text-[11px] text-muted font-normal">· Where do I get these?</span>
               </div>
               <a
                 href="https://my.telegram.org"
                 target="_blank"
                 rel="noreferrer"
                 className="flex items-center gap-1 text-[11px] font-semibold text-primary hover:underline"
+                aria-label="Open my.telegram.org"
               >
-                <span>my.telegram.org</span>
+                <span>Open my.telegram.org</span>
                 <ExternalLink size={11} />
               </a>
             </div>

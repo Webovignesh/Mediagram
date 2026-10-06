@@ -54,10 +54,11 @@ export const typeLabel: Record<string, string> = {
 
 // Components
 export function Button({ 
-  children, variant = 'primary', tone, busy, disabled, type = 'button', onClick, className, style,
+  children, variant = 'primary', tone, busy, disabled, type = 'button', onClick, className, style, title,
 }: { 
   children: ReactNode, variant?: 'primary' | 'secondary' | 'tint' | 'danger', tone?: Tone, busy?: boolean
   disabled?: boolean, type?: 'button' | 'submit', onClick?: () => void, className?: string, style?: React.CSSProperties
+  title?: string
 }) {
   const base = 'inline-flex items-center justify-center gap-2 whitespace-nowrap shrink-0 rounded-md px-3.5 py-1.5 text-[13px] font-medium transition-colors disabled:opacity-60'
   const variants = {
@@ -70,7 +71,7 @@ export function Button({
   }
   return (
     <button 
-      type={type} disabled={disabled || busy} aria-busy={busy} onClick={onClick}
+      type={type} disabled={disabled || busy} aria-busy={busy} onClick={onClick} title={title}
       style={style}
       className={`${base} ${variants[variant]} ${className || ''}`}
     >
@@ -1729,7 +1730,7 @@ export function MediaPreviewModal({
           )
         ) : isImage ? (
           <div
-            className="relative flex items-center justify-center max-h-[85vh] max-w-[95vw] cursor-default"
+            className="relative flex items-center justify-center min-w-[320px] min-h-[280px] max-h-[85vh] max-w-[95vw] cursor-default"
             onClick={(e) => e.stopPropagation()}
           >
             {/* 1. Full-resolution Image */}
@@ -1768,18 +1769,26 @@ export function MediaPreviewModal({
 
             {/* 3. Sleek Loading Stage Overlay */}
             {!isFullLoaded && !imgError && (
-              <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/60 backdrop-blur-[2px] rounded-2xl pointer-events-none z-10 gap-3 p-6">
+              <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/60 backdrop-blur-[2px] rounded-2xl pointer-events-none z-10 gap-3 p-6 min-w-[300px] min-h-[260px]">
                 <div className="size-14 rounded-full bg-slate-900/90 backdrop-blur-md border border-white/20 flex items-center justify-center text-primary shadow-2xl">
                   <Loader2 size={26} className="animate-spin text-primary" />
                 </div>
-                <div className="flex flex-col items-center gap-1 text-center">
-                  <span className="text-[13px] font-semibold text-white shadow-sm">Loading photo…</span>
+                <div className="flex flex-col items-center gap-1.5 text-center whitespace-nowrap px-4 py-2.5 rounded-xl bg-slate-900/85 backdrop-blur-md border border-white/15 shadow-xl min-w-[220px]">
+                  <span className="text-[13px] font-semibold text-white tracking-wide shadow-sm">Loading photo…</span>
                   {prepProgress && prepProgress.total > 0 ? (
-                    <span className="text-[11px] font-mono text-slate-300 tabular-nums">
-                      {fmtBytes(prepProgress.downloaded)} of {fmtBytes(prepProgress.total)} ({Math.round((prepProgress.downloaded / prepProgress.total) * 100)}%)
-                    </span>
+                    <>
+                      <span className="text-[11.5px] font-mono text-slate-200 tabular-nums">
+                        {fmtBytes(prepProgress.downloaded)} of {fmtBytes(prepProgress.total)} ({Math.round((prepProgress.downloaded / prepProgress.total) * 100)}%)
+                      </span>
+                      <div className="w-36 h-1 rounded-full bg-white/15 overflow-hidden mt-1">
+                        <div
+                          className="h-full bg-primary rounded-full transition-all duration-200"
+                          style={{ width: `${Math.min(100, Math.round((prepProgress.downloaded / prepProgress.total) * 100))}%` }}
+                        />
+                      </div>
+                    </>
                   ) : actualSize > 0 ? (
-                    <span className="text-[11px] font-mono text-slate-300">{fmtBytes(actualSize)}</span>
+                    <span className="text-[11.5px] font-mono text-slate-300">{fmtBytes(actualSize)}</span>
                   ) : null}
                 </div>
               </div>

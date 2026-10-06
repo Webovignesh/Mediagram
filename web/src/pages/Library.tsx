@@ -193,14 +193,17 @@ export default function Library() {
         )}
       </div>
 
-      {/* Scan strip: only once a cache hit would already have answered */}
+      {/* Scan strip: elevated SaaS status card */}
       {scanning && (
-        <div role="status" aria-live="polite" className="rounded-lg border border-primary/30 bg-primary/10 px-4 py-2 text-[12px] text-text">
-          <span className="block truncate">
-            Scanning the download folder…{lib ? ` ${lib.stats.files.toLocaleString()} files indexed so far` : ''}
-          </span>
-          <div className="mt-1.5 h-1.5 w-full rounded-full bg-border/60 overflow-hidden">
-            <div className="h-full w-1/2 animate-pulse rounded-full bg-primary/70" />
+        <div role="status" aria-live="polite" className="rounded-xl border border-primary/30 bg-card/90 backdrop-blur-md px-3.5 py-2.5 text-[12px] text-text shadow-xs flex flex-col gap-2">
+          <div className="flex items-center justify-between gap-2">
+            <span className="flex items-center gap-2 font-medium">
+              <span className="size-2 rounded-full bg-primary animate-pulse" />
+              Scanning the download folder…{lib ? ` ${lib.stats.files.toLocaleString()} files indexed so far` : ''}
+            </span>
+          </div>
+          <div className="h-1.5 w-full rounded-full bg-border/50 overflow-hidden">
+            <div className="h-full w-1/2 animate-pulse rounded-full bg-primary/75" />
           </div>
         </div>
       )}
