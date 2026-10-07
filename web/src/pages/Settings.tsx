@@ -544,19 +544,6 @@ export default function Settings() {
                 </div>
                 <Toggle checked={settings?.datePrefix || false} onChange={(v) => setSetting('datePrefix', v)} />
               </div>
-              <div className="flex items-center justify-between py-3">
-                <div>
-                  <div className="text-[13px] font-semibold text-text">Prebuffer video playback</div>
-                  <div className="text-[12px] text-muted">Off: a video starts playing the moment you open it and fills in chunk by chunk while it downloads. On: the whole video is fetched first, then playback starts</div>
-                </div>
-                <Toggle
-                  checked={settings?.prebufferVideo ?? false}
-                  onChange={(v) => {
-                    try { localStorage.setItem('mediagram_prebuffer_video', String(v)) } catch {}
-                    setSetting('prebufferVideo', v)
-                  }}
-                />
-              </div>
               <div className="py-3">
                 <div className="mb-2">
                   <div className="text-[13px] font-semibold text-text">Folder template</div>
@@ -1007,97 +994,101 @@ export default function Settings() {
         {/* Notifications */}
         <div ref={sectionRefs.notifications}>
           <Panel title="Notifications" icon={<Bell size={18} />} subtitle="In-app alerts, desktop notifications, and alert controls">
-            <div className="divide-y divide-border space-y-1">
+            <div className="space-y-2">
               {/* Master toggle */}
-              <div className="flex items-center justify-between py-3">
+              <div className="flex items-center justify-between py-2">
                 <div>
                   <div className="text-[13px] font-semibold text-text">Enable Notifications</div>
-                  <div className="text-[12px] text-muted">Master control for desktop OS alerts and in-app notifications</div>
+                  <div className="text-[12px] text-muted">Master switch for all in-app and desktop alerts</div>
                 </div>
                 <Toggle checked={notifSettings.enabled} onChange={(v) => updateNotifSettings({ enabled: v })} />
               </div>
 
-              {/* Desktop OS notifications */}
-              <div className="flex items-center justify-between py-3">
-                <div>
-                  <div className="text-[13px] font-semibold text-text">Real Desktop Notifications</div>
-                  <div className="text-[12px] text-muted">Display native Windows notification banners and Action Center alerts</div>
+              {/* Sub-controls grouped under master */}
+              <div
+                className={`divide-y divide-border/60 pl-3.5 border-l-2 border-border/70 ml-1 transition-all duration-200 ${
+                  notifSettings.enabled ? 'opacity-100' : 'opacity-40 pointer-events-none select-none'
+                }`}
+              >
+                {/* Desktop OS notifications */}
+                <div className="flex items-center justify-between py-3">
+                  <div>
+                    <div className="text-[13px] font-semibold text-text">Desktop banner pop-ups</div>
+                    <div className="text-[12px] text-muted">Display native Windows notification banners and Action Center alerts</div>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <Button
+                      variant="secondary"
+                      disabled={!notifSettings.enabled || !notifSettings.desktopNotifications}
+                      className="py-1 px-2.5 text-[11px] flex items-center gap-1.5"
+                      onClick={() => {
+                        try {
+                          if ((window as any).mediagram?.call) {
+                            ;(window as any).mediagram.call('app.notify', {
+                              title: 'Mediagram Desktop Alert',
+                              body: 'Native desktop notifications are active and functioning correctly.'
+                            }).catch(() => {})
+                          } else if (typeof window !== 'undefined' && 'Notification' in window) {
+                            new Notification('Mediagram Desktop Alert', {
+                              body: 'Native desktop notifications are active and functioning correctly.'
+                            })
+                          }
+                        } catch {}
+                      }}
+                    >
+                      <Bell size={12} />
+                      <span>Test notification</span>
+                    </Button>
+                    <Toggle
+                      disabled={!notifSettings.enabled}
+                      checked={notifSettings.desktopNotifications ?? true}
+                      onChange={(v) => updateNotifSettings({ desktopNotifications: v })}
+                    />
+                  </div>
                 </div>
-                <div className="flex items-center gap-3">
-                  <Button
-                    variant="secondary"
-                    className="py-1 px-2.5 text-[11px] flex items-center gap-1.5"
-                    onClick={() => {
-                      try {
-                        if ((window as any).mediagram?.call) {
-                          ;(window as any).mediagram.call('app.notify', {
-                            title: 'Mediagram Desktop Alert',
-                            body: 'Native desktop notifications are active and functioning correctly.'
-                          }).catch(() => {})
-                        } else if (typeof window !== 'undefined' && 'Notification' in window) {
-                          new Notification('Mediagram Desktop Alert', {
-                            body: 'Native desktop notifications are active and functioning correctly.'
-                          })
-                        }
-                      } catch {}
-                    }}
-                  >
-                    <Bell size={12} />
-                    <span>Test notification</span>
-                  </Button>
+
+                {/* Transfer completion & failure combined */}
+                <div className="flex items-center justify-between py-3">
+                  <div>
+                    <div className="text-[13px] font-semibold text-text">Transfer & download alerts</div>
+                    <div className="text-[12px] text-muted">Notify when downloads or uploads finish or fail</div>
+                  </div>
                   <Toggle
-                    checked={notifSettings.desktopNotifications ?? true}
-                    onChange={(v) => updateNotifSettings({ desktopNotifications: v })}
+                    disabled={!notifSettings.enabled}
+                    checked={Boolean((settings?.notifyComplete ?? notifSettings.notifyComplete) || (settings?.notifyFailed ?? notifSettings.notifyFailed))}
+                    onChange={(v) => {
+                      setSetting('notifyComplete', v)
+                      setSetting('notifyFailed', v)
+                      updateNotifSettings({ notifyComplete: v, notifyFailed: v })
+                    }}
                   />
                 </div>
-              </div>
 
-              {/* Transfer completion */}
-              <div className="flex items-center justify-between py-3">
-                <div>
-                  <div className="text-[13px] font-semibold text-text">Notify when transfers complete</div>
-                  <div className="text-[12px] text-muted">Show notification when downloads or uploads finish</div>
+                {/* Message notifications */}
+                <div className="flex items-center justify-between py-3">
+                  <div>
+                    <div className="text-[13px] font-semibold text-text">New message notifications</div>
+                    <div className="text-[12px] text-muted">Notify when new chat or channel messages arrive (silenced for muted chats)</div>
+                  </div>
+                  <Toggle
+                    disabled={!notifSettings.enabled}
+                    checked={notifSettings.notifyMessages}
+                    onChange={(v) => updateNotifSettings({ notifyMessages: v })}
+                  />
                 </div>
-                <Toggle
-                  checked={settings?.notifyComplete ?? notifSettings.notifyComplete}
-                  onChange={(v) => {
-                    setSetting('notifyComplete', v)
-                    updateNotifSettings({ notifyComplete: v })
-                  }}
-                />
-              </div>
 
-              {/* Transfer failure */}
-              <div className="flex items-center justify-between py-3">
-                <div>
-                  <div className="text-[13px] font-semibold text-text">Notify on failures</div>
-                  <div className="text-[12px] text-muted">Show alert if a transfer permanently fails</div>
+                {/* Unread badge */}
+                <div className="flex items-center justify-between py-3">
+                  <div>
+                    <div className="text-[13px] font-semibold text-text">Show unread badges</div>
+                    <div className="text-[12px] text-muted">Display unread badge counters on Overview bell and chats</div>
+                  </div>
+                  <Toggle
+                    disabled={!notifSettings.enabled}
+                    checked={notifSettings.showBadge}
+                    onChange={(v) => updateNotifSettings({ showBadge: v })}
+                  />
                 </div>
-                <Toggle
-                  checked={settings?.notifyFailed ?? notifSettings.notifyFailed}
-                  onChange={(v) => {
-                    setSetting('notifyFailed', v)
-                    updateNotifSettings({ notifyFailed: v })
-                  }}
-                />
-              </div>
-
-              {/* Message notifications */}
-              <div className="flex items-center justify-between py-3">
-                <div>
-                  <div className="text-[13px] font-semibold text-text">New message notifications</div>
-                  <div className="text-[12px] text-muted">Notify when new chat or channel messages arrive (silenced for muted chats)</div>
-                </div>
-                <Toggle checked={notifSettings.notifyMessages} onChange={(v) => updateNotifSettings({ notifyMessages: v })} />
-              </div>
-
-              {/* Unread badge */}
-              <div className="flex items-center justify-between py-3">
-                <div>
-                  <div className="text-[13px] font-semibold text-text">Show unread badges</div>
-                  <div className="text-[12px] text-muted">Display unread badge counters on Overview bell and chats</div>
-                </div>
-                <Toggle checked={notifSettings.showBadge} onChange={(v) => updateNotifSettings({ showBadge: v })} />
               </div>
             </div>
           </Panel>

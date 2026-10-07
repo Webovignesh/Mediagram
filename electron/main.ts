@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { Readable } from 'node:stream'
 import { pathToFileURL } from 'node:url'
-import { app, BrowserWindow, dialog, ipcMain, Menu, Notification, protocol, safeStorage, screen, session, shell, Tray } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, MenuItem, Notification, protocol, safeStorage, screen, session, shell, Tray } from 'electron'
 import { getTdjson } from 'prebuilt-tdlib'
 import icon from '../assets/icon.png?asset'
 import { type AppError, type AppEvent, type DB, getSettings, type Kind, openDb, putSetting, readSetting } from '../core/db.ts'
@@ -256,12 +256,12 @@ function startup() {
 
   // 7.
   app.whenReady().then(async () => {
-    session.defaultSession.setPermissionRequestHandler((_contents, _permission, done) => done(false))
-    // With no check handler Chromium answers every permission *query* "granted" while the request handler above
-    // refuses the actual prompt — a page would be told it may use the camera or read the clipboard. Answer the
-    // queries too: only what the UI uses (the copy buttons, fullscreen) and nothing else.
+    session.defaultSession.setPermissionRequestHandler((_contents, permission, done) => {
+      if (permission === 'clipboard-read' || permission === 'clipboard-sanitized-write') return done(true)
+      done(false)
+    })
     session.defaultSession.setPermissionCheckHandler((_contents, permission) =>
-      permission === 'clipboard-sanitized-write' || permission === 'fullscreen')
+      permission === 'clipboard-sanitized-write' || permission === 'clipboard-read' || permission === 'fullscreen')
     // A teleflow:// response is only ever an image or media file, but it may be a downloaded document: nothing in it
     // gets a chance to run or be sniffed into a type it didn't declare (ARCHITECTURE > teleflow:// protocol).
     const mediaHeaders: Record<string, string> = {
@@ -352,6 +352,9 @@ function startup() {
         // file, and TDLib warns its size may then count garbage — never read past this mark.
         const readableSize = async (size: number) => {
           if (!knownId || size <= 0) return size
+          if (!telegram.tailWasRequested(fileId)) {
+            return size
+          }
           const end = await telegram.getReadableEnd(fileId)
           return end === null ? size : Math.min(size, end)
         }
@@ -407,17 +410,26 @@ function startup() {
             }
 
             // Hold the request while the sequential download catches up. Chromium treats 416 as a
-            // hard media error, so only give up once progress has actually stalled.
+            // hard media error, so give plenty of time and keep TDLib download prioritized.
             if (start >= availableSize && availableSize < totalSize) {
-              const deadline = Date.now() + 5000
+              if (knownId && start > availableSize + 2 * 1024 * 1024) {
+                telegram.seekStreamingDownload(fileId, start)
+              }
+              const deadline = Date.now() + 60000
               let last = availableSize
               let stalled = 0
               while (Date.now() < deadline && availableSize <= start) {
                 await new Promise((r) => setTimeout(r, 150))
+                stalled++
+                if (stalled % 20 === 0 && knownId) {
+                  telegram.resumeStreamingDownload(fileId)
+                }
                 const refreshed = await fs.promises.stat(file).catch(() => null)
                 if (!refreshed) break
                 availableSize = await readableSize(refreshed.size)
-                if (availableSize === last) { if (++stalled >= 8) break } else stalled = 0
+                if (availableSize > last) {
+                  stalled = 0
+                }
                 last = availableSize
               }
               if (availableSize <= start) {
@@ -618,6 +630,23 @@ function createWindow(url: string, db: DB, hidden: boolean, closeToTray: () => b
   w.webContents.setWindowOpenHandler(({ url: target }) => {
     if (target.startsWith('https://')) void shell.openExternal(target)
     return { action: 'deny' }
+  })
+  w.webContents.on('context-menu', (_e, params) => {
+    const menu = new Menu()
+    if (params.isEditable) {
+      menu.append(new MenuItem({ label: 'Undo', role: 'undo', enabled: params.editFlags.canUndo }))
+      menu.append(new MenuItem({ label: 'Redo', role: 'redo', enabled: params.editFlags.canRedo }))
+      menu.append(new MenuItem({ type: 'separator' }))
+      menu.append(new MenuItem({ label: 'Cut', role: 'cut', enabled: params.editFlags.canCut }))
+      menu.append(new MenuItem({ label: 'Copy', role: 'copy', enabled: params.editFlags.canCopy }))
+      menu.append(new MenuItem({ label: 'Paste', role: 'paste', enabled: params.editFlags.canPaste }))
+      menu.append(new MenuItem({ label: 'Select All', role: 'selectAll', enabled: params.editFlags.canSelectAll }))
+      menu.popup({ window: w })
+    } else if (params.selectionText) {
+      menu.append(new MenuItem({ label: 'Copy', role: 'copy' }))
+      menu.append(new MenuItem({ label: 'Select All', role: 'selectAll' }))
+      menu.popup({ window: w })
+    }
   })
   void w.loadURL(url)
   return w

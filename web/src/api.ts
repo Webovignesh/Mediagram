@@ -51,6 +51,7 @@ export function useCall<T>(
       setLoading(false)
       return
     }
+    setLoading(true)
     let active = true
     pendingSince.current = Date.now()
     call<T>(method, args)

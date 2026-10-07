@@ -1,6 +1,6 @@
 // Phase 5: Complete UI primitives per UI.md
 import { type ReactNode, type LegacyRef, type RefObject, useState, useEffect, useRef, createContext, useContext } from 'react'
-import { Loader2, ChevronDown, X, Search, Check, Pause, Play, Download, CheckCircle2, AlertCircle, AlertTriangle, Info, Music, FolderOpen, Gauge, Film, Volume2, VolumeX, Maximize2, Minimize2, RotateCcw, Folder, Bookmark, ImageOff } from 'lucide-react'
+import { Loader2, ChevronDown, X, Search, Check, Pause, Play, Download, CheckCircle2, AlertCircle, AlertTriangle, Info, Music, FolderOpen, Gauge, Film, Volume2, VolumeX, Maximize2, Minimize2, RotateCcw, Folder, Bookmark, ImageOff, Image as ImageIcon } from 'lucide-react'
 import { call, on, useCall } from './api.ts'
 import { getActiveTheme } from './theme.ts'
 
@@ -668,7 +668,7 @@ export function ChatMediaThumb({
   }
 
   return (
-    <div className="relative w-full overflow-hidden bg-panel/40" style={{ minHeight }}>
+    <div className="relative w-full overflow-hidden bg-panel/40" style={{ minHeight: loaded ? undefined : minHeight }}>
       {!loaded && (
         <div
           className="absolute inset-0 flex flex-col items-center justify-center bg-panel/90 animate-pulse z-10"
@@ -687,8 +687,8 @@ export function ChatMediaThumb({
         decoding="async"
         onLoad={() => setLoaded(true)}
         onError={() => setFailed(true)}
-        className={`max-w-full max-h-[500px] w-auto h-auto object-contain mx-auto block transition-all duration-300 ${loaded ? 'opacity-100 scale-100' : 'opacity-0 scale-[1.01]'} ${className}`}
-        style={{ minHeight, maxHeight }}
+        className={`w-full max-h-[480px] h-auto object-cover block transition-all duration-300 ${loaded ? 'opacity-100 scale-100' : 'opacity-0 scale-[1.01]'} ${className}`}
+        style={{ minHeight: loaded ? undefined : minHeight, maxHeight }}
       />
     </div>
   )
@@ -1288,8 +1288,8 @@ function CustomVideoPlayer({
   // Instant playback attempt on mount or source change
   useEffect(() => {
     if (!src) return
-    setBuffering(true)
-    setHasStarted(false)
+    setBuffering(false)
+    setHasStarted(true)
     if (videoRef.current) {
       videoRef.current.play().catch(() => {
         setPlaying(false)
@@ -1307,6 +1307,17 @@ function CustomVideoPlayer({
     }
   }, [isCompleted, hasStarted])
 
+  // Auto-resume playback as background download buffer expands
+  useEffect(() => {
+    if (videoRef.current && playing && (buffering || videoRef.current.paused)) {
+      if (videoRef.current.readyState >= 2) {
+        videoRef.current.play().then(() => {
+          setBuffering(false)
+        }).catch(() => {})
+      }
+    }
+  }, [downloadProgress?.downloaded, isCompleted, playing, buffering])
+
   const resetHideTimer = () => {
     setShowControls(true)
     if (hideTimerRef.current) clearTimeout(hideTimerRef.current)
@@ -1317,9 +1328,21 @@ function CustomVideoPlayer({
 
   const togglePlay = () => {
     if (!videoRef.current) return
-    if (videoRef.current.paused) {
-      videoRef.current.play().catch(() => {})
-      setPlaying(true)
+    if (videoRef.current.paused || !playing) {
+      videoRef.current.play().then(() => {
+        setPlaying(true)
+        setBuffering(false)
+      }).catch(() => {
+        if (videoRef.current) {
+          const cur = videoRef.current.currentTime
+          videoRef.current.load()
+          videoRef.current.currentTime = cur
+          videoRef.current.play().then(() => {
+            setPlaying(true)
+            setBuffering(false)
+          }).catch(() => {})
+        }
+      })
     } else {
       videoRef.current.pause()
       setPlaying(false)
@@ -1379,6 +1402,9 @@ function CustomVideoPlayer({
     if (videoRef.current) {
       videoRef.current.currentTime = newTime
       setCurrentTime(newTime)
+      if (playing && videoRef.current.paused) {
+        videoRef.current.play().catch(() => {})
+      }
     }
   }
 
@@ -1435,7 +1461,12 @@ function CustomVideoPlayer({
           playsInline
           preload="auto"
           onClick={togglePlay}
-          onProgress={updateBuffered}
+          onProgress={() => {
+            updateBuffered()
+            if (buffering && playing && videoRef.current && videoRef.current.paused && videoRef.current.readyState >= 2) {
+              videoRef.current.play().then(() => setBuffering(false)).catch(() => {})
+            }
+          }}
           onTimeUpdate={() => {
             if (videoRef.current) {
               setCurrentTime(videoRef.current.currentTime)
@@ -1453,7 +1484,17 @@ function CustomVideoPlayer({
           onWaiting={() => setBuffering(true)}
           onSeeking={() => setBuffering(true)}
           onSeeked={() => setBuffering(false)}
-          onCanPlay={() => setBuffering(false)}
+          onCanPlay={() => {
+            setBuffering(false)
+            if (playing && videoRef.current && videoRef.current.paused) {
+              videoRef.current.play().catch(() => {})
+            }
+          }}
+          onStalled={() => {
+            if (videoRef.current && playing && videoRef.current.paused && videoRef.current.readyState >= 2) {
+              videoRef.current.play().then(() => setBuffering(false)).catch(() => {})
+            }
+          }}
           onLoadedData={() => {
             setBuffering(false)
             setHasStarted(true)
@@ -1467,56 +1508,38 @@ function CustomVideoPlayer({
             setPlaying(true)
             setBuffering(false)
           }}
-          onPause={() => setPlaying(false)}
-          onError={() => {
-            // Keep buffering active and schedule a fast reload attempt in 1.5s
-            setBuffering(true)
-            setTimeout(() => {
-              if (videoRef.current && !hasStarted) {
-                videoRef.current.load()
-              }
-            }, 1500)
+          onPause={() => {
+            if (!buffering) {
+              setPlaying(false)
+            }
           }}
-          className={`relative z-10 w-full h-full object-contain cursor-pointer transition-opacity duration-300 ${
-            hasStarted ? 'opacity-100' : 'opacity-0'
-          }`}
+          onError={() => {
+            if (videoRef.current && (!isCompleted || currentTime > 0)) {
+              const savedTime = currentTime
+              const wasPlaying = playing
+              setTimeout(() => {
+                if (videoRef.current) {
+                  videoRef.current.load()
+                  videoRef.current.currentTime = savedTime
+                  if (wasPlaying) {
+                    videoRef.current.play().then(() => {
+                      setPlaying(true)
+                      setBuffering(false)
+                    }).catch(() => {})
+                  }
+                }
+              }, 400)
+            } else {
+              setPlaying(false)
+              setBuffering(false)
+            }
+          }}
+          className="relative z-10 w-full h-full object-contain cursor-pointer"
         />
       )}
 
-      {/* Loading Spinner Circle when buffering / initial loading - rendered on top of thumbnail backdrop */}
-      {buffering && (
-        <div
-          data-testid="video-buffering-spinner"
-          className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none z-25 transition-opacity gap-3"
-        >
-          <div className="size-14 rounded-full bg-black/75 backdrop-blur-md border border-white/20 flex items-center justify-center text-cyan shadow-2xl">
-            <Loader2 size={28} className="animate-spin text-cyan" />
-          </div>
-          {!hasStarted && (
-            downloadProgress && downloadProgress.total > 0 ? (
-              <div className="flex flex-col items-center gap-1.5">
-                <span className="text-[12px] font-semibold text-white/95 bg-black/75 backdrop-blur-md px-3.5 py-1 rounded-full border border-white/15 shadow-xl tracking-wide flex items-center gap-2 font-mono">
-                  <span className="text-cyan font-bold">{Math.round(dlPct)}%</span>
-                  <span className="text-white/40 font-sans">•</span>
-                  <span className="text-slate-200 font-sans font-medium text-[11px]">
-                    {fmtBytes(downloadProgress.downloaded)} / {fmtBytes(downloadProgress.total)}
-                  </span>
-                </span>
-                <span className="text-[10.5px] font-medium text-slate-300 bg-black/60 backdrop-blur-sm px-2.5 py-0.5 rounded-full border border-white/10">
-                  Buffering in background…
-                </span>
-              </div>
-            ) : (
-              <span className="text-[12px] font-semibold text-white/90 bg-black/60 backdrop-blur-md px-3.5 py-1 rounded-full border border-white/10 shadow-lg tracking-wide">
-                Starting playback…
-              </span>
-            )
-          )}
-        </div>
-      )}
-
-      {/* Center play icon overlay when paused and not buffering */}
-      {!playing && !buffering && (
+      {/* Center play icon overlay when paused */}
+      {!playing && (
         <div
           onClick={togglePlay}
           className="absolute inset-0 flex items-center justify-center bg-black/25 cursor-pointer z-20"
@@ -1580,7 +1603,10 @@ function CustomVideoPlayer({
 
             {/* Background buffered progress badge on seekbar */}
             {!isCompleted && bufferedPct > 0 && (
-              <span className="font-mono text-[10.5px] font-semibold text-cyan/90 bg-cyan/15 border border-cyan/30 px-2 py-0.5 rounded-full tabular-nums whitespace-nowrap select-none">
+              <span className="inline-flex items-center gap-1.5 font-mono text-[10.5px] font-semibold text-cyan/90 bg-cyan/15 border border-cyan/30 px-2 py-0.5 rounded-full tabular-nums whitespace-nowrap select-none">
+                {buffering && playing && (
+                  <span className="size-1.5 rounded-full bg-cyan animate-pulse" />
+                )}
                 {Math.round(bufferedPct)}% buffered
               </span>
             )}
@@ -1680,45 +1706,6 @@ export function MediaPreviewModal({
   const isImage = ['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp'].includes(ext) || item?.type === 'photo' || item?.type === 'image'
   const isAudio = ['mp3', 'ogg', 'wav', 'flac', 'm4a', 'aac'].includes(ext) || item?.type === 'audio' || item?.type === 'voice'
 
-  // Cache prebuffer preference locally so initial render has immediate accurate state
-  const [localPrebuffer, setLocalPrebuffer] = useState(() => {
-    try {
-      const stored = localStorage.getItem('mediagram_prebuffer_video')
-      if (stored !== null) return stored !== 'false'
-    } catch {}
-    return false
-  })
-
-  useEffect(() => {
-    if (settings?.prebufferVideo !== undefined) {
-      setLocalPrebuffer(settings.prebufferVideo)
-      try {
-        localStorage.setItem('mediagram_prebuffer_video', String(settings.prebufferVideo))
-      } catch {}
-    }
-  }, [settings?.prebufferVideo])
-
-  // Snapshot the prebuffer preference at modal-open time so that an async settings
-  // response arriving after the download effect has started doesn't re-trigger it
-  // (which would cause a double media.prepare race) and so the value never flips
-  // mid-download from ON→OFF or OFF→ON.
-  const prebufferSnapshot = useRef<boolean | null>(null)
-  useEffect(() => {
-    if (open) {
-      // Lock in the effective value the moment the modal opens.
-      prebufferSnapshot.current = settings?.prebufferVideo ?? localPrebuffer
-    } else {
-      prebufferSnapshot.current = null
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open])
-
-  // For render-time usage (e.g. deciding which waiting UI to show):
-  // use the snapshot when open, otherwise the live value.
-  const shouldPrebuffer = open
-    ? (prebufferSnapshot.current ?? settings?.prebufferVideo ?? localPrebuffer)
-    : (settings?.prebufferVideo ?? localPrebuffer)
-
   // Sync Electron native title bar overlay color with modal background when open
   useEffect(() => {
     const bridge = window.mediagram || window.teleflow
@@ -1764,8 +1751,7 @@ export function MediaPreviewModal({
     let targetFileId: number | null = null
     let active = true
     // A path can be missing for a beat (TDLib has not created its temp file yet). Ask again instead of
-    // leaving the stage on "Starting playback…" with nothing to play — this is what makes an un-downloaded
-    // video start at any size when prebuffering is off.
+    // having nothing to play — this ensures immediate playback as soon as the file is allocated.
     let havePath = false
     let attempts = 0
     let retryTimer: NodeJS.Timeout | undefined
@@ -1785,16 +1771,9 @@ export function MediaPreviewModal({
           if (res.thumb) {
             setModalThumb(res.thumb)
           }
-          // Read the snapshot (frozen at modal-open time) so that a late-arriving
-          // settings response cannot flip the behavior mid-download.
-          const prebuffer = prebufferSnapshot.current ?? localPrebuffer
           if (res.path) {
             havePath = true
-            if (!isImage && !prebuffer) {
-              setPreparedPath(res.path)
-            } else if (res.completed) {
-              setPreparedPath(res.path)
-            }
+            setPreparedPath(res.path)
           }
           if (!res.completed && res.size) {
             setPrepProgress({ downloaded: res.downloaded || 0, total: res.size })
@@ -1814,17 +1793,9 @@ export function MediaPreviewModal({
         if (event.total && event.total > 0) {
           setActualSize(event.total)
         }
-        // Read the snapshot (frozen at modal-open time) so that a late-arriving
-        // settings response cannot flip the behavior mid-download.
-        const prebuffer = prebufferSnapshot.current ?? localPrebuffer
         if (event.path) {
           havePath = true
-          if (!isImage && !prebuffer) {
-            setPreparedPath((prev) => (event.completed ? event.path! : (prev || event.path!)))
-          } else if (event.completed) {
-            setPreparedPath(event.path)
-            setPrepProgress(null)
-          }
+          setPreparedPath((prev) => (event.completed ? event.path! : (prev || event.path!)))
         }
         if (!event.completed && event.total > 0) {
           setPrepProgress({ downloaded: event.downloaded, total: event.total })
@@ -1841,8 +1812,6 @@ export function MediaPreviewModal({
       unsub()
     }
   // Item identity (chatId+messageId) drives the effect, not the whole item object.
-  // shouldPrebuffer is intentionally excluded: we snapshot it at open-time via
-  // prebufferSnapshot.current to prevent a double media.prepare when settings loads.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, item?.chatId, item?.messageId, item?.path, onClose])
 
@@ -1945,8 +1914,6 @@ export function MediaPreviewModal({
               isCompleted={Boolean(item.path || (prepProgress && prepProgress.downloaded >= prepProgress.total))}
             />
           ) : (
-            // Nothing to play yet. With prebuffering ON this is the full-file wait, showing how far the
-            // fetch has come; with it OFF it is only the moment until the first bytes are on disk.
             <div
               className="relative flex items-center justify-center w-full max-w-5xl aspect-video min-h-[360px] max-h-[86vh] rounded-2xl overflow-hidden bg-black cursor-default shadow-2xl"
               onClick={(e) => e.stopPropagation()}
@@ -1956,50 +1923,13 @@ export function MediaPreviewModal({
                   src={thumbUrl}
                   alt={item.name}
                   onError={(e) => { e.currentTarget.style.display = 'none' }}
-                  className="absolute inset-0 w-full h-full object-contain pointer-events-none opacity-60 filter blur-[1px]"
+                  className="absolute inset-0 w-full h-full object-contain pointer-events-none"
                 />
               ) : (
                 <div className="w-80 h-52 flex items-center justify-center bg-slate-900/80 rounded-2xl">
                   <Film size={36} className="text-muted" />
                 </div>
               )}
-              <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/40 backdrop-blur-xs gap-3 pointer-events-none z-10">
-                {shouldPrebuffer && prepProgress && prepProgress.total > 0 ? (
-                  <>
-                    <div className="relative size-16 flex items-center justify-center">
-                      <svg className="size-16 -rotate-90" viewBox="0 0 64 64">
-                        <circle cx="32" cy="32" r="28" stroke="currentColor" strokeWidth="4" className="text-white/20 fill-none" />
-                        <circle
-                          cx="32" cy="32" r="28"
-                          stroke="currentColor" strokeWidth="4"
-                          className="text-cyan fill-none transition-all duration-150"
-                          strokeDasharray={175.9}
-                          strokeDashoffset={175.9 - (175.9 * Math.min(100, Math.round((prepProgress.downloaded / prepProgress.total) * 100))) / 100}
-                          strokeLinecap="round"
-                        />
-                      </svg>
-                      <span className="absolute text-[12px] font-bold text-white font-mono">
-                        {Math.min(100, Math.round((prepProgress.downloaded / prepProgress.total) * 100))}%
-                      </span>
-                    </div>
-                    <div className="flex flex-col items-center gap-0.5">
-                      <div className="text-[12.5px] font-semibold text-white">Buffering video…</div>
-                      <div className="text-[11px] font-mono text-slate-300">
-                        {fmtBytes(prepProgress.downloaded)} / {fmtBytes(prepProgress.total)}
-                      </div>
-                    </div>
-                  </>
-                ) : (
-                  <div className="flex flex-col items-center gap-3">
-                    <div className="size-14 rounded-full bg-black/75 backdrop-blur-md border border-white/20 flex items-center justify-center text-cyan shadow-2xl">
-                      <Loader2 size={28} className="animate-spin text-cyan" />
-                    </div>
-                    <span className="text-[12px] font-semibold text-white/90 bg-black/60 backdrop-blur-md px-3.5 py-1 rounded-full border border-white/10 shadow-lg tracking-wide">
-                      Starting playback…
-                    </span>
-                  </div>
-                )}
-              </div>
             </div>
           )
         ) : isImage ? (
@@ -2029,42 +1959,22 @@ export function MediaPreviewModal({
               />
             )}
 
-            {/* 2. Instant Thumbnail Preview while full image prepares */}
+            {/* 2. Instant Thumbnail Preview without any loading blocker */}
             {(!mediaUrl || !isFullLoaded) && thumbUrl && !thumbError && !imgError && (
               <img
                 src={thumbUrl}
                 alt={item.name}
                 onError={() => setThumbError(true)}
-                className={`max-h-[85vh] max-w-[95vw] w-auto h-auto min-w-[320px] md:min-w-[480px] object-contain rounded-lg shadow-2xl filter blur-[1px] transition-opacity duration-300 ${
-                  isFullLoaded ? 'opacity-0 pointer-events-none absolute' : 'opacity-85'
+                className={`max-h-[85vh] max-w-[95vw] w-auto h-auto min-w-[320px] md:min-w-[480px] object-contain rounded-lg shadow-2xl transition-opacity duration-300 ${
+                  isFullLoaded ? 'opacity-0 pointer-events-none absolute' : 'opacity-100'
                 }`}
               />
             )}
 
-            {/* 3. Sleek Loading Stage Overlay */}
-            {!isFullLoaded && !imgError && (
-              <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/60 backdrop-blur-[2px] rounded-2xl pointer-events-none z-10 gap-3 p-6 min-w-[300px] min-h-[260px]">
-                <div className="size-14 rounded-full bg-slate-900/90 backdrop-blur-md border border-white/20 flex items-center justify-center text-primary shadow-2xl">
-                  <Loader2 size={26} className="animate-spin text-primary" />
-                </div>
-                <div className="flex flex-col items-center gap-1.5 text-center whitespace-nowrap px-4 py-2.5 rounded-xl bg-slate-900/85 backdrop-blur-md border border-white/15 shadow-xl min-w-[220px]">
-                  <span className="text-[13px] font-semibold text-white tracking-wide shadow-sm">Loading photo…</span>
-                  {prepProgress && prepProgress.total > 0 ? (
-                    <>
-                      <span className="text-[11.5px] font-mono text-slate-200 tabular-nums">
-                        {fmtBytes(prepProgress.downloaded)} of {fmtBytes(prepProgress.total)} ({Math.round((prepProgress.downloaded / prepProgress.total) * 100)}%)
-                      </span>
-                      <div className="w-36 h-1 rounded-full bg-white/15 overflow-hidden mt-1">
-                        <div
-                          className="h-full bg-primary rounded-full transition-all duration-200"
-                          style={{ width: `${Math.min(100, Math.round((prepProgress.downloaded / prepProgress.total) * 100))}%` }}
-                        />
-                      </div>
-                    </>
-                  ) : actualSize > 0 ? (
-                    <span className="text-[11.5px] font-mono text-slate-300">{fmtBytes(actualSize)}</span>
-                  ) : null}
-                </div>
+            {/* 3. Fallback when neither thumbnail nor full image is available */}
+            {!isFullLoaded && !thumbUrl && !imgError && (
+              <div className="flex flex-col items-center justify-center p-8 rounded-2xl bg-slate-900/60 text-muted">
+                <ImageIcon size={36} className="text-muted/60" />
               </div>
             )}
 

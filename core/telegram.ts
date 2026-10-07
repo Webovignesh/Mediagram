@@ -1750,12 +1750,19 @@ export async function getReadableEnd(fileId: number, maxAgeMs = 250): Promise<nu
     if (!f) return hit?.value ?? readableEnds.get(fileId) ?? null
     const local = f.local
     const tracked = readableEnds.get(fileId) ?? 0
-    const value = local.is_downloading_completed
-      ? (f.size || f.expected_size || 0)
-      : local.download_offset === 0 ? local.downloaded_prefix_size : tracked
+    const isTail = tailSeen.has(fileId)
+    let value = 0
+    if (local.is_downloading_completed) {
+      value = f.size || f.expected_size || 0
+    } else if (!isTail) {
+      value = Math.max(local.downloaded_size || 0, local.downloaded_prefix_size || 0)
+    } else {
+      const prefixFromDownloaded = Math.max(0, (local.downloaded_size || 0) - TAIL_MAX)
+      value = Math.max(local.downloaded_prefix_size || 0, prefixFromDownloaded, tracked)
+    }
     if (local.is_downloading_completed) readableDone.add(fileId)
-    else if (local.download_offset === 0 && local.downloaded_prefix_size > tracked) {
-      readableEnds.set(fileId, local.downloaded_prefix_size)
+    else if (value > tracked) {
+      readableEnds.set(fileId, value)
     }
     readableProbe.set(fileId, { value, at: Date.now() })
     return value
@@ -1767,9 +1774,16 @@ export async function getReadableEnd(fileId: number, maxAgeMs = 250): Promise<nu
 /** Keeps the readable-from-0 watermark current straight from updateFile, without a getFile round trip. */
 function noteReadable(file: Td.file) {
   const tracked = readableEnds.get(file.id) ?? 0
-  const value = file.local.is_downloading_completed
-    ? (file.size || file.expected_size || 0)
-    : file.local.download_offset === 0 ? file.local.downloaded_prefix_size : 0
+  const isTail = tailSeen.has(file.id)
+  let value = 0
+  if (file.local.is_downloading_completed) {
+    value = file.size || file.expected_size || 0
+  } else if (!isTail) {
+    value = Math.max(file.local.downloaded_size || 0, file.local.downloaded_prefix_size || 0)
+  } else {
+    const prefixFromDownloaded = Math.max(0, (file.local.downloaded_size || 0) - TAIL_MAX)
+    value = Math.max(file.local.downloaded_prefix_size || 0, prefixFromDownloaded, tracked)
+  }
   if (value > tracked) {
     if (readableEnds.size > 400) {
       const oldest = readableEnds.keys().next().value
@@ -1778,6 +1792,18 @@ function noteReadable(file: Td.file) {
     readableEnds.set(file.id, value)
   }
   if (file.local.is_downloading_completed) readableDone.add(file.id)
+}
+
+/** Re-assert priority 32 sequential download from offset 0 if background stream was waiting */
+export function resumeStreamingDownload(fileId: number) {
+  if (auth.step !== 'ready' || fileId <= 0) return
+  invoke({ _: 'downloadFile', file_id: fileId, priority: 32, offset: 0, limit: 0, synchronous: false }).catch(() => {})
+}
+
+/** Seek streaming download to a specific byte offset */
+export function seekStreamingDownload(fileId: number, offset: number) {
+  if (auth.step !== 'ready' || fileId <= 0) return
+  invoke({ _: 'downloadFile', file_id: fileId, priority: 32, offset, limit: 0, synchronous: false }).catch(() => {})
 }
 
 export function getVideoTail(fileId: number): VideoTail | undefined {

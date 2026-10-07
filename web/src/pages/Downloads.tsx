@@ -42,13 +42,6 @@ function LinkifiedText({
   )
 }
 
-function isPrebufferEnabled(): boolean {
-  try {
-    const v = localStorage.getItem('mediagram_prebuffer_video')
-    if (v !== null) return v !== 'false'
-  } catch {}
-  return false
-}
 
 function getDateGroup(timestampSec: number): string {
   const date = new Date(timestampSec * 1000)
@@ -203,7 +196,7 @@ interface ChatFilterState {
   mediaOnlyChat: boolean
   chatMsgSearch: string
   fileViewMode?: 'table' | 'grid'
-  gridSize?: 'sm' | 'md' | 'lg' | 'xl'
+  gridSize?: 'md' | 'lg' | 'xl'
 }
 
 const CHAT_FILTERS_STORAGE_KEY = 'mediagram_chat_filters'
@@ -251,10 +244,10 @@ function loadInitialFileViewMode(): 'table' | 'grid' {
   return 'table'
 }
 
-function loadInitialGridSize(): 'sm' | 'md' | 'lg' | 'xl' {
+function loadInitialGridSize(): 'md' | 'lg' | 'xl' {
   try {
     const raw = localStorage.getItem(MEDIA_GRID_SIZE_KEY)
-    if (raw === 'sm' || raw === 'md' || raw === 'lg' || raw === 'xl') return raw
+    if (raw === 'md' || raw === 'lg' || raw === 'xl') return raw
   } catch {}
   return 'md'
 }
@@ -343,19 +336,17 @@ function MediaGridCard({
   onPreview,
   onDownload,
   onReveal,
-  onPrepare,
 }: {
   item: any
   index: number
   isSelected: boolean
   selectedCount: number
-  gridSize: 'sm' | 'md' | 'lg' | 'xl'
+  gridSize: 'md' | 'lg' | 'xl'
   aspectClass: string
   onToggleSelect: () => void
   onPreview: () => void
   onDownload: (force: boolean, e?: React.MouseEvent) => void
   onReveal: () => void
-  onPrepare: () => void
 }) {
   const isVideo = item.type === 'video' || item.type === 'video_note'
 
@@ -368,7 +359,6 @@ function MediaGridCard({
           ? 'border-primary bg-primary/10 ring-2 ring-primary/40 shadow-lg shadow-primary/10'
           : 'border-border/80 bg-tile/60 hover:bg-tile hover:border-primary/50 hover:shadow-md'
       }`}
-      onMouseEnter={onPrepare}
     >
       {/* Thumbnail Area with Overlays */}
       <div
@@ -420,7 +410,7 @@ function MediaGridCard({
             <div className="flex items-center gap-1">
               <span className="flex items-center gap-1 rounded-full bg-emerald-500/90 backdrop-blur-md px-2 py-0.5 text-[10px] font-semibold text-white shadow-sm pointer-events-none">
                 <Check size={11} className="stroke-[3]" />
-                <span className={gridSize === 'sm' ? 'hidden' : 'inline'}>Saved</span>
+                <span className="inline">Saved</span>
               </span>
               {item.path && (
                 <button
@@ -459,12 +449,10 @@ function MediaGridCard({
           </span>
         ) : null}
 
-        {/* Bottom-Left: Size Badge (shown on md, lg, xl sizes) */}
-        {gridSize !== 'sm' && (
-          <span className="absolute bottom-2 left-2 rounded-md bg-black/70 backdrop-blur-md px-1.5 py-0.5 text-[10px] font-medium text-slate-200 tabular-nums pointer-events-none shadow-sm">
-            {fmtBytes(item.size)}
-          </span>
-        )}
+        {/* Bottom-Left: Size Badge */}
+        <span className="absolute bottom-2 left-2 rounded-md bg-black/70 backdrop-blur-md px-1.5 py-0.5 text-[10px] font-medium text-slate-200 tabular-nums pointer-events-none shadow-sm">
+          {fmtBytes(item.size)}
+        </span>
       </div>
 
       {/* Card Info Strip */}
@@ -480,23 +468,21 @@ function MediaGridCard({
           <div className="flex items-center gap-1.5 min-w-0">
             <TypeChip ext={item.ext} />
             <span className="text-[11px] tabular-nums text-text-2 font-medium shrink-0">{fmtBytes(item.size)}</span>
-            {gridSize !== 'sm' && (
-              item.status === 'downloaded' ? (
-                <span className="text-[10.5px] text-emerald-400 font-semibold flex items-center gap-1 shrink-0">
-                  <span className="size-1.5 rounded-full bg-emerald-400" />
-                  Saved
-                </span>
-              ) : item.status === 'active' || item.status === 'downloading' ? (
-                <span className="text-[10.5px] text-cyan font-semibold flex items-center gap-1 animate-pulse shrink-0">
-                  <span className="size-1.5 rounded-full bg-cyan" />
-                  Downloading
-                </span>
-              ) : item.status === 'queued' ? (
-                <span className="text-[10.5px] text-amber-400 font-semibold shrink-0">Queued</span>
-              ) : null
-            )}
+            {item.status === 'downloaded' ? (
+              <span className="text-[10.5px] text-emerald-400 font-semibold flex items-center gap-1 shrink-0">
+                <span className="size-1.5 rounded-full bg-emerald-400" />
+                Saved
+              </span>
+            ) : item.status === 'active' || item.status === 'downloading' ? (
+              <span className="text-[10.5px] text-cyan font-semibold flex items-center gap-1 animate-pulse shrink-0">
+                <span className="size-1.5 rounded-full bg-cyan" />
+                Downloading
+              </span>
+            ) : item.status === 'queued' ? (
+              <span className="text-[10.5px] text-amber-400 font-semibold shrink-0">Queued</span>
+            ) : null}
           </div>
-          {gridSize !== 'sm' && item.status === 'downloaded' ? (
+          {item.status === 'downloaded' ? (
             <div className="flex items-center gap-1 shrink-0">
               <button
                 type="button"
@@ -543,7 +529,7 @@ export default function Downloads() {
     }
   })
   const [globalFileViewMode, setGlobalFileViewMode] = useState<'table' | 'grid'>(loadInitialFileViewMode)
-  const [globalGridSize, setGlobalGridSize] = useState<'sm' | 'md' | 'lg' | 'xl'>(loadInitialGridSize)
+  const [globalGridSize, setGlobalGridSize] = useState<'md' | 'lg' | 'xl'>(loadInitialGridSize)
 
   const [sidebarWidth, setSidebarWidth] = useState<number>(() => {
     try {
@@ -674,14 +660,21 @@ export default function Downloads() {
   const [isSelectingChats, setIsSelectingChats] = useState(false)
   const [selectedChatIds, setSelectedChatIds] = useState<number[]>([])
 
-  // Close context menu on outside click
+  // Close context menu on outside click or scroll
   useEffect(() => {
     const closeMenu = (e: MouseEvent) => {
       if (e.button === 2) return
       setChatContextMenu(null)
     }
+    const handleScroll = () => {
+      setChatContextMenu(null)
+    }
     window.addEventListener('click', closeMenu)
-    return () => window.removeEventListener('click', closeMenu)
+    window.addEventListener('scroll', handleScroll, true)
+    return () => {
+      window.removeEventListener('click', closeMenu)
+      window.removeEventListener('scroll', handleScroll, true)
+    }
   }, [])
 
   // Data fetching
@@ -880,10 +873,11 @@ export default function Downloads() {
     try {
       localStorage.setItem(MEDIA_VIEW_MODE_KEY, mode)
     } catch {}
-    updateActiveChatFilter({ fileViewMode: mode })
+    setPage(1)
+    updateActiveChatFilter({ fileViewMode: mode, page: 1 })
   }
 
-  const setGridSize = (size: 'sm' | 'md' | 'lg' | 'xl') => {
+  const setGridSize = (size: 'md' | 'lg' | 'xl') => {
     setGlobalGridSize(size)
     try {
       localStorage.setItem(MEDIA_GRID_SIZE_KEY, size)
@@ -948,6 +942,7 @@ export default function Downloads() {
       ? duration
       : undefined
 
+  const mediaPageSize = fileViewMode === 'grid' ? 60 : 20
   const mediaFilters = {
     chatId: activeChatId || 0,
     type: mediaType !== 'all' ? mediaType : undefined,
@@ -956,7 +951,7 @@ export default function Downloads() {
     sort: resolvedSort,
     q: fileSearch || undefined,
     page,
-    pageSize: 20,
+    pageSize: mediaPageSize,
   }
   // downloads.checkDuplicates takes the same filters as chats.media, minus the fields that call carries itself.
   const { chatId: _chatId, page: _page, pageSize: _pageSize, ...dupFilters } = mediaFilters
@@ -965,9 +960,15 @@ export default function Downloads() {
     'chats.media', activeChatId ? mediaFilters : null, activeChatId ? [`media:${activeChatId}`] : []
   )
 
-  const { data: msgData, error: msgErr, reload: msgReload } = useCall<{ messages: any[], more: boolean }>(
+  const [loadingOlder, setLoadingOlder] = useState(false)
+
+  const { data: msgData, error: msgErr, loading: msgLoading, reload: msgReload } = useCall<{ messages: any[], more: boolean }>(
     'chats.messages', activeChatId && view === 'chat' ? { chatId: activeChatId, limit: msgLimit } : null, activeChatId ? [`messages:${activeChatId}`] : []
   )
+
+  useEffect(() => {
+    setLoadingOlder(false)
+  }, [msgData, activeChatId])
 
   const mediaItems = mediaData?.items ?? (mediaData as any)?.media ?? []
   const availableExts = mediaData?.exts ?? []
@@ -1079,8 +1080,6 @@ export default function Downloads() {
     messagesEndRef.current?.scrollIntoView({ behavior })
   }
 
-  const prevScrollHeightRef = useRef<number>(0)
-  const prevScrollTopRef = useRef<number>(0)
   const [channelMenuOpen, setChannelMenuOpen] = useState(false)
 
   // Only scroll to bottom when switching chats or entering chat view
@@ -1091,23 +1090,8 @@ export default function Downloads() {
     }
   }, [view, activeChatId])
 
-  // Preserve scroll position when older messages are loaded at the top
-  useLayoutEffect(() => {
-    if (prevScrollHeightRef.current > 0 && chatScrollRef.current) {
-      const newScrollHeight = chatScrollRef.current.scrollHeight
-      const diff = newScrollHeight - prevScrollHeightRef.current
-      if (diff > 0) {
-        chatScrollRef.current.scrollTop = prevScrollTopRef.current + diff
-      }
-      prevScrollHeightRef.current = 0
-    }
-  }, [messages.length])
-
   const handleLoadOlder = () => {
-    if (chatScrollRef.current) {
-      prevScrollHeightRef.current = chatScrollRef.current.scrollHeight
-      prevScrollTopRef.current = chatScrollRef.current.scrollTop
-    }
+    setLoadingOlder(true)
     setMsgLimit((l) => Math.min(l + 30, 1000))
   }
 
@@ -1935,8 +1919,8 @@ export default function Downloads() {
                 </div>
               )}
 
-              {/* Archive folder item row at top of main chat list */}
-              {!inArchiveFolder && archivedChatsList.length > 0 && (
+              {/* Archive folder item row at top of main chat list (hidden in Folders tab) */}
+              {!inArchiveFolder && chatKind !== 'folders' && archivedChatsList.length > 0 && (
                 <div
                   onClick={() => {
                     setInArchiveFolder(true)
@@ -2071,12 +2055,12 @@ export default function Downloads() {
       <div
         onMouseDown={handleSidebarResizeStart}
         className={`relative w-2.5 -ml-1 shrink-0 z-20 cursor-col-resize select-none group flex items-center justify-center transition-colors ${
-          isResizingSidebar ? 'bg-primary/40' : 'hover:bg-primary/25'
+          isResizingSidebar ? 'bg-transparent' : 'hover:bg-primary/25'
         }`}
         title="Drag to resize Chats & Channels panel"
       >
         <div className={`w-0.5 h-10 rounded-full transition-colors ${
-          isResizingSidebar ? 'bg-primary' : 'bg-border/80 group-hover:bg-primary'
+          isResizingSidebar ? 'bg-border' : 'bg-border/80 group-hover:bg-primary'
         }`} />
       </div>
 
@@ -2102,33 +2086,6 @@ export default function Downloads() {
           </Button>
         </div>
 
-        {/* Telegram Folder banner if viewing a folder */}
-        {chatKind === 'folders' && selectedFolderId !== null && (
-          <div className="flex items-center justify-between rounded-xl border border-primary/30 bg-primary/10 px-4 py-3 text-[13px] text-text">
-            <div className="flex items-center gap-2.5">
-              <div className="grid size-8 place-items-center rounded-lg bg-primary/20 text-primary">
-                <Folder size={18} />
-              </div>
-              <div>
-                <div className="font-semibold text-text">
-                  Folder: {allFolders.find((f: any) => f.id === selectedFolderId)?.title || allFolders.find((f: any) => f.id === selectedFolderId)?.name || 'Custom Folder'}
-                </div>
-                <div className="text-[11.5px] text-muted">
-                  {filteredChats.length} channels / groups in this folder
-                </div>
-              </div>
-            </div>
-            <div className="flex items-center gap-2">
-              <Button
-                variant="primary"
-                onClick={downloadAllFolderMedia}
-                className="py-1.5 px-3.5 text-[12px] flex items-center gap-1.5"
-              >
-                <Download size={14} /> Download all media in folder
-              </Button>
-            </div>
-          </div>
-        )}
 
         {/* Media index bar: modern elevated SaaS status card */}
         {scan && (scan.state === 'scanning' || scan.state === 'failed' || scan.state === 'paused') && (
@@ -2390,15 +2347,15 @@ export default function Downloads() {
               {/* Grid size switch (visible when Grid View is active) */}
               {fileViewMode === 'grid' && (
                 <div className="flex items-center rounded-md border border-border bg-tile p-0.5 text-xs text-text-2" role="group" aria-label="Grid size">
-                  {(['sm', 'md', 'lg', 'xl'] as const).map((s) => (
+                  {(['md', 'lg', 'xl'] as const).map((s) => (
                     <button
                       key={s}
                       type="button"
                       onClick={() => setGridSize(s)}
-                      className={`rounded px-2 py-0.5 uppercase text-[11px] font-semibold transition-colors cursor-pointer ${
+                      className={`rounded px-2.5 py-0.5 uppercase text-[11px] font-semibold transition-colors cursor-pointer ${
                         gridSize === s ? 'bg-primary text-white shadow-xs' : 'text-muted hover:text-text'
                       }`}
-                      title={`Grid size: ${s === 'sm' ? 'Small' : s === 'md' ? 'Medium' : s === 'lg' ? 'Large' : 'Extra Large'}`}
+                      title={`Grid size: ${s === 'md' ? 'Medium' : s === 'lg' ? 'Large' : 'Extra Large'}`}
                     >
                       {s.toUpperCase()}
                     </button>
@@ -2447,16 +2404,14 @@ export default function Downloads() {
             {/* Files View Table or Telegram Grid */}
             {(() => {
               const gridColsClass =
-                gridSize === 'sm'
-                  ? 'grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-7 2xl:grid-cols-8 gap-2.5'
-                  : gridSize === 'md'
-                  ? 'grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-3.5'
+                gridSize === 'md'
+                  ? 'grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7 gap-3.5'
                   : gridSize === 'lg'
-                  ? 'grid grid-cols-1 sm:grid-cols-2 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4'
-                  : 'grid grid-cols-1 sm:grid-cols-1 md:grid-cols-2 lg:grid-cols-2 xl:grid-cols-3 gap-5'
+                  ? 'grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4'
+                  : 'grid grid-cols-1 sm:grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5'
 
               const aspectClass =
-                gridSize === 'sm' ? 'aspect-square' : gridSize === 'md' ? 'aspect-[16/10]' : 'aspect-video'
+                gridSize === 'md' ? 'aspect-[16/10]' : 'aspect-video'
 
               return (
                 <div className="rounded-[14px] border border-border bg-panel/85 p-3 flex-1 flex flex-col justify-between">
@@ -2465,7 +2420,7 @@ export default function Downloads() {
                   ) : !mediaData ? (
                     fileViewMode === 'grid' ? (
                       <div className={gridColsClass}>
-                        {[...Array(gridSize === 'sm' ? 14 : gridSize === 'md' ? 8 : 6)].map((_, i) => (
+                        {[...Array(gridSize === 'md' ? 12 : 6)].map((_, i) => (
                           <div key={i} className="rounded-xl border border-border/60 bg-tile/50 p-2 space-y-2">
                             <Skeleton className={`w-full ${aspectClass} rounded-lg`} />
                             <Skeleton className="h-4 w-3/4 rounded" />
@@ -2520,7 +2475,7 @@ export default function Downloads() {
                             <MediaGridCard
                               key={m.messageId}
                               item={m}
-                              index={(page - 1) * 20 + i + 1}
+                              index={(page - 1) * mediaPageSize + i + 1}
                               isSelected={isSelected}
                               selectedCount={selectedIds.length}
                               gridSize={gridSize}
@@ -2529,11 +2484,6 @@ export default function Downloads() {
                               onPreview={() => setPreviewItem({ name: m.name, path: m.path, thumb: m.thumb, type: m.type, size: m.size, duration: m.duration, chatId: activeChatId || m.chatId, messageId: m.messageId })}
                               onDownload={(force, e) => downloadItems([{ chatId: activeChatId!, messageId: m.messageId }], force, e)}
                               onReveal={() => m.path && revealFile(m.path)}
-                              onPrepare={() => {
-                                if (isPrebufferEnabled() && (m.type === 'video' || m.type === 'video_note') && m.messageId && activeChatId) {
-                                  call('media.prepare', { chatId: activeChatId, messageId: m.messageId }).catch(() => {})
-                                }
-                              }}
                             />
                           )
                         })}
@@ -2573,15 +2523,10 @@ export default function Downloads() {
                                     {isSelected ? <CheckSquare size={15} className="text-primary" /> : <Square size={15} />}
                                   </button>
                                 </td>
-                                <td className="py-2.5 px-1 text-center text-muted text-[11px]">{(page - 1) * 20 + i + 1}</td>
+                                <td className="py-2.5 px-1 text-center text-muted text-[11px]">{(page - 1) * mediaPageSize + i + 1}</td>
                                 <td
                                   className="py-2.5 px-2 text-center cursor-pointer hover:opacity-80 transition-opacity"
                                   title="Click for preview"
-                                  onMouseEnter={() => {
-                                    if (isPrebufferEnabled() && (m.type === 'video' || m.type === 'video_note') && m.messageId && activeChatId) {
-                                      call('media.prepare', { chatId: activeChatId, messageId: m.messageId }).catch(() => {})
-                                    }
-                                  }}
                                   onClick={() => setPreviewItem({ name: m.name, path: m.path, thumb: m.thumb, type: m.type, size: m.size, duration: m.duration, chatId: activeChatId || m.chatId, messageId: m.messageId })}
                                 >
                                   <div className="flex justify-center">
@@ -2592,11 +2537,6 @@ export default function Downloads() {
                                   <div
                                     className="font-medium truncate text-text cursor-pointer hover:text-primary transition-colors text-[13px]"
                                     title={m.name}
-                                    onMouseEnter={() => {
-                                      if (isPrebufferEnabled() && (m.type === 'video' || m.type === 'video_note') && m.messageId && activeChatId) {
-                                        call('media.prepare', { chatId: activeChatId, messageId: m.messageId }).catch(() => {})
-                                      }
-                                    }}
                                     onClick={() => setPreviewItem({ name: m.name, path: m.path, thumb: m.thumb, type: m.type, size: m.size, duration: m.duration, chatId: activeChatId || m.chatId, messageId: m.messageId })}
                                   >
                                     {m.name}
@@ -2653,11 +2593,11 @@ export default function Downloads() {
                   )}
 
                   {/* Pagination */}
-                  {mediaData && mediaData.total > 20 && (
+                  {mediaData && mediaData.total > mediaPageSize && (
                     <div className="pt-3 border-t border-border mt-3">
                       <Pagination
                         page={page}
-                        pageSize={20}
+                        pageSize={mediaPageSize}
                         total={mediaData.total}
                         onPage={setPage}
                       />
@@ -2675,7 +2615,7 @@ export default function Downloads() {
             me={me}
             messages={msgData?.messages ?? []}
             hasMore={Boolean(msgData?.more)}
-            loading={!msgData}
+            loading={Boolean(msgLoading || loadingOlder || !msgData)}
             error={msgErr}
             onLoadOlder={handleLoadOlder}
             onReload={msgReload}

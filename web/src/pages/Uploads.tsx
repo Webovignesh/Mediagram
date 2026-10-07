@@ -198,12 +198,12 @@ export default function Uploads() {
       <div
         onMouseDown={handleSidebarResizeStart}
         className={`relative w-2.5 -ml-1 shrink-0 z-20 cursor-col-resize select-none group flex items-center justify-center transition-colors ${
-          isResizingSidebar ? 'bg-primary/40' : 'hover:bg-primary/25'
+          isResizingSidebar ? 'bg-transparent' : 'hover:bg-primary/25'
         }`}
         title="Drag to resize Destinations panel"
       >
         <div className={`w-0.5 h-10 rounded-full transition-colors ${
-          isResizingSidebar ? 'bg-primary' : 'bg-border/80 group-hover:bg-primary'
+          isResizingSidebar ? 'bg-border' : 'bg-border/80 group-hover:bg-primary'
         }`} />
       </div>
 

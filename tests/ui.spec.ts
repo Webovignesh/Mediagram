@@ -403,7 +403,7 @@ test.describe('Mediagram UI', () => {
     await page.screenshot({ path: 'tests/screenshots/chat-upload-progressbar-1440x900.png' })
   })
 
-  test('CustomVideoPlayer: displays buffering loading spinner circle overlay during video load', async ({ page }) => {
+  test('CustomVideoPlayer: mounts video player directly without blocking buffering overlay', async ({ page }) => {
     await setupBridge(page)
     await page.goto(baseUrl + '#/downloads')
     await page.waitForLoadState('networkidle')
@@ -416,16 +416,11 @@ test.describe('Mediagram UI', () => {
     // Click video to open CustomVideoPlayer modal
     await page.locator('#msg-2 [class*="group/media"]').click()
     
-    // Assert video buffering spinner circle and Starting playback pill are present
-    const spinner = page.locator('[data-testid="video-buffering-spinner"]')
-    await expect(spinner).toBeAttached()
-    await expect(spinner.locator('text=Starting playback…')).toBeVisible()
-
-    // Assert video element starts with opacity-0 class to prevent pitch black flash over thumbnail
+    // Assert video element is mounted and no blocking spinner overlay
     const videoEl = page.locator('video')
-    await expect(videoEl).toHaveClass(/opacity-0/)
-
-    await page.screenshot({ path: 'tests/screenshots/video-buffering-spinner-1440x900.png' })
+    await expect(videoEl).toBeAttached()
+    await expect(page.locator('[data-testid="video-buffering-spinner"]')).toHaveCount(0)
+    await expect(page.locator('text=Buffering in background…')).toHaveCount(0)
 
     // Close preview modal
     await page.keyboard.press('Escape')
@@ -464,16 +459,12 @@ test.describe('Mediagram UI', () => {
     await page.keyboard.press('Escape')
   })
 
-  test('Prebuffer on: opening the same video holds on the Buffering video… screen until it is whole', async ({ page }) => {
+  test('Video playback starts immediately without buffering screen', async ({ page }) => {
     await setupBridge(page)
     await page.addInitScript(() => {
       const bridge = (window as any).teleflow
       const realCall = bridge.call
       bridge.call = async (method: string, args?: unknown) => {
-        if (method === 'settings.get') {
-          const res = await realCall(method, args)
-          return { ok: true, data: { ...res.data, prebufferVideo: true } }
-        }
         if (method === 'media.prepare') {
           return { ok: true, data: { completed: false, path: 'C:\\tdlib\\files\\temp\\10', fileId: 10, size: 15728640, downloaded: 420000, thumb: null } }
         }
@@ -488,9 +479,8 @@ test.describe('Mediagram UI', () => {
     await expect(page.locator('#msg-2')).toBeVisible()
     await page.locator('#msg-2 [class*="group/media"]').click()
 
-    // The whole-file wait is the point of this setting: it stays up until the download completes.
-    await expect(page.locator('text=Buffering video…')).toBeVisible({ timeout: 5000 })
-    await expect(page.locator('video')).toHaveCount(0)
+    await expect(page.locator('video')).toHaveCount(1, { timeout: 5000 })
+    await expect(page.locator('text=Buffering video…')).toHaveCount(0)
 
     await page.keyboard.press('Escape')
   })

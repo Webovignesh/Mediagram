@@ -16,13 +16,7 @@ function fmtViews(views?: number | null): string {
   return String(views)
 }
 
-function isPrebufferEnabled(): boolean {
-  try {
-    const v = localStorage.getItem('mediagram_prebuffer_video')
-    if (v !== null) return v !== 'false'
-  } catch {}
-  return false
-}
+
 
 const QUICK_REACTIONS = ['👍', '❤️', '🔥', '🎉', '😂', '👏', '😢', '😍']
 
@@ -423,6 +417,23 @@ export function ChatView({
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const emojiPickerRef = useRef<HTMLDivElement | null>(null)
   const lastTypingTime = useRef<number>(0)
+  const prevScrollHeightRef = useRef<number>(0)
+  const prevScrollTopRef = useRef<number>(0)
+  const [localLoadingOlder, setLocalLoadingOlder] = useState(false)
+
+  // Preserve scroll position when older messages are loaded into the top
+  useLayoutEffect(() => {
+    if (prevScrollHeightRef.current > 0 && chatScrollRef.current) {
+      const newScrollHeight = chatScrollRef.current.scrollHeight
+      const diff = newScrollHeight - prevScrollHeightRef.current
+      if (diff > 0) {
+        chatScrollRef.current.scrollTop = prevScrollTopRef.current + diff
+      }
+      prevScrollHeightRef.current = 0
+    }
+    const timer = setTimeout(() => setLocalLoadingOlder(false), 300)
+    return () => clearTimeout(timer)
+  }, [messages.length])
 
   // Reset reply/edit/forward state on chat change
   useEffect(() => {
@@ -766,7 +777,7 @@ export function ChatView({
     }
   }
 
-  // Close context menu on outside click
+  // Close context menu on outside click or scroll
   useEffect(() => {
     const closeMenu = (e: MouseEvent) => {
       if (e.button === 2) return
@@ -777,11 +788,16 @@ export function ChatView({
         setContextMenu(null)
       }
     }
+    const handleScroll = () => {
+      setContextMenu(null)
+    }
     window.addEventListener('click', closeMenu)
     window.addEventListener('contextmenu', handleContextMenuOutside)
+    window.addEventListener('scroll', handleScroll, true)
     return () => {
       window.removeEventListener('click', closeMenu)
       window.removeEventListener('contextmenu', handleContextMenuOutside)
+      window.removeEventListener('scroll', handleScroll, true)
     }
   }, [])
 
@@ -894,7 +910,10 @@ export function ChatView({
           const target = e.currentTarget
           const isNearBottom = target.scrollHeight - target.scrollTop - target.clientHeight < 120
           setShowScrollBottom(!isNearBottom)
-          if (target.scrollTop < 120 && hasMore && !loading) {
+          if (target.scrollTop < 160 && hasMore && !loading && !localLoadingOlder) {
+            prevScrollHeightRef.current = target.scrollHeight
+            prevScrollTopRef.current = target.scrollTop
+            setLocalLoadingOlder(true)
             onLoadOlder()
           }
         }}
@@ -908,11 +927,11 @@ export function ChatView({
         ) : (
           <div className="space-y-3 pb-2">
             {/* Loading older messages spinner */}
-            {loading && hasMore && (
-              <div className="flex items-center justify-center py-2 my-1">
-                <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-tile/95 border border-border/80 shadow-xs text-text-2">
+            {(loading || localLoadingOlder) && hasMore && (
+              <div className="flex items-center justify-center py-2.5 my-1">
+                <div className="flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-tile/95 border border-primary/30 shadow-md backdrop-blur-md text-text">
                   <span className="size-3.5 border-2 border-primary border-t-transparent rounded-full animate-spin shrink-0" />
-                  <span className="text-[11.5px] font-medium text-muted">Loading older messages…</span>
+                  <span className="text-[11.5px] font-medium text-text-2">Loading older messages…</span>
                 </div>
               </div>
             )}
@@ -999,7 +1018,7 @@ export function ChatView({
                         onContextMenu={(e) => openContextMenu(e, m)}
                         className={`flex w-full ${isOut ? 'justify-end' : 'justify-start'} my-1 transition-all group/msg`}
                       >
-                        <div className={`flex items-end gap-1.5 ${isOut ? 'flex-row-reverse' : 'flex-row'} ${isVisualMedia ? 'max-w-[480px] w-full' : 'max-w-[85%] w-fit'}`}>
+                        <div className={`flex items-end gap-1.5 ${isOut ? 'flex-row-reverse' : 'flex-row'} ${isVisualMedia ? 'max-w-[460px] min-w-[240px] w-fit' : 'max-w-[85%] w-fit'}`}>
                           {/* Message Bubble Content */}
                           {isVisualMedia ? (
                             m.text ? (
@@ -1008,18 +1027,7 @@ export function ChatView({
                                 isOut
                                   ? 'rounded-tr-sm bg-primary/20 border-primary/35 shadow-md'
                                   : 'rounded-tl-sm bg-tile border-border shadow-md'
-                              } border p-0 hover:border-primary/40 transition-all text-text w-full`}>
-                                {/* Top Overlay Message Options Menu Trigger */}
-                                <div className="absolute top-2.5 right-12 z-20 opacity-0 group-hover/msg:opacity-100 transition-opacity">
-                                  <button
-                                    type="button"
-                                    onClick={(e) => openContextMenu(e, m)}
-                                    className="size-8 rounded-full bg-black/60 hover:bg-black/80 text-white backdrop-blur-md border border-white/20 flex items-center justify-center transition-colors"
-                                    title="Message Options"
-                                  >
-                                    <MoreVertical size={13} />
-                                  </button>
-                                </div>
+                              } border p-0 hover:border-primary/40 transition-all text-text w-fit max-w-full`}>
 
                                 {/* Forward Header */}
                                 {m.forwardFrom && (
@@ -1061,12 +1069,7 @@ export function ChatView({
                                 {/* Flush Edge-to-Edge Media Container (NO frames, NO double borders!) */}
                                 <div
                                   className="relative w-full overflow-hidden bg-black/40 cursor-pointer group/media select-none"
-                                  onMouseEnter={() => {
-                                    if (isPrebufferEnabled() && (m.media?.type === 'video' || m.media?.type === 'photo')) {
-                                      call('media.prepare', { chatId, messageId: m.id }).catch(() => {})
-                                    }
-                                  }}
-                                  onClick={() => onOpenViewer({ name: m.media.name, path: m.media.path, thumb: m.media.thumb, type: m.media.type, size: m.media.size, duration: m.media.duration, chatId, messageId: m.id })}
+                                  onClick={() => onOpenViewer({ name: m.media.name, path: m.media.path, thumb: m.media.thumb, type: m.media.type, size: m.media.size, duration: m.duration, chatId, messageId: m.id })}
                                 >
                                   <ChatMediaThumb
                                     src={(m.media.status === 'downloaded' && m.media.path) ? `mediagram://file/${encodeURIComponent(m.media.path)}` : m.media.thumb}
@@ -1110,8 +1113,19 @@ export function ChatView({
                                     </div>
                                   )}
 
-                                  {/* Top-Right Quick Action Button */}
-                                  <div className="absolute top-2.5 right-2.5 flex items-center gap-1.5 z-10 opacity-90 group-hover/media:opacity-100 transition-opacity">
+                                  {/* Top-Right Quick Action Buttons: 3-dot Message Options + Download/Reveal */}
+                                  <div className="absolute top-2.5 right-2.5 flex items-center gap-1.5 z-20">
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation()
+                                        openContextMenu(e, m)
+                                      }}
+                                      className="size-8 rounded-full bg-black/60 hover:bg-black/80 text-white backdrop-blur-md border border-white/20 flex items-center justify-center transition-all hover:scale-110 active:scale-95 shadow-md"
+                                      title="Message Options"
+                                    >
+                                      <MoreVertical size={13} />
+                                    </button>
                                     {m.media.status === 'downloaded' && m.media.path ? (
                                       <button
                                         type="button"
@@ -1141,7 +1155,7 @@ export function ChatView({
                                 </div>
 
                                 {/* Caption Content Seamless Under Media */}
-                                <div className="px-3.5 pt-2.5 pb-2.5">
+                                <div className="px-3.5 pt-2.5 pb-2.5 select-text">
                                   <FormattedMessageText
                                     text={m.text}
                                     entities={m.entities}
@@ -1205,12 +1219,7 @@ export function ChatView({
                             ) : (
                               /* Case 2: Single Visual Media WITHOUT Caption (Borderless Flush Media) */
                               <div
-                                className="relative rounded-2xl overflow-hidden shadow-xl max-w-[460px] w-full group/media cursor-pointer select-none"
-                                onMouseEnter={() => {
-                                  if (isPrebufferEnabled() && (m.media?.type === 'video' || m.media?.type === 'photo')) {
-                                    call('media.prepare', { chatId, messageId: m.id }).catch(() => {})
-                                  }
-                                }}
+                                className="relative rounded-2xl overflow-hidden shadow-xl max-w-[460px] min-w-[220px] w-fit group/media cursor-pointer select-none"
                                 onClick={() => onOpenViewer({ name: m.media.name, path: m.media.path, thumb: m.media.thumb, type: m.media.type, size: m.media.size, duration: m.media.duration, chatId, messageId: m.id })}
                               >
                                 <ChatMediaThumb
@@ -1255,8 +1264,19 @@ export function ChatView({
                                   </div>
                                 )}
 
-                                {/* Top-Right Quick Action Button */}
-                                <div className="absolute top-2.5 right-2.5 flex items-center gap-1.5 z-10 opacity-90 group-hover/media:opacity-100 transition-opacity">
+                                {/* Top-Right Quick Action Buttons: 3-dot Message Options + Download/Reveal */}
+                                <div className="absolute top-2.5 right-2.5 flex items-center gap-1.5 z-20 opacity-90 group-hover/media:opacity-100 transition-opacity">
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      openContextMenu(e, m)
+                                    }}
+                                    className="size-8 rounded-full bg-black/60 hover:bg-black/80 text-white backdrop-blur-md border border-white/20 flex items-center justify-center transition-all hover:scale-110 active:scale-95 shadow-md"
+                                    title="Message Options"
+                                  >
+                                    <MoreVertical size={13} />
+                                  </button>
                                   {m.media.status === 'downloaded' && m.media.path ? (
                                     <button
                                       type="button"
@@ -1529,7 +1549,7 @@ export function ChatView({
 
                               {/* Rich Message Text with Entities */}
                               {m.text && (
-                                <div className="mt-1">
+                                <div className="mt-1 select-text">
                                   <FormattedMessageText
                                     text={m.text}
                                     entities={m.entities}
@@ -1781,7 +1801,17 @@ export function ChatView({
           <button
             type="button"
             onClick={() => {
-              navigator.clipboard.writeText(contextMenu.message.text || contextMenu.message.media?.name || '')
+              const textToCopy = contextMenu.message.text || contextMenu.message.media?.caption || contextMenu.message.media?.name || ''
+              if (navigator.clipboard?.writeText) {
+                navigator.clipboard.writeText(textToCopy).catch(() => {
+                  const ta = document.createElement('textarea')
+                  ta.value = textToCopy
+                  document.body.appendChild(ta)
+                  ta.select()
+                  document.execCommand('copy')
+                  document.body.removeChild(ta)
+                })
+              }
               toast('Copied to clipboard', 'info')
               setContextMenu(null)
             }}
@@ -1960,6 +1990,13 @@ export function ChatView({
             onChange={(e) => {
               setInputText(e.target.value)
               handleTyping()
+            }}
+            onPaste={(e) => {
+              const pasted = e.clipboardData?.getData('text')
+              if (pasted && !inputText) {
+                setInputText(pasted)
+                handleTyping()
+              }
             }}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.shiftKey) {
