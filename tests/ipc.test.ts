@@ -33,6 +33,7 @@ function fixture(tg: Partial<Ctx['tg']> = {}) {
     native: {
       pickFolder: async () => null, openPath: async () => '', reveal() {}, trashItem: async () => {}, cacheSize: async () => 0,
       loginItem: { get: () => login.on, set: (on) => { login.sets.push(on) } }, clearCache: async () => {}, clearStorageData: async () => {},
+      notify() {},
       // Main's provenance stores, in memory: the test grants the same way preload and the Browse dialog do
       // (ARCHITECTURE > Security).
       grants: {
@@ -118,12 +119,12 @@ test('repoUrl: strips git+ and .git; only https links survive', () => {
   assert.equal(repoUrl(undefined), null)
 })
 
-const phase2 = ['app.info', 'app.storage', 'app.networkChanged', 'app.pickFolder', 'app.openPath', 'auth.get', 'auth.credentials', 'auth.saveKeys', 'auth.forgetKeys', 'auth.phone', 'auth.code',
+const phase2 = ['account.updateProfile', 'app.info', 'app.storage', 'app.networkChanged', 'app.notify', 'app.pickFolder', 'app.openPath', 'auth.get', 'auth.credentials', 'auth.saveKeys', 'auth.forgetKeys', 'auth.phone', 'auth.code',
   'auth.password', 'auth.logout', 'chats.list', 'chats.open', 'chats.messages', 'search.global', 'library.list', 'library.missing',
   'library.open', 'library.reveal', 'library.trash', 'settings.get', 'settings.set']
 const phase3 = ['app.clearCache', 'app.clearData', 'app.clearAll', 'chats.leave', 'chats.delete', 'chats.clear', 'chats.send', 'chats.media', 'chats.rescan', 'chats.stopScan', 'chats.typing', 'downloads.add', 'downloads.checkDuplicates', 'uploads.add', 'jobs.list', 'jobs.action', 'media.prepare',
   'stats.live', 'stats.overview', 'stats.activity', 'stats.chats']
-const phase4 = ['chats.sendTyping', 'messages.delete', 'messages.edit', 'messages.pin', 'messages.react', 'messages.read', 'messages.search', 'messages.send']
+const phase4 = ['chats.archive', 'chats.mute', 'chats.pin', 'chats.sendTyping', 'messages.delete', 'messages.edit', 'messages.forward', 'messages.pin', 'messages.react', 'messages.read', 'messages.search', 'messages.send']
 const validate = (name: string, args: unknown) => (methods as Record<string, { validate(a: unknown): unknown }>)[name].validate(args)
 const rejects400 = (cases: [string, unknown, string][]) => {
   for (const [name, args, field] of cases) {
@@ -138,11 +139,15 @@ test('validators: all methods are registered; the Phase 3 & 4 methods accept val
     ['app.clearCache', undefined, {}], ['app.clearData', {}], ['app.clearAll', { deleteDownloads: false }, { deleteDownloads: false }],
     ['auth.saveKeys', undefined, {}], ['auth.forgetKeys', undefined, {}],
     ['chats.leave', { chatId: 5 }, { chatId: 5 }], ['chats.delete', { chatId: 5 }, { chatId: 5 }], ['chats.clear', { chatId: 5 }, { chatId: 5 }],
+    ['chats.pin', { chatId: 5, pin: true }, { chatId: 5, pin: true }],
+    ['chats.archive', { chatId: 5, archive: true }, { chatId: 5, archive: true }],
+    ['chats.mute', { chatId: 5, mute: true }, { chatId: 5, mute: true }],
     ['chats.send', { chatId: 5, text: 'hello' }, { chatId: 5, text: 'hello', replyToMessageId: undefined }],
     ['chats.sendTyping', { chatId: 5 }, { chatId: 5, action: undefined }],
     ['messages.send', { chatId: 5, text: 'hello' }, { chatId: 5, text: 'hello', replyToMessageId: undefined }],
     ['messages.edit', { chatId: 5, messageId: 10, text: 'edited' }, { chatId: 5, messageId: 10, text: 'edited' }],
     ['messages.delete', { chatId: 5, messageIds: [10] }, { chatId: 5, messageIds: [10], revoke: undefined }],
+    ['messages.forward', { fromChatId: 1, toChatId: 2, messageIds: [10] }, { fromChatId: 1, toChatId: 2, messageIds: [10], sendCopy: undefined }],
     ['messages.pin', { chatId: 5, messageId: 10 }, { chatId: 5, messageId: 10, unpin: undefined }],
     ['messages.react', { chatId: 5, messageId: 10, reaction: '👍' }, { chatId: 5, messageId: 10, reaction: '👍', remove: undefined }],
     ['messages.read', { chatId: 5, messageIds: [10] }, { chatId: 5, messageIds: [10] }],
@@ -172,6 +177,7 @@ test('validators: all methods are registered; the Phase 3 & 4 methods accept val
   rejects400([
     ['app.clearAll', {}, 'deleteDownloads'], ['app.clearAll', { deleteDownloads: 'yes' }, 'deleteDownloads'], ['app.clearCache', { x: 1 }, 'Unknown field x'],
     ['chats.leave', {}, 'chatId'], ['chats.delete', {}, 'chatId'], ['chats.clear', {}, 'chatId'], ['chats.send', {}, 'chatId'], ['chats.send', { chatId: 5, text: '' }, 'text'],
+    ['messages.forward', {}, 'fromChatId'], ['messages.forward', { fromChatId: 1 }, 'toChatId'], ['messages.forward', { fromChatId: 1, toChatId: 2 }, 'messageIds'],
     ['chats.media', {}, 'chatId'], ['chats.media', { chatId: 5, type: 'voice' }, 'type'], ['chats.media', { chatId: 5, ext: '.mp4' }, 'ext'],
     ['chats.media', { chatId: 5, ext: 'x'.repeat(17) }, 'ext'], ['chats.media', { chatId: 5, duration: 'huge' }, 'duration'],
     ['chats.media', { chatId: 5, size: 'tiny' }, 'size'], ['chats.media', { chatId: 5, status: 'done' }, 'status'], ['chats.media', { chatId: 5, sort: 'size' }, 'sort'],

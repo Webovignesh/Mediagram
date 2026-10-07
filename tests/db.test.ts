@@ -63,7 +63,7 @@ test('getSettings: defaults, stored values win; apiHash, window, and startWithSy
   assert.deepEqual({ ...s, downloadRoot: undefined }, {
     downloadRoot: undefined, maxDownloads: 2, skipExisting: true, datePrefix: false, folderTemplate: '{chat}', defaultUploadChat: null,
     uploadAlbum: true, keepNames: true, maxUploads: 1, showArchived: false, autoRetry: true, retryAttempts: 3, stallSeconds: 10,
-    clearCompletedDays: 0, notifyComplete: true, notifyFailed: true, closeToTray: false, apiId: null, prebufferVideo: true,
+    clearCompletedDays: 0, notifyComplete: true, notifyFailed: true, closeToTray: false, apiId: null, prebufferVideo: false,
   })
   putSetting(db, 'apiId', 777)
   putSetting(db, 'apiHash', 'c0ffee'.repeat(5) + 'ab')

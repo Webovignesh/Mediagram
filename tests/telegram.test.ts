@@ -566,3 +566,88 @@ test('sendPhone: a Continue click while the same number is still in flight share
   await Promise.all([first, duplicate, different])
   assert.equal(step(), 'phone') // the number was accepted; the code step would follow from Telegram
 })
+
+test('prepareMedia: video streaming path is provided immediately during download', async () => {
+  const chatId = -77
+  const messageId = 2 * 2 ** 20
+  const videoFile = { _: 'file', id: 404, size: 1048576, expected_size: 1048576, local: { is_downloading_completed: false, downloaded_size: 0, path: '' } }
+  const cl = await signIn((req) => {
+    if (req._ === 'getMessage') {
+      return {
+        _: 'message', id: messageId, chat_id: chatId, date: 100,
+        content: {
+          _: 'messageVideo',
+          video: { _: 'video', duration: 120, width: 1920, height: 1080, file_name: 'test.mp4', mime_type: 'video/mp4', video: videoFile },
+        },
+      }
+    }
+    if (req._ === 'getFile') return videoFile
+    if (req._ === 'downloadFile') return videoFile
+    return notFound()
+  })
+  const res = await tg.prepareMedia(chatId, messageId)
+  assert.equal(res.fileId, 404)
+  assert.equal(res.completed, false)
+  assert.equal(res.path, path.join(dir, 'files', 'temp', '404'))
+  const downloadCalls = () => cl.requests.filter((r) => r._ === 'downloadFile')
+  // 1: the streaming download from byte 0, right away.
+  const first = downloadCalls()[0]
+  assert.equal(first.priority, 32)
+  assert.equal(first.synchronous, false)
+  assert.equal(first.offset, 0)
+  // 2: the background tail prefetch — every size gets it, so a 1 MB non-faststart MP4 has its
+  // moov before Chromium asks, not only files over 2 MB. The file's timers are mocked, so wait
+  // on the event loop (setImmediate is real) rather than a sleep for the prefetch to land.
+  for (let i = 0; i < 500 && downloadCalls().length < 3; i++) {
+    await new Promise((r) => setImmediate(r))
+  }
+  const calls = downloadCalls()
+  assert.equal(calls.length, 3)
+  assert.equal(calls[1].synchronous, true)
+  // 3: the fetch hands the sequential download back to byte 0 afterwards.
+  assert.equal(calls[2].offset, 0)
+  assert.equal(calls[2].synchronous, false)
+})
+
+test('videoTail: caching and retrieval for fast MP4 playback', async () => {
+  tg.setVideoTail(999, {
+    totalSize: 10000000,
+    tailOffset: 8000000,
+    buffer: Buffer.from('test-moov-atom-data'),
+  })
+  const tail = tg.getVideoTail(999)
+  assert.ok(tail)
+  assert.equal(tail.totalSize, 10000000)
+  assert.equal(tail.tailOffset, 8000000)
+  assert.equal(tail.buffer.toString(), 'test-moov-atom-data')
+})
+
+test('fetchVideoTail: fetches tail atom and caches it', async () => {
+  const fileId = 888
+  const fakeData = Buffer.from('moov-sample-data')
+  const totalSize = fakeData.length
+  const expectedTailSize = fakeData.length
+  const expectedTailOffset = 0
+  const fakeDataBase64 = fakeData.toString('base64')
+
+  const cl = await signIn((req) => {
+    if (req._ === 'downloadFile') return { _: 'file', id: fileId, size: totalSize }
+    if (req._ === 'readFilePart') return { _: 'data', data: fakeDataBase64 }
+    return notFound()
+  })
+
+  const tail = await tg.fetchVideoTail(fileId, totalSize)
+  assert.ok(tail)
+  assert.equal(tail.totalSize, totalSize)
+  assert.equal(tail.buffer.toString(), 'moov-sample-data')
+  assert.equal(tg.getVideoTail(fileId)?.buffer.toString(), 'moov-sample-data')
+
+  const dlCalls = cl.requests.filter((r) => r._ === 'downloadFile')
+  // 1 synchronous for tail, 1 asynchronous to resume stream from 0
+  assert.equal(dlCalls.length, 2)
+  assert.equal(dlCalls[0].offset, expectedTailOffset)
+  assert.equal(dlCalls[0].synchronous, true)
+  assert.equal(dlCalls[1].offset, 0)
+  assert.equal(dlCalls[1].synchronous, false)
+})
+

@@ -465,7 +465,7 @@ test('upload: an album of 3 with 1 failure keeps only the failed file; Retry sen
   assert.deepEqual([single._, single.photo.photo.path, single.caption], ['inputMessagePhoto', JSON.parse(r.files!)[0].path, undefined])
 })
 
-test('upload: pause settles sent files and deletes the pending ones; keepNames off posts TeleFlow_<time>_<n> hard links from tmp', async () => {
+test('upload: pause settles sent files and deletes the pending ones; keepNames off posts Mediagram_<time>_<n> hard links from tmp', async () => {
   const t = rig()
   t.answer = (req) => (req._ === 'sendMessageAlbum'
     ? { _: 'messages', total_count: 2, messages: [sentMessage(-1, 51), sentMessage(-2, 52)] } : { _: 'ok' })
@@ -473,7 +473,7 @@ test('upload: pause settles sent files and deletes the pending ones; keepNames o
   const [job] = jobIds(t.db)
   await until(() => JSON.parse(jobRow(t.db, job)!.files!).every((f: UploadFile) => f.pendingId))
   const sentPaths = t.calls('sendMessageAlbum')[0].input_message_contents.map((c: Req) => c.document.document.path)
-  assert.deepEqual(sentPaths.map((p: string) => path.relative(t.paths.tmp, p).replace(/\d{8}-\d{6}/, 'T')), [`${job}\\TeleFlow_T_1.pdf`, `${job}\\TeleFlow_T_2.pdf`])
+  assert.deepEqual(sentPaths.map((p: string) => path.relative(t.paths.tmp, p).replace(/\d{8}-\d{6}/, 'T')), [`${job}\\Mediagram_T_1.pdf`, `${job}\\Mediagram_T_2.pdf`])
   assert.equal(fs.readFileSync(sentPaths[0], 'utf8'), 'x.pdf')
   t.update({ _: 'updateMessageSendSucceeded', old_message_id: -1, message: { id: 201 } })
   t.engine.action('pause', [job])
@@ -483,8 +483,8 @@ test('upload: pause settles sent files and deletes the pending ones; keepNames o
   assert.deepEqual([r.status, JSON.parse(r.files!).map((f: UploadFile) => [f.pendingId, f.messageId])], ['paused', [[undefined, undefined]]])
   const h = historyOf(t.db) as { name: string, message_id: number }[]
   assert.deepEqual([h.length, h[0].message_id], [1, 201])
-  assert.match(h[0].name, /^TeleFlow_\d{8}-\d{6}_1\.pdf$/)
-  assert.match(JSON.parse(r.files!)[0].name, /^TeleFlow_\d{8}-\d{6}_2\.pdf$/)
+  assert.match(h[0].name, /^Mediagram_\d{8}-\d{6}_1\.pdf$/)
+  assert.match(JSON.parse(r.files!)[0].name, /^Mediagram_\d{8}-\d{6}_2\.pdf$/)
   t.update({ _: 'updateMessageSendSucceeded', old_message_id: -2, message: { id: 202 } }) // no longer routed
   assert.equal(t.status(job), 'paused')
 })

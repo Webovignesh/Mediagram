@@ -10,7 +10,7 @@ import {
 const as = <T>(x: unknown) => x as T
 const me = toMe(as<Td.user>({ id: 100, first_name: 'Fixture', last_name: 'User', phone_number: '19995550123', is_premium: false }), 2048)
 
-test('mapAuth: every TDLib state, incl. the five TeleFlow cannot complete', () => {
+test('mapAuth: every TDLib state, incl. the five Mediagram cannot complete', () => {
   const s = (_: string, extra = {}) => as<Td.AuthorizationState>({ _, ...extra })
   assert.deepEqual(mapAuth(null, null), { step: 'starting' })
   assert.deepEqual(mapAuth(s('authorizationStateWaitTdlibParameters'), null), { step: 'starting' })
@@ -109,7 +109,7 @@ test('maskPhone and toMe: only the last four digits stay; upload limit follows P
   assert.equal(maskPhone('12345674567'), '+•• ••• ••45 67')
   assert.equal(maskPhone('+1 (234) 567-8901'), '+•• ••• ••89 01')
   assert.equal(maskPhone('4567'), '+45 67')
-  assert.deepEqual(me, { id: 100, name: 'Fixture User', firstName: 'Fixture', username: null, phone: '+•• ••• ••01 23', photo: null, premium: false, captionMax: 2048, uploadMax: 2_097_152_000 })
+  assert.deepEqual(me, { id: 100, name: 'Fixture User', firstName: 'Fixture', lastName: 'User', bio: '', username: null, phone: '+•• ••• ••01 23', photo: null, premium: false, captionMax: 2048, uploadMax: 2_097_152_000 })
   const premium = toMe(as<Td.user>({ id: 1, first_name: 'P', last_name: '', phone_number: '1', is_premium: true, usernames: { active_usernames: ['fixture_handle'] }, profile_photo: { small: { remote: { id: 'avatar-1' } } } }), 1)
   assert.deepEqual([premium.name, premium.username, premium.photo, premium.uploadMax], ['P', 'fixture_handle', 'avatar-1', 4_194_304_000])
 })

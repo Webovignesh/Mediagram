@@ -13,9 +13,9 @@ async function setupBridge(page: Page) {
       'stats.activity': { buckets: [{ label: '00:00', download: 10, upload: 5 }] },
       'stats.chats': { top: [{ chatId: 1, title: 'Test Channel', photo: null, count: 25 }] },
       'chats.list': { chats: [
-        { id: 1, title: 'Test Channel', kind: 'channel', username: 'testchannel', photo: null, unread: 0, lastDate: 1234567890, canPost: true, folders: [] },
+        { id: 1, title: 'Test Channel', kind: 'channel', username: 'testchannel', photo: null, unread: 0, lastDate: 1234567890, canPost: true, folders: [101] },
         { id: 2, title: 'VIP Community', kind: 'channel', username: 'vip', photo: null, unread: 0, lastDate: 1234567895, canPost: false, folders: [] }
-      ] },
+      ], folders: [{ id: 101, name: 'Work Folder', title: 'Work Folder' }] },
       'chats.media': { items: [{ chatId: 1, messageId: 1, date: 1234567890, type: 'video', name: 'test.mp4', ext: 'mp4', size: 1048576, duration: 120, caption: '', thumb: null, status: 'none', jobId: null, path: null }], total: 1, exts: ['mp4'], scan: { state: 'done', indexed: 1, total: 1 } },
       'chats.messages': { messages: [
         {
@@ -53,6 +53,7 @@ async function setupBridge(page: Page) {
           text: 'Here is the video preview',
           isOutgoing: false,
           canBeDeleted: false,
+          views: 736,
           reactions: [
             { emoji: '❤️', count: 3, chosen: true },
             { emoji: '👍', count: 5, chosen: false }
@@ -67,6 +68,17 @@ async function setupBridge(page: Page) {
       'settings.get': { downloadRoot: 'C:\\Downloads\\TeleFlow', maxDownloads: 2, skipExisting: false, datePrefix: false, folderTemplate: '{chat}', defaultUploadChat: null, uploadAlbum: false, keepNames: false, maxUploads: 1, showArchived: false, autoRetry: true, retryAttempts: 3, stallSeconds: 30, clearCompletedDays: 7, notifyComplete: true, notifyFailed: true, closeToTray: false, startWithSystem: false, apiHashSaved: true },
       'app.info': { version: '1.0.0', tdlib: '1.8.66', installedAt: null, home: 'C:\\TeleFlow', repository: 'https://github.com/test/test', licenses: [] },
       'app.storage': { drive: { root: 'C:\\', total: 500000000000, free: 250000000000 }, library: { files: 100, total: 10485760, video: 8388608, image: 1048576, audio: 524288, document: 524288, archive: 0 }, cache: { total: 1048576, tdlib: 524288, thumbs: 262144, tmp: 262144, chromium: 0 }, appData: 2097152 },
+      'app.pickFolder': { path: 'D:\\CustomScanFolder' },
+      'downloads.checkDuplicates': {
+        scannedPath: 'C:\\Downloads\\TeleFlow',
+        filesScanned: 50,
+        totalSelected: 1,
+        onDiskCount: 0,
+        willDownloadCount: 1,
+        skippedBytes: 0,
+        duplicates: [],
+        willDownload: [{ chatId: 1, messageId: 1, name: 'test.mp4', size: 1048576, duration: 120 }],
+      },
     }
     const calls: { method: string, args?: any }[] = []
     ;(window as any).teleflow = {
@@ -80,15 +92,19 @@ async function setupBridge(page: Page) {
           marker.setAttribute('data-ipc', method)
           document.body.appendChild(marker)
         } catch {}
+        if (method === 'downloads.checkDuplicates' && args?.customPath) {
+          return { ok: true, data: { ...mockData['downloads.checkDuplicates'], scannedPath: args.customPath } }
+        }
         return { ok: true, data: mockData[method] || {} }
       },
       on: () => () => {},
       pathOf: (f: any) => f?.name ? `C:\\MockUploads\\${f.name}` : 'C:\\MockUploads\\upload.dat',
+      setTheme: async (_color: string, _symbolColor?: string) => ({ ok: true }),
     }
   })
 }
 
-test.describe('TeleFlow UI', () => {
+test.describe('Mediagram UI', () => {
   test('Overview page renders with all sections', async ({ page }) => {
     await setupBridge(page)
     await page.goto(baseUrl)
@@ -149,6 +165,28 @@ test.describe('TeleFlow UI', () => {
       await page.waitForTimeout(100)
       await page.screenshot({ path: 'tests/screenshots/chat-media-cards-1440x900.png' })
     }
+  })
+
+  test('Downloads: Folder filter strictly lists chats belonging to selected folder', async ({ page }) => {
+    await setupBridge(page)
+    await page.goto(baseUrl + '#/downloads')
+    await page.waitForLoadState('networkidle')
+
+    // Click 'Folders' chip
+    const foldersChip = page.locator('text=Folders').first()
+    await expect(foldersChip).toBeVisible()
+    await foldersChip.click()
+
+    // Assert that 'Work Folder' is visible in sidebar
+    await expect(page.locator('text=Work Folder').first()).toBeVisible()
+
+    // Assert chat inside folder (Test Channel) is visible
+    await expect(page.locator('text=Test Channel').first()).toBeVisible()
+
+    // Assert chat NOT in folder (VIP Community) is hidden
+    await expect(page.locator('text=VIP Community')).toHaveCount(0)
+
+    await page.screenshot({ path: 'tests/screenshots/downloads-folders.png' })
   })
 
   test('Chat View full interaction: typing, context menu, reply preview, and edit preview', async ({ page }) => {
@@ -230,6 +268,65 @@ test.describe('TeleFlow UI', () => {
     await page.screenshot({ path: 'tests/screenshots/chat-dormant-delete-1440x900.png' })
   })
 
+  test('Chat View: single media renders edge-to-edge without nested frames, Telegram caption layout and forward option', async ({ page }) => {
+    await setupBridge(page)
+    await page.goto(baseUrl + '#/downloads')
+    await page.waitForLoadState('networkidle')
+    await page.setViewportSize({ width: 1440, height: 900 })
+
+    // Switch to Chat View
+    await page.locator('button:has-text("Chat View")').click()
+    const msg2 = page.locator('#msg-2')
+    await expect(msg2).toBeVisible()
+
+    // 1. Single media renders edge-to-edge (no nested card/frames with double borders)
+    const mediaContainer = msg2.locator('[class*="group/media"]')
+    await expect(mediaContainer).toBeVisible()
+    // Inner media container has no border class
+    const mediaClass = await mediaContainer.getAttribute('class')
+    expect(mediaClass).not.toContain('border-white/10')
+
+    // 2. Floating elements on media
+    await expect(mediaContainer.locator('text=4:05')).toBeVisible() // Duration pill
+    await expect(mediaContainer.locator('button[title="Download media"]')).toBeVisible() // Floating download action
+
+    // 3. Telegram caption & views footer layout (reactions on left, views on right)
+    await expect(msg2.locator('text=Here is the video preview')).toBeVisible()
+    await expect(msg2.locator('text=736')).toBeVisible() // Views counter
+    await expect(msg2.locator('button[title*="❤️"]')).toBeVisible() // Reaction badge
+    await page.screenshot({ path: 'tests/screenshots/chat-single-media-edge-to-edge-1440x900.png' })
+
+    // 4. Message Forward option: click forward button beside message
+    const forwardBtn = msg2.locator('button[title="Forward message"]')
+    await expect(forwardBtn).toBeVisible()
+    await forwardBtn.click()
+
+    // Assert Forward Dialog is open
+    const forwardDialog = page.locator('text=Forward Message').first()
+    await expect(forwardDialog).toBeVisible()
+    await expect(page.locator('text=Send without sender name (send as copy)')).toBeVisible()
+
+    // Filter destination chats in dialog
+    const searchInput = page.getByPlaceholder('Search chats and channels...')
+    await expect(searchInput).toBeVisible()
+    await searchInput.fill('VIP')
+    const targetItem = page.getByRole('button', { name: /VIP Community/ })
+    await expect(targetItem).toBeVisible()
+
+    await page.screenshot({ path: 'tests/screenshots/chat-forward-dialog-1440x900.png' })
+
+    // Click target chat to forward
+    await targetItem.click()
+
+    // Verify messages.forward IPC call was dispatched
+    const calls = await page.evaluate(() => (window as any).teleflow.calls)
+    const fwdCall = calls.find((c: any) => c.method === 'messages.forward')
+    expect(fwdCall).toBeDefined()
+    expect(fwdCall.args.fromChatId).toBe(1)
+    expect(fwdCall.args.toChatId).toBe(2)
+    expect(fwdCall.args.messageIds).toEqual([2])
+  })
+
   test('Chat View: input emoji picker panel opens, switches categories, and inserts emoji', async ({ page }) => {
     await setupBridge(page)
     await page.goto(baseUrl + '#/downloads')
@@ -271,8 +368,22 @@ test.describe('TeleFlow UI', () => {
 
     // Assert animated emoji renders standalone with float animation and emoji text
     const emojiMsg = page.locator('#msg-5')
-    await expect(emojiMsg.locator('.animate-emoji-standalone')).toBeVisible()
+    const emojiEl = emojiMsg.locator('.animate-emoji-standalone')
+    await expect(emojiEl).toBeVisible()
     await expect(emojiMsg).toContainText('😔')
+
+    // Assert emoji does not have hover:scale-125
+    const emojiClass = await emojiEl.getAttribute('class')
+    expect(emojiClass).not.toContain('hover:scale-125')
+
+    // Assert message stream container has overflow-x-hidden and no horizontal scrollbar
+    const stream = emojiMsg.locator('xpath=ancestor::div[contains(@class, "overflow-y-auto")]')
+    const streamClass = await stream.getAttribute('class')
+    expect(streamClass).toContain('overflow-x-hidden')
+    const hasHorizontalScroll = await stream.evaluate((el) => el.scrollWidth > el.clientWidth)
+    expect(hasHorizontalScroll).toBe(false)
+
+    await emojiEl.hover({ force: true })
     await page.screenshot({ path: 'tests/screenshots/chat-animated-emoji-1440x900.png' })
 
     // Test in-chat file upload progress bar: trigger file input with mock file
@@ -305,12 +416,121 @@ test.describe('TeleFlow UI', () => {
     // Click video to open CustomVideoPlayer modal
     await page.locator('#msg-2 [class*="group/media"]').click()
     
-    // Assert video buffering spinner circle is present
+    // Assert video buffering spinner circle and Starting playback pill are present
     const spinner = page.locator('[data-testid="video-buffering-spinner"]')
     await expect(spinner).toBeAttached()
+    await expect(spinner.locator('text=Starting playback…')).toBeVisible()
+
+    // Assert video element starts with opacity-0 class to prevent pitch black flash over thumbnail
+    const videoEl = page.locator('video')
+    await expect(videoEl).toHaveClass(/opacity-0/)
+
     await page.screenshot({ path: 'tests/screenshots/video-buffering-spinner-1440x900.png' })
 
     // Close preview modal
+    await page.keyboard.press('Escape')
+  })
+
+  test('Prebuffer off (the default): opening an un-downloaded video plays it at once, filling in behind', async ({ page }) => {
+    await setupBridge(page)
+    await page.addInitScript(() => {
+      const bridge = (window as any).teleflow
+      const realCall = bridge.call
+      bridge.call = async (method: string, args?: unknown) => {
+        if (method === 'settings.get') {
+          const res = await realCall(method, args)
+          return { ok: true, data: { ...res.data, prebufferVideo: false } }
+        }
+        if (method === 'media.prepare') {
+          // Streamable: a path exists, but only part of the file has been written so far.
+          return { ok: true, data: { completed: false, path: 'C:\\tdlib\\files\\temp\\10', fileId: 10, size: 15728640, downloaded: 420000, thumb: null } }
+        }
+        return realCall(method, args)
+      }
+    })
+    await page.goto(baseUrl + '#/downloads')
+    await page.waitForLoadState('networkidle')
+    await page.setViewportSize({ width: 1440, height: 900 })
+
+    await page.locator('button:has-text("Chat View")').click()
+    await expect(page.locator('#msg-2')).toBeVisible()
+    await page.locator('#msg-2 [class*="group/media"]').click()
+
+    // The stage mounts the player straight away with a streamable URL — nothing to wait for first.
+    await expect(page.locator('video')).toHaveCount(1, { timeout: 5000 })
+    await expect(page.locator('video').first()).toHaveAttribute('src', /mediagram:\/\/file\/.+total=15728640&ext=mp4/)
+    await expect(page.locator('text=Buffering video…')).toHaveCount(0)
+
+    await page.keyboard.press('Escape')
+  })
+
+  test('Prebuffer on: opening the same video holds on the Buffering video… screen until it is whole', async ({ page }) => {
+    await setupBridge(page)
+    await page.addInitScript(() => {
+      const bridge = (window as any).teleflow
+      const realCall = bridge.call
+      bridge.call = async (method: string, args?: unknown) => {
+        if (method === 'settings.get') {
+          const res = await realCall(method, args)
+          return { ok: true, data: { ...res.data, prebufferVideo: true } }
+        }
+        if (method === 'media.prepare') {
+          return { ok: true, data: { completed: false, path: 'C:\\tdlib\\files\\temp\\10', fileId: 10, size: 15728640, downloaded: 420000, thumb: null } }
+        }
+        return realCall(method, args)
+      }
+    })
+    await page.goto(baseUrl + '#/downloads')
+    await page.waitForLoadState('networkidle')
+    await page.setViewportSize({ width: 1440, height: 900 })
+
+    await page.locator('button:has-text("Chat View")').click()
+    await expect(page.locator('#msg-2')).toBeVisible()
+    await page.locator('#msg-2 [class*="group/media"]').click()
+
+    // The whole-file wait is the point of this setting: it stays up until the download completes.
+    await expect(page.locator('text=Buffering video…')).toBeVisible({ timeout: 5000 })
+    await expect(page.locator('video')).toHaveCount(0)
+
+    await page.keyboard.press('Escape')
+  })
+
+  test('Check for duplicates modal: supports custom scan folder browsing', async ({ page }) => {
+    await setupBridge(page)
+    await page.goto(baseUrl + '#/downloads')
+    await page.waitForLoadState('networkidle')
+    await page.setViewportSize({ width: 1440, height: 900 })
+
+    // Ensure we are in Files view
+    const filesViewBtn = page.locator('button:has-text("Files View")')
+    if (await filesViewBtn.isVisible()) {
+      await filesViewBtn.click()
+    }
+
+    // Select first media item in table
+    const checkbox = page.locator('tbody tr td button').first()
+    await checkbox.click()
+
+    // Click "Download selected" button
+    await page.locator('button:has-text("Download selected")').click()
+
+    // Assert CheckDuplicatesModal is opened and displays Scanned Path and Change/Browse folder button
+    await expect(page.locator('h2:has-text("Check for duplicates")')).toBeVisible()
+    await expect(page.locator('text=Scanned Path')).toBeVisible()
+    const browseBtn = page.locator('button:has-text("Browse folder"), button:has-text("Change folder")')
+    await expect(browseBtn).toBeVisible()
+
+    // Click Browse folder button
+    await browseBtn.click()
+
+    // Assert scanned path card shows Custom indicator
+    await expect(page.locator('text=Scanned Path (Custom)')).toBeVisible()
+    await expect(page.getByText('D:\\CustomScanFolder', { exact: true })).toBeVisible()
+
+    // Take screenshot
+    await page.screenshot({ path: 'tests/screenshots/dedupe-custom-path-1440x900.png' })
+
+    // Close modal
     await page.keyboard.press('Escape')
   })
 
@@ -341,6 +561,10 @@ test.describe('TeleFlow UI', () => {
     const savedView = await page.evaluate(() => localStorage.getItem('mediagram_downloads_view'))
     expect(savedChat).toBe('2')
     expect(savedView).toBe('files')
+
+    // Switching back to the first chat ('Test Channel') restores its persisted Chat View!
+    await page.locator('text=Test Channel').click()
+    await expect(page.locator('button:has-text("Chat View")')).toHaveClass(/bg-primary/)
     await page.screenshot({ path: 'tests/screenshots/chat-persistence-1440x900.png' })
   })
 
@@ -407,6 +631,8 @@ test.describe('TeleFlow UI', () => {
     
     await expect(page.locator('h1')).toContainText('Settings')
     await expect(page.locator('text=General').first()).toBeVisible()
+    await expect(page.locator('text=Appearance').first()).toBeVisible()
+    await expect(page.locator('text=Theme Palette').first()).toBeVisible()
     await expect(page.locator('text=Downloads').first()).toBeVisible()
     await expect(page.locator('text=Uploads').first()).toBeVisible()
     await expect(page.locator('text=Telegram').first()).toBeVisible()
@@ -438,22 +664,52 @@ test.describe('TeleFlow UI', () => {
     await page.screenshot({ path: 'tests/screenshots/settings-1440x900.png', fullPage: true })
   })
 
+  test('Settings: Appearance & Theme customization updates document theme and title bar overlay', async ({ page }) => {
+    await setupBridge(page)
+    await page.goto(baseUrl + '#/settings?section=appearance')
+    await page.waitForLoadState('networkidle')
+
+    // Find and click 'Nordic Frost (Light)' theme
+    const lightBtn = page.getByRole('button', { name: /Nordic Frost/i })
+    await lightBtn.scrollIntoViewIfNeeded()
+    await expect(lightBtn).toBeVisible()
+    await lightBtn.click()
+
+    // Document element attribute data-theme updates to light
+    const themeAttr = await page.evaluate(() => document.documentElement.getAttribute('data-theme'))
+    expect(themeAttr).toBe('light')
+
+    // Stored in localStorage
+    const savedTheme = await page.evaluate(() => localStorage.getItem('mediagram_theme'))
+    expect(savedTheme).toBe('light')
+
+    // Click Telegram Dark
+    const telegramBtn = page.getByRole('button', { name: /Telegram Dark/i })
+    await telegramBtn.click()
+    const telegramAttr = await page.evaluate(() => document.documentElement.getAttribute('data-theme'))
+    expect(telegramAttr).toBe('telegram')
+
+    await page.screenshot({ path: 'tests/screenshots/settings-appearance.png' })
+  })
+
   test('Settings keeps bad API data on the field instead of sending it', async ({ page }) => {
     await setupBridge(page)
     await page.goto(baseUrl + '#/settings?section=telegram')
     await page.waitForLoadState('networkidle')
+    await page.waitForTimeout(600)
+    await page.screenshot({ path: 'tests/screenshots/settings-telegram.png' })
 
     // A hash one character short never leaves the renderer: the field itself says what is wrong.
     await page.getByPlaceholder('API ID').fill('12345')
     await page.getByPlaceholder('32-character hex hash').fill('a'.repeat(31))
-    await page.getByRole('button', { name: 'Update API data' }).click()
+    await page.getByRole('button', { name: /Update API/i }).click()
     await expect(page.locator('[role="alert"]')).toContainText('32 hexadecimal characters')
     await expect(page.locator('[role="alert"]')).toContainText('has 31')
     expect(await page.locator('[data-ipc="auth.credentials"]').count()).toBe(0)
 
     // Corrected, it goes through: the dialog says changed keys re-check with Telegram, then the drafts are cleared.
     await page.getByPlaceholder('32-character hex hash').fill('a'.repeat(32))
-    await page.getByRole('button', { name: 'Update API data' }).click()
+    await page.getByRole('button', { name: /Update API/i }).click()
     await expect(page.getByRole('button', { name: 'Update', exact: true })).toBeVisible()
     await page.getByRole('button', { name: 'Update', exact: true }).click()
     await expect(page.locator('[data-ipc="auth.credentials"]')).toHaveCount(1)
@@ -535,13 +791,314 @@ test.describe('TeleFlow UI', () => {
     await expect(page.locator('button:has-text("Back")')).toBeVisible()
     await expect(page.getByText('+919876543210')).toBeVisible() // the number typed before them is carried over
 
-    // Under the boxes, the guide explains where the two values come from, in simple steps.
-    await expect(page.locator('text=Where do I get these?')).toBeVisible()
+    // Under the boxes, the guide explains where the two values come from — behind the View guide row.
+    await expect(page.locator('text=Where do I get these credentials?')).toBeVisible()
+    await expect(page.locator('text=API development tools')).toHaveCount(0)
+    await page.getByRole('button', { name: /View guide/ }).click()
     await expect(page.locator('text=API development tools')).toBeVisible()
     await expect(page.getByRole('link', { name: 'Open my.telegram.org' })).toHaveAttribute('href', 'https://my.telegram.org')
+    await page.keyboard.press('Escape')
+    await expect(page.locator('#login-api-guide')).toHaveCount(0)
 
     await page.locator('button:has-text("Back")').click()
     await expect(page.getByPlaceholder('98765 43210')).toHaveValue('98765 43210')
+  })
+
+  test('Rejected keys stay escapable and the rejection clears when leaving them', async ({ page }) => {
+    const rejection = 'Telegram rejected this API ID and hash. Check them at my.telegram.org.'
+    await page.addInitScript((msg) => {
+      ;(window as any).teleflow = {
+        call: async (method: string) => {
+          if (method === 'auth.get') return { ok: true, data: { step: 'credentials', connection: 'offline', error: msg } }
+          if (method === 'auth.credentials') return { ok: false, error: msg }
+          return { ok: true, data: {} }
+        },
+        on: () => () => {},
+        pathOf: () => '',
+      }
+    }, rejection)
+    await page.goto(baseUrl)
+    await page.waitForLoadState('networkidle')
+
+    // Telegram's rejection is on screen, and so is the way out of it (it used to be hidden).
+    await expect(page.locator('[role="alert"]')).toContainText('rejected this API ID')
+    const back = page.locator('button:has-text("Back")')
+    await expect(back).toBeVisible()
+
+    // Back lands on the number, with the rejection no longer shadowing that screen.
+    await back.click()
+    await expect(page.getByPlaceholder('98765 43210')).toBeVisible()
+    await expect(page.locator('[role="alert"]')).toHaveCount(0)
+
+    // Forward again: the keys screen opens and is still escapable.
+    await page.getByPlaceholder('98765 43210').fill('98765 43210')
+    await page.locator('button:has-text("Continue")').click()
+    await expect(page.getByPlaceholder('e.g. 2040')).toBeVisible()
+    await expect(page.locator('button:has-text("Back")')).toBeVisible()
+    await expect(page.locator('[role="alert"]')).toHaveCount(0)
+
+    // A fresh attempt Telegram refuses is reported all the same.
+    await page.getByPlaceholder('e.g. 2040').fill('2040')
+    await page.getByPlaceholder('32-character hash from my.telegram.org').fill('deadbeefdeadbeefdeadbeefdeadbeef')
+    await page.locator('button:has-text("Continue")').click()
+    await expect(page.locator('[role="alert"]')).toContainText('rejected this API ID')
+  })
+
+  test('A failed auth.get keeps the login shell up instead of a blank window', async ({ page }) => {
+    await page.addInitScript(() => {
+      ;(window as any).__authCalls = 0
+      ;(window as any).teleflow = {
+        call: async (method: string) => {
+          if (method === 'auth.get') {
+            // #1 the live snapshot, #2 App's own copy, #3 the one this page fetches on mount.
+            if (++(window as any).__authCalls === 3) return { ok: false, error: 'auth service unavailable' }
+            return { ok: true, data: { step: 'credentials', connection: 'offline' } }
+          }
+          return { ok: true, data: {} }
+        },
+        on: () => () => {},
+        pathOf: () => '',
+      }
+    })
+    await page.goto(baseUrl)
+    await page.waitForLoadState('networkidle')
+
+    // The drag strip and the message are up — no blank window — and the call can be re-made.
+    await expect(page.locator('.drag')).toHaveCount(1)
+    await expect(page.locator('main')).toContainText('auth service unavailable')
+    await page.getByRole('button', { name: 'Retry' }).click()
+    await expect(page.getByPlaceholder('98765 43210')).toBeVisible()
+  })
+
+  test('API guide is an animated popover that never moves the centred card', async ({ page }) => {
+    await page.addInitScript(() => {
+      ;(window as any).teleflow = {
+        call: async (method: string) => {
+          if (method === 'auth.get') return { ok: true, data: { step: 'credentials', connection: 'offline' } }
+          return { ok: true, data: {} }
+        },
+        on: () => () => {},
+        pathOf: () => '',
+      }
+    })
+    await page.setViewportSize({ width: 1280, height: 720 })
+    await page.goto(baseUrl)
+    await page.waitForLoadState('networkidle')
+    await page.getByPlaceholder('98765 43210').fill('98765 43210')
+    await page.locator('button:has-text("Continue")').click()
+    await page.getByPlaceholder('e.g. 2040').waitFor()
+
+    const card = page.locator('main > div').first()
+    const centreOf = async () => {
+      const b = await card.boundingBox()
+      if (!b) throw new Error('the sign-in card has no box')
+      return b.x + b.width / 2
+    }
+    const before = await centreOf()
+    expect(before).toBeCloseTo(640, 0) // the card sits on the middle of the window on its own
+
+    const trigger = page.getByRole('button', { name: /View guide/ })
+    await expect(trigger).toHaveAttribute('aria-expanded', 'false')
+    await trigger.click()
+
+    const guide = page.locator('#login-api-guide')
+    await expect(guide).toBeVisible()
+    await expect(trigger).toHaveAttribute('aria-expanded', 'true')
+    await expect(guide.locator('.guide-step')).toHaveCount(4)
+    expect(await centreOf()).toBe(before) // opening it re-flows nothing: still dead centre
+
+    // It slides in rather than popping, and its tail lands on the row that opened it.
+    expect(await guide.evaluate((el) => getComputedStyle(el).animationName)).toContain('guidePopIn')
+    expect(await guide.evaluate((el) => parseFloat(getComputedStyle(el).animationDuration))).toBeGreaterThan(0.1)
+    const aligned = await page.evaluate(() => {
+      const row = document.querySelector('[aria-controls="login-api-guide"]')!.getBoundingClientRect()
+      const tail = document.querySelector('.guide-pop-tail')!.getBoundingClientRect()
+      return Math.abs(tail.top + tail.height / 2 - (row.top + row.height / 2))
+    })
+    expect(aligned).toBeLessThan(5)
+    await expect(guide.locator('.guide-step').last()).toHaveCSS('opacity', '1') // the stagger has landed
+    await page.screenshot({ path: 'tests/screenshots/login-guide-1280x720.png' })
+
+    // The close button plays the exit animation and takes the popover with it…
+    await page.getByRole('button', { name: 'Close guide' }).click()
+    await expect(guide).toHaveCount(0, { timeout: 2000 })
+    await expect(page.locator('text=API development tools')).toHaveCount(0)
+
+    // …and a click anywhere else closes it too.
+    await trigger.click()
+    await expect(guide).toHaveCount(1)
+    await page.mouse.click(60, 400)
+    await expect(guide).toHaveCount(0, { timeout: 2000 })
+
+    // Below 1160px there is no room to the right, so it stacks under the card instead of running off.
+    await page.setViewportSize({ width: 1024, height: 640 })
+    await trigger.click()
+    await expect(guide).toBeVisible()
+    const stacked = await page.evaluate(() => {
+      const card = document.querySelector('main > div')!.getBoundingClientRect()
+      const pop = document.getElementById('login-api-guide')!.getBoundingClientRect()
+      const row = document.querySelector('[aria-controls="login-api-guide"]')!.getBoundingClientRect()
+      const tail = document.querySelector('.guide-pop-tail')!.getBoundingClientRect()
+      return {
+        underCard: pop.left >= card.left - 1 && pop.right <= card.right + 1 && pop.top >= card.bottom - 1,
+        tailDeltaX: Math.abs(tail.left + tail.width / 2 - (row.left + row.width / 2)),
+      }
+    })
+    expect(stacked.underCard).toBe(true)
+    expect(stacked.tailDeltaX).toBeLessThan(3)
+    expect(await guide.evaluate((el) => getComputedStyle(el).animationName)).toContain('guidePopInUp')
+    await expect(guide.locator('.guide-step').last()).toHaveCSS('opacity', '1')
+    await page.screenshot({ path: 'tests/screenshots/login-guide-stacked-1024x640.png' })
+  })
+
+  test('Login pipeline: phone → API keys → code → password → signed in', async ({ page }) => {
+    await page.addInitScript(() => {
+      const auth: Record<string, unknown> = { step: 'credentials', connection: 'offline' }
+      ;(window as any).teleflow = {
+        calls: [] as { method: string, args?: unknown }[],
+        call: async (method: string, args?: unknown) => {
+          ((window as any).teleflow.calls as { method: string, args?: unknown }[]).push({ method, args })
+          try {
+            const marker = document.createElement('div')
+            marker.style.display = 'none'
+            marker.setAttribute('data-ipc', method)
+            document.body.appendChild(marker)
+          } catch {}
+          if (method === 'auth.credentials') { auth.step = 'phone'; auth.connection = 'ready'; auth.error = undefined }
+          if (method === 'auth.phone') { auth.step = 'code'; auth.connection = 'ready'; auth.via = 'sms'; auth.phone = args && (args as any).phone }
+          if (method === 'auth.code') { auth.step = 'password'; auth.hint = 'your first pet' }
+          if (method === 'auth.password') { auth.step = 'ready'; auth.connection = 'ready' }
+          if (method === 'auth.get') return { ok: true, data: { ...auth } }
+          return { ok: true, data: {} }
+        },
+        on: () => () => {},
+        pathOf: () => '',
+      }
+    })
+    await page.goto(baseUrl)
+    await page.waitForLoadState('networkidle')
+
+    // 1. Nothing stored: the phone number comes first.
+    await expect(page.getByText('Phone Number', { exact: true })).toBeVisible()
+    await page.getByPlaceholder('98765 43210').fill('98765 43210')
+    await page.locator('button:has-text("Continue")').click()
+
+    // 2. No client to send it with yet, so the one-time key screen asks, carrying the number over.
+    await expect(page.getByPlaceholder('e.g. 2040')).toBeVisible()
+    await expect(page.getByText("Then we'll continue signing in as +919876543210")).toBeVisible()
+
+    // 3. Keys reach Telegram; the number typed before them is sent for us and the code screen lands.
+    await page.getByPlaceholder('e.g. 2040').fill('2040')
+    await page.getByPlaceholder('32-character hash from my.telegram.org').fill('a'.repeat(32))
+    await page.locator('button:has-text("Continue")').click()
+    await expect(page.locator('[data-ipc="auth.credentials"]')).toHaveCount(1)
+    await expect(page.locator('[data-ipc="auth.phone"]')).toHaveCount(1)
+    await expect(page.getByRole('heading', { name: 'Verification Code' })).toBeVisible()
+    await expect(page.getByText('+919876543210')).toBeVisible() // the number the code was sent to
+
+    // 4. The OTP, then 2FA, then the hand-off.
+    await page.getByLabel('Verification code').fill('12345')
+    await page.locator('button:has-text("Verify")').click()
+    await expect(page.getByText('Two-Step Verification')).toBeVisible()
+    await expect(page.getByText('Hint: your first pet')).toBeVisible()
+
+    await page.getByLabel('Password', { exact: true }).fill('hunter2')
+    await page.locator('button:has-text("Continue")').click()
+    await expect(page.getByText('Signed in')).toBeVisible()
+    await expect(page.locator('[data-ipc="auth.password"]')).toHaveCount(1)
+  })
+
+  test('Verification never cuts to the splash: the engine restart keeps the sign-in screen up', async ({ page }) => {
+    await page.addInitScript(() => {
+      const auth: Record<string, unknown> = { step: 'credentials', connection: 'offline' }
+      const listeners: ((event: unknown) => void)[] = []
+      const emit = () => { for (const l of [...listeners]) l({ type: 'auth', auth: { ...auth } }) }
+      ;(window as any).teleflow = {
+        call: async (method: string) => {
+          if (method === 'auth.get') return { ok: true, data: { ...auth } }
+          if (method === 'auth.credentials') {
+            // The keys restart TDLib: it sits in `starting` — the stage the sign-in used to be cut off in.
+            auth.step = 'starting'
+            auth.connection = 'connecting'
+            setTimeout(() => {
+              auth.step = 'code'
+              auth.connection = 'ready'
+              auth.via = 'sms'
+              auth.phone = '+919876543210'
+              emit()
+            }, 1500)
+            return { ok: true, data: {} }
+          }
+          return { ok: true, data: {} }
+        },
+        on: (cb: (event: unknown) => void) => {
+          listeners.push(cb)
+          return () => { const i = listeners.indexOf(cb); if (i >= 0) listeners.splice(i, 1) }
+        },
+        pathOf: () => '',
+      }
+    })
+    await page.goto(baseUrl)
+    await page.waitForLoadState('networkidle')
+
+    await page.getByPlaceholder('98765 43210').fill('98765 43210')
+    await page.locator('button:has-text("Continue")').click()
+    await page.getByPlaceholder('e.g. 2040').fill('2040')
+    await page.getByPlaceholder('32-character hash from my.telegram.org').fill('a'.repeat(32))
+    await page.locator('button:has-text("Continue")').click()
+
+    // While TDLib restarts the verification screen carries the moment, stage list and all.
+    await expect(page.getByText('Signing in to Telegram')).toBeVisible()
+    await expect(page.getByText('Starting the Telegram engine')).toBeVisible()
+    // The launch splash must never take the window over mid sign-in — that is the cut that dropped the flow.
+    await expect(page.getByText('Connecting to Telegram…')).toHaveCount(0)
+
+    // …and the pipeline resumes exactly where it stood.
+    await expect(page.getByRole('heading', { name: 'Verification Code' })).toBeVisible({ timeout: 5000 })
+    await expect(page.getByText('+919876543210')).toBeVisible()
+  })
+
+  test('Logout holds its own screen through the restart and lands on the phone form', async ({ page }) => {
+    await setupBridge(page)
+    await page.addInitScript(() => {
+      const bridge = (window as any).teleflow
+      const listeners: ((event: unknown) => void)[] = []
+      let step = 'ready'
+      let connection = 'ready'
+      const emit = () => { for (const l of [...listeners]) l({ type: 'auth', auth: { step, connection } }) }
+      bridge.on = (cb: (event: unknown) => void) => {
+        listeners.push(cb)
+        return () => { const i = listeners.indexOf(cb); if (i >= 0) listeners.splice(i, 1) }
+      }
+      const realCall = bridge.call
+      bridge.call = async (method: string, args?: unknown) => {
+        if (method === 'auth.get') return { ok: true, data: { step, connection } }
+        if (method === 'auth.logout') {
+          step = 'logging-out'; connection = 'offline'; emit()
+          setTimeout(() => { step = 'starting'; connection = 'connecting'; emit() }, 700)
+          setTimeout(() => { step = 'phone'; connection = 'ready'; emit() }, 2500)
+          return { ok: true, data: {} }
+        }
+        return realCall(method, args)
+      }
+    })
+    await page.goto(baseUrl + '#/settings')
+    await page.waitForLoadState('networkidle')
+
+    await page.getByRole('button', { name: 'Log out' }).first().click()
+    // The confirm host renders after the page, so the dialog's own action is the last one.
+    await page.getByRole('button', { name: 'Log out' }).last().click()
+
+    // The signing-out screen stays up for the whole pipeline — no splash, no blank, no dashboard flicker.
+    await expect(page.getByText('Signing out…')).toBeVisible()
+    await expect(page.getByText('Connecting to Telegram…')).toHaveCount(0)
+    await page.waitForTimeout(1000) // past the TDLib restart the logout triggers
+    await expect(page.getByText('Signing out…')).toBeVisible()
+
+    // The login screen it hands over to is the real one: the phone form, ready to type in.
+    await expect(page.getByRole('heading', { name: 'Phone Number' })).toBeVisible({ timeout: 8000 })
+    await expect(page.getByText('Connecting to Telegram…')).toHaveCount(0)
+    await page.screenshot({ path: 'tests/screenshots/logout-lands-on-phone.png' })
   })
 
   test('No hardcoded sample data in UI', async ({ page }) => {
@@ -585,5 +1142,75 @@ test.describe('TeleFlow UI', () => {
     await page.goto(baseUrl + '#/settings')
     await page.waitForLoadState('networkidle')
     await expect(page.locator('input[type="checkbox"][role="switch"]').first()).toBeAttached()
+  })
+
+  test('Overview page notification center: opens on click, shows tabs and controls', async ({ page }) => {
+    await setupBridge(page)
+    await page.goto(baseUrl)
+    await page.waitForLoadState('networkidle')
+
+    const notifBtn = page.locator('[data-testid="overview-notification-btn"]')
+    await expect(notifBtn).toBeVisible()
+
+    // Click to open notification center popover
+    await notifBtn.click()
+    await expect(page.getByText('Notifications', { exact: true })).toBeVisible()
+    await expect(page.locator('button:has-text("All (")')).toBeVisible()
+    await expect(page.locator('button:has-text("Unread (")')).toBeVisible()
+
+    // Close button
+    const closeBtn = page.locator('button[title="Close"]')
+    await expect(closeBtn).toBeVisible()
+    await closeBtn.click()
+  })
+
+  test('Downloads: chat row action buttons, right-click toolbox and archive folder', async ({ page }) => {
+    await setupBridge(page)
+    await page.goto(baseUrl + '#/downloads')
+    await page.waitForLoadState('networkidle')
+
+    const chatRow = page.locator('text=Test Channel').first()
+    await expect(chatRow).toBeVisible()
+
+    // Right-click chat row to trigger context toolbox
+    await chatRow.click({ button: 'right' })
+
+    // Verify toolbox options: Pin, Mute, Archive, Select Chats, Leave
+    await expect(page.locator('text=Pin to Top').or(page.locator('text=Unpin from Top'))).toBeVisible()
+    await expect(page.locator('text=Mute Notifications').or(page.locator('text=Unmute Notifications'))).toBeVisible()
+    await expect(page.locator('text=Archive Chat').or(page.locator('text=Unarchive Chat'))).toBeVisible()
+    await expect(page.locator('text=Select Chats')).toBeVisible()
+    await expect(page.locator('text=Leave Channel').or(page.locator('text=Leave Chat'))).toBeVisible()
+
+    // Test archiving: click Archive Chat
+    await page.locator('text=Archive Chat').click()
+
+    // Verify Archived Chats folder row appears
+    await expect(page.locator('text=Archived Chats')).toBeVisible()
+  })
+
+  test('ChatView: Select Chat button opens dialog and switches chat', async ({ page }) => {
+    await setupBridge(page)
+    await page.goto(baseUrl + '#/downloads')
+    await page.waitForLoadState('networkidle')
+
+    // Switch to Chat View mode
+    const chatViewBtn = page.locator('button:has-text("Chat View")')
+    await expect(chatViewBtn).toBeVisible()
+    await chatViewBtn.click()
+
+    // Verify "Select Chat" button is visible
+    const selectChatBtn = page.locator('[data-testid="select-chat-btn"]')
+    await expect(selectChatBtn).toBeVisible()
+
+    // Click "Select Chat"
+    await selectChatBtn.click()
+
+    // Verify modal appears with search input and chat list
+    await expect(page.locator('input[placeholder="Search chats and channels..."]')).toBeVisible()
+    await expect(page.locator('button:has-text("VIP Community")')).toBeVisible()
+
+    // Click another chat in dialog to switch
+    await page.locator('button:has-text("VIP Community")').click()
   })
 })

@@ -6,9 +6,11 @@ import os from 'node:os'
 import path from 'node:path'
 import { _electron as electron, expect, test } from '@playwright/test'
 
-const exe = (fs.existsSync(path.resolve('release/win-unpacked/Mediagram.exe'))
-  ? path.resolve('release/win-unpacked/Mediagram.exe')
-  : path.resolve('release/win-unpacked/TeleFlow.exe')).toLowerCase()
+// APP_DIR points the test at another unpacked build — release/win-unpacked is often held open here.
+const unpacked = process.env.APP_DIR ? path.resolve(process.env.APP_DIR) : path.resolve('release/win-unpacked')
+const exe = (fs.existsSync(path.join(unpacked, 'Mediagram.exe'))
+  ? path.join(unpacked, 'Mediagram.exe')
+  : path.join(unpacked, 'TeleFlow.exe')).toLowerCase()
 const homes: string[] = []
 const tempHome = () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'teleflow-'))
@@ -36,11 +38,16 @@ test('packaged exe boots, loads TDLib, and opens Login on the phone screen', asy
     const info = await win.evaluate(() => window.teleflow.call('app.info'))
     expect(info).toMatchObject({ ok: true, data: { tdlib: '1.8.66', home, repository: 'https://github.com/Webovignesh/tele' } })
 
-    // Continue has no TDLib client to send the code with yet, so the one-time API step appears for the keys.
+    // Continue has no TDLib client to send the code with yet, so the one-time API step appears for the keys,
+    // and the guide to my.telegram.org sits behind the View guide row beside it.
     await win.getByPlaceholder('98765 43210').fill('98765 43210')
     await win.getByRole('button', { name: 'Continue' }).click()
     await expect(win.getByLabel('API ID')).toBeVisible()
+    await expect(win.getByRole('link', { name: 'Open my.telegram.org' })).toHaveCount(0)
+    await win.getByRole('button', { name: /View guide/ }).click()
+    await expect(win.locator('#login-api-guide')).toBeVisible()
     await expect(win.getByRole('link', { name: 'Open my.telegram.org' })).toHaveAttribute('href', 'https://my.telegram.org')
+    await win.keyboard.press('Escape')
 
     // Continue reaches main and shows its 400 inline. The hash is malformed, so no TDLib client starts and nothing goes to Telegram.
     await win.getByLabel('API ID').fill('12345')
@@ -51,7 +58,7 @@ test('packaged exe boots, loads TDLib, and opens Login on the phone screen', asy
     // SQLite opens in the packaged main process; settings come back with their defaults and no credentials.
     const settings = await win.evaluate(() => window.teleflow.call('settings.get'))
     expect(settings).toMatchObject({ ok: true, data: { apiId: null, maxDownloads: 2, folderTemplate: '{chat}' } })
-    expect(fs.existsSync(path.join(home, 'teleflow.db'))).toBe(true)
+    expect(fs.existsSync(path.join(home, 'mediagram.db'))).toBe(true)
 
     // teleflow:// is privileged, allowed by the CSP for <img>, and served from home\thumbs; a missing id is a 404.
     const load = (src: string) => win.evaluate((s) => new Promise<number>((resolve) => {
