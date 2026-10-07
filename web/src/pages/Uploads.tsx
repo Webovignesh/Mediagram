@@ -1,5 +1,5 @@
 // Phase 5.3: Uploads page per UI.md & Reference Mockup
-import { useState, useRef, useEffect, type DragEvent } from 'react'
+import React, { useState, useRef, useEffect, useCallback, type DragEvent } from 'react'
 import { UploadCloud, X, Upload, Zap, Clock, CheckCircle2, FileText } from 'lucide-react'
 import { call, useCall, useLive, navigate } from '../api.ts'
 import type { LiveStats } from '../../../core/transfers.ts'
@@ -14,6 +14,45 @@ export default function Uploads() {
       return null
     }
   })
+
+  const [sidebarWidth, setSidebarWidth] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('mediagram_destinations_sidebar_width')
+      if (saved) {
+        const parsed = parseInt(saved, 10)
+        if (parsed >= 260 && parsed <= 520) return parsed
+      }
+    } catch {}
+    return 300
+  })
+  const [isResizingSidebar, setIsResizingSidebar] = useState(false)
+  const sidebarWidthRef = useRef(sidebarWidth)
+  sidebarWidthRef.current = sidebarWidth
+
+  const handleSidebarResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault()
+    setIsResizingSidebar(true)
+    const startX = e.clientX
+    const startWidth = sidebarWidthRef.current
+
+    const onMouseMove = (moveEvent: MouseEvent) => {
+      const delta = moveEvent.clientX - startX
+      const newWidth = Math.min(520, Math.max(260, startWidth + delta))
+      setSidebarWidth(newWidth)
+    }
+
+    const onMouseUp = () => {
+      setIsResizingSidebar(false)
+      window.removeEventListener('mousemove', onMouseMove)
+      window.removeEventListener('mouseup', onMouseUp)
+      try {
+        localStorage.setItem('mediagram_destinations_sidebar_width', String(sidebarWidthRef.current))
+      } catch {}
+    }
+
+    window.addEventListener('mousemove', onMouseMove)
+    window.addEventListener('mouseup', onMouseUp)
+  }, [])
 
   const [destSearch, setDestSearch] = useState('')
   const [destKind, setDestKind] = useState<'all' | 'channels' | 'groups' | 'saved'>('all')
@@ -97,8 +136,11 @@ export default function Uploads() {
 
   return (
     <div className="flex h-full overflow-hidden">
-      {/* Column 1: Destinations (~300px) */}
-      <div className="flex w-[300px] shrink-0 flex-col border-r border-border bg-panel/40">
+      {/* Column 1: Destinations (Resizable) */}
+      <div
+        style={{ width: `${sidebarWidth}px`, minWidth: 260, maxWidth: 520 }}
+        className="flex shrink-0 flex-col border-r border-border bg-panel/40 select-none overflow-hidden"
+      >
         <div className="border-b border-border p-3.5">
           <div className="text-[14px] font-semibold text-text tracking-wide">Destinations</div>
           <div className="text-[11px] text-muted">Chats where you can post</div>
@@ -118,7 +160,7 @@ export default function Uploads() {
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-2 space-y-1">
+        <div className="flex-1 overflow-y-auto p-2 space-y-1 no-scrollbar">
           {chatsErr ? (
             <ErrorState error={chatsErr} onRetry={chatsReload} />
           ) : !chatsData ? (
@@ -150,6 +192,19 @@ export default function Uploads() {
             })
           )}
         </div>
+      </div>
+
+      {/* Resize Handle / Support Divider */}
+      <div
+        onMouseDown={handleSidebarResizeStart}
+        className={`relative w-2.5 -ml-1 shrink-0 z-20 cursor-col-resize select-none group flex items-center justify-center transition-colors ${
+          isResizingSidebar ? 'bg-primary/40' : 'hover:bg-primary/25'
+        }`}
+        title="Drag to resize Destinations panel"
+      >
+        <div className={`w-0.5 h-10 rounded-full transition-colors ${
+          isResizingSidebar ? 'bg-primary' : 'bg-border/80 group-hover:bg-primary'
+        }`} />
       </div>
 
       {/* Column 2: New Upload (~flexible center) */}

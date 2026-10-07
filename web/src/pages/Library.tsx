@@ -6,6 +6,13 @@ import { Panel, SearchInput, Chip, Select, Segmented, Button, Stat, Empty, Error
 
 export default function Library() {
   const [view, setView] = useState<'grid' | 'list'>('grid')
+  const [gridSize, setGridSize] = useState<'sm' | 'md' | 'lg' | 'xl'>(() => {
+    try {
+      const s = localStorage.getItem('mediagram_library_grid_size')
+      if (s === 'sm' || s === 'md' || s === 'lg' || s === 'xl') return s
+    } catch {}
+    return 'md'
+  })
   const [search, setSearch] = useState('')
   const [type, setType] = useState<string>('all')
   const [chat, setChat] = useState<string>('all')
@@ -248,6 +255,27 @@ export default function Library() {
             { value: 'list', label: 'List', icon: <List size={15} /> },
           ]}
         />
+
+        {view === 'grid' && (
+          <div className="flex items-center rounded-md border border-border bg-tile p-0.5 text-xs text-text-2">
+            {(['sm', 'md', 'lg', 'xl'] as const).map((s) => (
+              <button
+                key={s}
+                type="button"
+                onClick={() => {
+                  setGridSize(s)
+                  try { localStorage.setItem('mediagram_library_grid_size', s) } catch {}
+                }}
+                className={`rounded px-1.5 py-0.5 uppercase text-[10px] font-semibold transition-colors cursor-pointer ${
+                  gridSize === s ? 'bg-primary/25 text-primary border border-primary/40 font-bold' : 'text-muted hover:text-text'
+                }`}
+                title={`Grid size: ${s === 'sm' ? 'Small' : s === 'md' ? 'Medium' : s === 'lg' ? 'Large' : 'Extra Large'}`}
+              >
+                {s}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Multi-select action bar */}
@@ -269,7 +297,7 @@ export default function Library() {
         {libErr ? (
           <ErrorState error={libErr} onRetry={reload} />
         ) : !lib ? (
-          <div className="grid grid-cols-4 gap-4 p-4">
+          <div className={gridSize === 'sm' ? 'grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-3 p-4' : gridSize === 'md' ? 'grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4 p-4' : gridSize === 'lg' ? 'grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4 p-4' : 'grid grid-cols-1 sm:grid-cols-2 gap-5 p-4'}>
             {[...Array(8)].map((_, i) => <Skeleton key={i} className="h-44 w-full rounded-xl" />)}
           </div>
         ) : items.length === 0 ? (
@@ -277,7 +305,7 @@ export default function Library() {
         ) : (
           <>
             {view === 'grid' ? (
-              <div className="grid grid-cols-4 gap-4">
+              <div className={gridSize === 'sm' ? 'grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-3' : gridSize === 'md' ? 'grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4' : gridSize === 'lg' ? 'grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4' : 'grid grid-cols-1 sm:grid-cols-2 gap-5'}>
                 {items.map((item: any) => {
                   const isSelected = selectedPaths.includes(item.path)
                   return (

@@ -1,9 +1,10 @@
 // Phase 5.1: Overview page per UI.md & Mockup Reference
-import { useState } from 'react'
-import { Activity, CheckCircle2, FileStack, AlertTriangle, MoreVertical, Play, Pause, ArrowDown, ArrowUp, XCircle } from 'lucide-react'
+import { useState, useRef, useEffect } from 'react'
+import { Activity, CheckCircle2, FileStack, AlertTriangle, MoreVertical, Play, Pause, ArrowDown, ArrowUp, XCircle, Bell, CheckCheck, X, MessageSquare, Check, Sparkles, Trash2 } from 'lucide-react'
 import { call, useCall, useLive, navigate } from '../api.ts'
 import type { LiveStats } from '../../../core/transfers.ts'
 import { Panel, Stat, Select, Avatar, Pill, Progress, IconButton, Menu, Empty, ErrorState, Skeleton, MediaPreviewModal, fmtBytes, fmtAgo, fmtEta, fmtSpeed, typeLabel, toast } from '../ui.tsx'
+import { useNotifications } from '../notifications.ts'
 
 type KindCount = { download: number, upload: number }
 type OverviewStats = { completedToday: KindCount, totalFiles: KindCount, recent: RecentItem[] }
@@ -219,6 +220,33 @@ export default function Overview() {
     }
   }
 
+  const {
+    notifications,
+    unreadCount,
+    markAsRead,
+    markAllAsRead,
+    removeNotification,
+    clearAll: clearNotifications,
+    settings: notifSettings,
+  } = useNotifications()
+  const [notifOpen, setNotifOpen] = useState(false)
+  const [notifTab, setNotifTab] = useState<'all' | 'unread'>('all')
+  const notifRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (notifRef.current && !notifRef.current.contains(e.target as Node)) {
+        setNotifOpen(false)
+      }
+    }
+    if (notifOpen) {
+      document.addEventListener('mousedown', handleClickOutside)
+    }
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [notifOpen])
+
+  const filteredNotifs = notifTab === 'unread' ? notifications.filter((n) => !n.read) : notifications
+
   return (
     <div className="space-y-4 p-6">
       <MediaPreviewModal
@@ -227,10 +255,190 @@ export default function Overview() {
         onClose={() => setPreviewItem(null)}
       />
 
-      <div className="flex items-center justify-between pr-40">
+      <div className="flex items-center justify-between">
         <div>
           <h1 className="text-[26px] font-bold text-text tracking-wide">Welcome to Mediagram</h1>
           <p className="mt-1 text-[13px] text-text-2">Your Telegram videos, downloads, and uploads — all in one place.</p>
+        </div>
+
+        {/* Notifications Bell and Flyout */}
+        <div className="relative" ref={notifRef}>
+          <button
+            type="button"
+            data-testid="overview-notification-btn"
+            onClick={() => setNotifOpen(!notifOpen)}
+            className={`relative flex items-center justify-center size-10 rounded-xl border transition-all cursor-pointer shadow-xs ${
+              notifOpen
+                ? 'bg-primary/20 border-primary text-primary shadow-glow'
+                : 'bg-panel/85 border-border text-text hover:bg-tile hover:border-primary/40'
+            }`}
+            title="Notifications"
+            aria-label="Notifications"
+          >
+            <Bell size={18} />
+            {notifSettings.showBadge && unreadCount > 0 && (
+              <span className="absolute -top-1 -right-1 flex h-4 min-w-4 px-1 items-center justify-center rounded-full bg-primary text-[10px] font-bold text-white shadow-glow animate-pulse">
+                {unreadCount > 99 ? '99+' : unreadCount}
+              </span>
+            )}
+          </button>
+
+          {/* Interactive Notification Center Popover */}
+          {notifOpen && (
+            <div className="absolute right-0 top-12 z-50 w-[380px] max-h-[500px] rounded-2xl border border-border/80 bg-panel/95 backdrop-blur-xl shadow-2xl flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+              {/* Header */}
+              <div className="flex items-center justify-between px-4 py-3 border-b border-border bg-panel/90">
+                <div className="flex items-center gap-2">
+                  <span className="font-bold text-[14px] text-text">Notifications</span>
+                  {unreadCount > 0 && (
+                    <span className="px-1.5 py-0.5 rounded-full text-[10.5px] font-bold bg-primary/20 text-primary border border-primary/30">
+                      {unreadCount} unread
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-center gap-1">
+                  {notifications.length > 0 && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={markAllAsRead}
+                        className="p-1.5 rounded-lg text-muted hover:text-text hover:bg-tile transition-colors cursor-pointer"
+                        title="Mark all as read"
+                      >
+                        <CheckCheck size={14} />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={clearNotifications}
+                        className="p-1.5 rounded-lg text-muted hover:text-danger hover:bg-danger/10 transition-colors cursor-pointer"
+                        title="Clear all notifications"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setNotifOpen(false)}
+                    className="p-1.5 rounded-lg text-muted hover:text-text hover:bg-tile transition-colors cursor-pointer"
+                    title="Close"
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+              </div>
+
+              {/* Filter Tabs */}
+              <div className="flex border-b border-border bg-tile/40 px-3 pt-2 gap-2 text-[12px]">
+                <button
+                  type="button"
+                  onClick={() => setNotifTab('all')}
+                  className={`pb-2 px-2 font-medium border-b-2 transition-colors cursor-pointer ${
+                    notifTab === 'all'
+                      ? 'border-primary text-primary font-semibold'
+                      : 'border-transparent text-muted hover:text-text'
+                  }`}
+                >
+                  All ({notifications.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setNotifTab('unread')}
+                  className={`pb-2 px-2 font-medium border-b-2 transition-colors cursor-pointer ${
+                    notifTab === 'unread'
+                      ? 'border-primary text-primary font-semibold'
+                      : 'border-transparent text-muted hover:text-text'
+                  }`}
+                >
+                  Unread ({unreadCount})
+                </button>
+              </div>
+
+              {/* Notification list */}
+              <div className="flex-1 overflow-y-auto divide-y divide-border/60 max-h-[380px] custom-scrollbar">
+                {filteredNotifs.length === 0 ? (
+                  <div className="p-8 text-center text-muted text-[13px] flex flex-col items-center gap-2">
+                    <Bell size={24} className="opacity-40" />
+                    <p>{notifTab === 'unread' ? 'No unread notifications' : 'No notifications yet'}</p>
+                  </div>
+                ) : (
+                  filteredNotifs.map((n) => (
+                    <div
+                      key={n.id}
+                      onClick={() => {
+                        if (!n.read) markAsRead(n.id)
+                        setNotifOpen(false)
+                        if (n.chatId) {
+                          try {
+                            localStorage.setItem('mediagram_active_chat_id', String(n.chatId))
+                            localStorage.setItem('mediagram_downloads_view', 'chat')
+                          } catch {}
+                          navigate(`/downloads?chat=${n.chatId}`)
+                        } else if (n.link) {
+                          navigate(n.link)
+                        }
+                      }}
+                      className={`group relative flex items-start gap-3 p-3 transition-colors cursor-pointer text-left ${
+                        !n.read ? 'bg-primary/5 hover:bg-primary/10' : 'hover:bg-tile/70'
+                      }`}
+                    >
+                      <div className="shrink-0 mt-0.5">
+                        <span className={`grid size-7 place-items-center rounded-lg border ${
+                          n.type === 'download' ? 'bg-primary/10 border-primary/20 text-primary' :
+                          n.type === 'upload' ? 'bg-upload/10 border-upload/20 text-upload' :
+                          n.type === 'failed' ? 'bg-danger/10 border-danger/20 text-danger' :
+                          n.type === 'message' ? 'bg-cyan/10 border-cyan/20 text-cyan' :
+                          'bg-panel border-border text-text-2'
+                        }`}>
+                          {n.type === 'download' ? <ArrowDown size={14} /> :
+                           n.type === 'upload' ? <ArrowUp size={14} /> :
+                           n.type === 'failed' ? <AlertTriangle size={14} /> :
+                           n.type === 'message' ? <MessageSquare size={14} /> :
+                           <Bell size={14} />}
+                        </span>
+                      </div>
+                      <div className="flex-1 min-w-0 pr-6">
+                        <div className="flex items-center justify-between gap-1">
+                          <span className={`text-[12.5px] truncate font-medium ${!n.read ? 'text-text font-semibold' : 'text-text-2'}`}>
+                            {n.title}
+                          </span>
+                          <span className="text-[10px] text-muted whitespace-nowrap shrink-0">{fmtAgo(n.timestamp)}</span>
+                        </div>
+                        <p className="text-[11.5px] text-muted line-clamp-2 mt-0.5">{n.body}</p>
+                      </div>
+                      <div className="shrink-0 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            markAsRead(n.id, !n.read)
+                          }}
+                          className="p-1 rounded hover:bg-panel text-muted hover:text-text transition-colors cursor-pointer"
+                          title={n.read ? 'Mark unread' : 'Mark read'}
+                        >
+                          <Check size={12} />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            removeNotification(n.id)
+                          }}
+                          className="p-1 rounded hover:bg-danger/10 text-muted hover:text-danger transition-colors cursor-pointer"
+                          title="Remove"
+                        >
+                          <X size={12} />
+                        </button>
+                      </div>
+                      {!n.read && (
+                        <span className="absolute right-2.5 top-3.5 size-2 rounded-full bg-primary" />
+                      )}
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          )}
         </div>
       </div>
 

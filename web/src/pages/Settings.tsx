@@ -1,9 +1,10 @@
 // Phase 5.6: Settings page per UI.md & User Specs
 import { useState, useRef, useEffect } from 'react'
-import { Settings as SettingsIcon, Download, Upload, Users, Folder, Bell, Info, ExternalLink, Trash2, LogOut, Clock, Key, Palette, Check, Eye, EyeOff, Copy, Pencil, ShieldCheck, Lock } from 'lucide-react'
+import { Settings as SettingsIcon, Download, Upload, Users, Folder, Bell, BellOff, Info, ExternalLink, Trash2, LogOut, Clock, Key, Palette, Check, Eye, EyeOff, Copy, Pencil, ShieldCheck, Lock, Broom, Database } from 'lucide-react'
 import { call, useCall, useRoute, navigate } from '../api.ts'
 import { Panel, Toggle, Select, Button, Avatar, Input, Dialog, fmtBytes, fmtDate, confirm, toast } from '../ui.tsx'
 import { THEMES, getActiveTheme, applyTheme } from '../theme.ts'
+import { useNotifications, setChatMuted } from '../notifications.ts'
 
 export default function Settings() {
   const [activeSection, setActiveSection] = useState('general')
@@ -150,6 +151,7 @@ export default function Settings() {
   const { data: storage, reload: reloadStorage } = useCall<any>('app.storage', {}, ['storage'])
   const { data: live } = useCall<any>('stats.live', {}, ['stats'])
   const { data: chats } = useCall<{ chats: any[] }>('chats.list', {}, ['chats'])
+  const { settings: notifSettings, updateSettings: updateNotifSettings, mutedChats, clearAll: clearNotifHistory } = useNotifications()
 
   async function setSetting(key: string, value: any) {
     try {
@@ -545,10 +547,10 @@ export default function Settings() {
               <div className="flex items-center justify-between py-3">
                 <div>
                   <div className="text-[13px] font-semibold text-text">Prebuffer video playback</div>
-                  <div className="text-[12px] text-muted">Automatically stream and buffer videos before playback; when off, un-downloaded videos won't prebuffer automatically</div>
+                  <div className="text-[12px] text-muted">Off: a video starts playing the moment you open it and fills in chunk by chunk while it downloads. On: the whole video is fetched first, then playback starts</div>
                 </div>
                 <Toggle
-                  checked={settings?.prebufferVideo ?? true}
+                  checked={settings?.prebufferVideo ?? false}
                   onChange={(v) => {
                     try { localStorage.setItem('mediagram_prebuffer_video', String(v)) } catch {}
                     setSetting('prebufferVideo', v)
@@ -1004,21 +1006,98 @@ export default function Settings() {
 
         {/* Notifications */}
         <div ref={sectionRefs.notifications}>
-          <Panel title="Notifications" icon={<Bell size={18} />}>
-            <div className="divide-y divide-border">
+          <Panel title="Notifications" icon={<Bell size={18} />} subtitle="In-app alerts, desktop notifications, and alert controls">
+            <div className="divide-y divide-border space-y-1">
+              {/* Master toggle */}
+              <div className="flex items-center justify-between py-3">
+                <div>
+                  <div className="text-[13px] font-semibold text-text">Enable Notifications</div>
+                  <div className="text-[12px] text-muted">Master control for desktop OS alerts and in-app notifications</div>
+                </div>
+                <Toggle checked={notifSettings.enabled} onChange={(v) => updateNotifSettings({ enabled: v })} />
+              </div>
+
+              {/* Desktop OS notifications */}
+              <div className="flex items-center justify-between py-3">
+                <div>
+                  <div className="text-[13px] font-semibold text-text">Real Desktop Notifications</div>
+                  <div className="text-[12px] text-muted">Display native Windows notification banners and Action Center alerts</div>
+                </div>
+                <div className="flex items-center gap-3">
+                  <Button
+                    variant="secondary"
+                    className="py-1 px-2.5 text-[11px] flex items-center gap-1.5"
+                    onClick={() => {
+                      try {
+                        if ((window as any).mediagram?.call) {
+                          ;(window as any).mediagram.call('app.notify', {
+                            title: 'Mediagram Desktop Alert',
+                            body: 'Native desktop notifications are active and functioning correctly.'
+                          }).catch(() => {})
+                        } else if (typeof window !== 'undefined' && 'Notification' in window) {
+                          new Notification('Mediagram Desktop Alert', {
+                            body: 'Native desktop notifications are active and functioning correctly.'
+                          })
+                        }
+                      } catch {}
+                    }}
+                  >
+                    <Bell size={12} />
+                    <span>Test notification</span>
+                  </Button>
+                  <Toggle
+                    checked={notifSettings.desktopNotifications ?? true}
+                    onChange={(v) => updateNotifSettings({ desktopNotifications: v })}
+                  />
+                </div>
+              </div>
+
+              {/* Transfer completion */}
               <div className="flex items-center justify-between py-3">
                 <div>
                   <div className="text-[13px] font-semibold text-text">Notify when transfers complete</div>
-                  <div className="text-[12px] text-muted">Show desktop notification when downloads or uploads finish</div>
+                  <div className="text-[12px] text-muted">Show notification when downloads or uploads finish</div>
                 </div>
-                <Toggle checked={settings?.notifyComplete ?? true} onChange={(v) => setSetting('notifyComplete', v)} />
+                <Toggle
+                  checked={settings?.notifyComplete ?? notifSettings.notifyComplete}
+                  onChange={(v) => {
+                    setSetting('notifyComplete', v)
+                    updateNotifSettings({ notifyComplete: v })
+                  }}
+                />
               </div>
+
+              {/* Transfer failure */}
               <div className="flex items-center justify-between py-3">
                 <div>
                   <div className="text-[13px] font-semibold text-text">Notify on failures</div>
-                  <div className="text-[12px] text-muted">Show desktop notification if a transfer permanently fails</div>
+                  <div className="text-[12px] text-muted">Show alert if a transfer permanently fails</div>
                 </div>
-                <Toggle checked={settings?.notifyFailed ?? true} onChange={(v) => setSetting('notifyFailed', v)} />
+                <Toggle
+                  checked={settings?.notifyFailed ?? notifSettings.notifyFailed}
+                  onChange={(v) => {
+                    setSetting('notifyFailed', v)
+                    updateNotifSettings({ notifyFailed: v })
+                  }}
+                />
+              </div>
+
+              {/* Message notifications */}
+              <div className="flex items-center justify-between py-3">
+                <div>
+                  <div className="text-[13px] font-semibold text-text">New message notifications</div>
+                  <div className="text-[12px] text-muted">Notify when new chat or channel messages arrive (silenced for muted chats)</div>
+                </div>
+                <Toggle checked={notifSettings.notifyMessages} onChange={(v) => updateNotifSettings({ notifyMessages: v })} />
+              </div>
+
+              {/* Unread badge */}
+              <div className="flex items-center justify-between py-3">
+                <div>
+                  <div className="text-[13px] font-semibold text-text">Show unread badges</div>
+                  <div className="text-[12px] text-muted">Display unread badge counters on Overview bell and chats</div>
+                </div>
+                <Toggle checked={notifSettings.showBadge} onChange={(v) => updateNotifSettings({ showBadge: v })} />
               </div>
             </div>
           </Panel>
@@ -1088,8 +1167,8 @@ export default function Settings() {
         <Panel title="Danger Zone" icon={<Trash2 size={18} className="text-danger" />} subtitle="Sign out or delete data stored on this device.">
           <div className="space-y-3 pt-1">
             {/* Account: Log out, or Log in when the session is gone */}
-            <div className="rounded-xl border border-danger/30 bg-danger/5 p-4 flex items-center justify-between gap-4">
-              <div>
+            <div className="rounded-xl border border-danger/30 bg-danger/5 p-4 flex items-center justify-between gap-3.5">
+              <div className="min-w-0 flex-1">
                 <div className="text-[13px] font-bold text-danger">{signedIn ? 'Log out' : 'Log in'}</div>
                 <div className="text-[12px] text-muted">
                   {signedIn
@@ -1121,28 +1200,40 @@ export default function Settings() {
             </div>
 
             {/* Clear cache */}
-            <div className="rounded-xl border border-border bg-tile/60 p-4 flex items-center justify-between gap-4">
-              <div>
+            <div className="rounded-xl border border-border bg-tile/60 p-4 flex items-center justify-between gap-3.5">
+              <div className="min-w-0 flex-1">
                 <div className="text-[13px] font-semibold text-text">Clear cache</div>
                 <div className="text-[12px] text-muted">
                   Deletes temporary files and thumbnails ({storage ? fmtBytes(storage.cache?.total || 0) : '...'}). Paused downloads restart from the beginning.
                 </div>
               </div>
-              <Button variant="secondary" disabled={activeCount > 0} onClick={clearCache}>
-                {activeCount > 0 ? 'Pause active transfers first' : 'Clear cache'}
+              <Button
+                variant="secondary"
+                className="shrink-0 flex items-center gap-2 px-3 py-2"
+                disabled={activeCount > 0}
+                onClick={clearCache}
+              >
+                <Broom size={15} className="shrink-0" />
+                <span>{activeCount > 0 ? 'Pause active transfers first' : 'Clear cache'}</span>
               </Button>
             </div>
 
             {/* Clear app data */}
-            <div className="rounded-xl border border-danger/30 bg-danger/5 p-4 flex items-center justify-between gap-4">
-              <div>
+            <div className="rounded-xl border border-danger/30 bg-danger/5 p-4 flex items-center justify-between gap-3.5">
+              <div className="min-w-0 flex-1">
                 <div className="text-[13px] font-bold text-danger">Clear app data</div>
                 <div className="text-[12px] text-muted">
                   Deletes history, queue, media index, and settings ({storage ? fmtBytes(storage.appData || 0) : '...'}).
                 </div>
               </div>
-              <Button variant="danger" disabled={activeCount > 0} onClick={clearData}>
-                {activeCount > 0 ? 'Pause active transfers first' : 'Clear app data'}
+              <Button
+                variant="danger"
+                className="shrink-0 flex items-center gap-2 px-3 py-2"
+                disabled={activeCount > 0}
+                onClick={clearData}
+              >
+                <Database size={15} className="shrink-0" />
+                <span>{activeCount > 0 ? 'Pause active transfers first' : 'Clear app data'}</span>
               </Button>
             </div>
           </div>
