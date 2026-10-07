@@ -19,6 +19,7 @@ export type AppEvent =
   | { type: 'stats', stats: LiveStats }
   | { type: 'typing', chatId: number, text: string | null }
   | { type: 'fileProgress', fileId: number, downloaded: number, total: number, completed: boolean, path: string | null }
+  | { type: 'notification', title: string, body: string, kind: 'download' | 'upload' | 'failed' | 'message' | 'system', chatId?: number, messageId?: number }
 export type Emit = (e: AppEvent) => void
 
 export type DB = DatabaseSync
@@ -131,7 +132,9 @@ const defaults: Omit<StoredSettings, 'downloadRoot'> = {
   maxDownloads: 2, skipExisting: true, datePrefix: false, folderTemplate: '{chat}', defaultUploadChat: null,
   uploadAlbum: true, keepNames: true, maxUploads: 1, showArchived: false, autoRetry: true, retryAttempts: 3,
   stallSeconds: 10, clearCompletedDays: 0, notifyComplete: true, notifyFailed: true, closeToTray: false, apiId: null,
-  prebufferVideo: true,
+  // Off by default: an un-downloaded video starts playing the moment it is opened, streaming chunk by chunk
+  // while TDLib fills it in the background. Prebuffering (waiting for the whole file first) is opt-in.
+  prebufferVideo: false,
 }
 
 type Rule = (v: unknown, key: string) => void

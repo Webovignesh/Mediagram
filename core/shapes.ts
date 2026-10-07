@@ -40,9 +40,10 @@ export type DeliveryStatus = 'sending' | 'sent' | 'read' | 'failed'
 
 export type Chat = { id: number, title: string, kind: 'private' | 'saved' | 'group' | 'channel', username: string | null,
   photo: string | null, unread: number, lastDate: number, canPost: boolean, folders: number[],
-  pinnedMessageId?: number | null, lastReadInboxMessageId?: number, lastReadOutboxMessageId?: number }
+  pinnedMessageId?: number | null, lastReadInboxMessageId?: number, lastReadOutboxMessageId?: number,
+  isPinned?: boolean, isMuted?: boolean, isArchived?: boolean }
 export type Folder = { id: number, name: string }
-export type Media = { type: MediaType, file: Td.file, name: string, ext: string, size: number, duration: number, caption: string, thumb: string | null, path?: string | null, status?: string }
+export type Media = { type: MediaType, file: Td.file, name: string, ext: string, size: number, duration: number, caption: string, thumb: string | null, thumbFileId?: number | null, path?: string | null, status?: string }
 export type Message = {
   id: number
   chatId?: number
@@ -178,6 +179,7 @@ export const toMe = (u: Td.user, captionMax: number, bio = ''): Me => ({
 
 // <img> can't render Mpeg4, Webm, or Tgs thumbnails.
 const thumbId = (t?: Td.thumbnail) => t && /^thumbnailFormat(Jpeg|Png|Webp|Gif)$/.test(t.format._) ? t.file.remote.id || null : null
+const thumbFileId = (t?: Td.thumbnail) => t && /^thumbnailFormat(Jpeg|Png|Webp|Gif)$/.test(t.format._) ? t.file.id : null
 const mimeExt: Record<string, string> = {
   'application/pdf': 'pdf', 'application/zip': 'zip', 'application/vnd.rar': 'rar', 'application/x-rar-compressed': 'rar',
   'application/x-7z-compressed': '7z', 'application/vnd.android.package-archive': 'apk', 'text/plain': 'txt',
@@ -190,28 +192,28 @@ const area = (s: Td.photoSize) => s.width * s.height
 export function extractMedia(m: Td.message): Media | null {
   const c = m.content
   const n = Math.floor(m.id / 2 ** 20)
-  let r: [MediaType, Td.file, string, number, string | null]
+  let r: [MediaType, Td.file, string, number, string | null, number | null]
   switch (c._) {
-    case 'messageVideo': r = ['video', c.video.video, c.video.file_name || `Video_${n}.mp4`, c.video.duration, thumbId(c.video.thumbnail)]; break
+    case 'messageVideo': r = ['video', c.video.video, c.video.file_name || `Video_${n}.mp4`, c.video.duration, thumbId(c.video.thumbnail), thumbFileId(c.video.thumbnail)]; break
     case 'messagePhoto': {
       const sizes = c.photo.sizes
       if (!sizes.length) return null
       const thumb = sizes.find((s) => s.type === 'm') ?? sizes.reduce((a, b) => (area(b) < area(a) ? b : a)) // photo sizes are JPEG
-      r = ['photo', sizes.reduce((a, b) => (area(b) > area(a) ? b : a)).photo, `Photo_${n}.jpg`, 0, thumb.photo.remote.id || null]
+      r = ['photo', sizes.reduce((a, b) => (area(b) > area(a) ? b : a)).photo, `Photo_${n}.jpg`, 0, thumb.photo.remote.id || null, thumb.photo.id]
       break
     }
     case 'messageDocument': {
       const ext = mimeExt[c.document.mime_type]
-      r = ['document', c.document.document, c.document.file_name || `File_${n}${ext ? `.${ext}` : ''}`, 0, thumbId(c.document.thumbnail)]
+      r = ['document', c.document.document, c.document.file_name || `File_${n}${ext ? `.${ext}` : ''}`, 0, thumbId(c.document.thumbnail), thumbFileId(c.document.thumbnail)]
       break
     }
-    case 'messageAudio': r = ['audio', c.audio.audio, c.audio.file_name || `Audio_${n}.mp3`, c.audio.duration, thumbId(c.audio.album_cover_thumbnail)]; break
-    case 'messageAnimation': r = ['animation', c.animation.animation, c.animation.file_name || `Animation_${n}.mp4`, c.animation.duration, thumbId(c.animation.thumbnail)]; break
-    case 'messageVoiceNote': r = ['voice', c.voice_note.voice, `Voice_${n}.ogg`, c.voice_note.duration, null]; break
-    case 'messageVideoNote': r = ['video_note', c.video_note.video, `VideoNote_${n}.mp4`, c.video_note.duration, thumbId(c.video_note.thumbnail)]; break
+    case 'messageAudio': r = ['audio', c.audio.audio, c.audio.file_name || `Audio_${n}.mp3`, c.audio.duration, thumbId(c.audio.album_cover_thumbnail), thumbFileId(c.audio.album_cover_thumbnail)]; break
+    case 'messageAnimation': r = ['animation', c.animation.animation, c.animation.file_name || `Animation_${n}.mp4`, c.animation.duration, thumbId(c.animation.thumbnail), thumbFileId(c.animation.thumbnail)]; break
+    case 'messageVoiceNote': r = ['voice', c.voice_note.voice, `Voice_${n}.ogg`, c.voice_note.duration, null, null]; break
+    case 'messageVideoNote': r = ['video_note', c.video_note.video, `VideoNote_${n}.mp4`, c.video_note.duration, thumbId(c.video_note.thumbnail), thumbFileId(c.video_note.thumbnail)]; break
     default: return null
   }
-  const [type, file, name, duration, thumb] = r
+  const [type, file, name, duration, thumb, thumbFId] = r
   const completed = Boolean(file.local?.is_downloading_completed && file.local?.path)
   return {
     type,
@@ -222,6 +224,7 @@ export function extractMedia(m: Td.message): Media | null {
     duration,
     caption: 'caption' in c ? c.caption.text : '',
     thumb,
+    thumbFileId: thumbFId,
     path: completed ? file.local.path : null,
     status: completed ? 'downloaded' : file.local?.is_downloading_active ? 'downloading' : 'idle',
   }
@@ -276,6 +279,9 @@ export function toChat(c: Td.chat, k: Cache): Chat | null {
   if (t._ === 'chatTypeSecret') return null
   const saved = t._ === 'chatTypePrivate' && t.user_id === k.meId
   const names = t._ === 'chatTypePrivate' ? k.users.get(t.user_id)?.usernames : t._ === 'chatTypeSupergroup' ? k.supergroups.get(t.supergroup_id)?.usernames : undefined
+  const isPinned = Boolean((c.positions || []).some((p) => p.is_pinned))
+  const isArchived = Boolean((c.positions || []).some((p) => p.list?._ === 'chatListArchive'))
+  const isMuted = Boolean(c.notification_settings && (c.notification_settings.mute_for ?? 0) > 0)
   return {
     id: c.id, title: saved ? 'Saved Messages' : c.title,
     kind: saved ? 'saved' : t._ === 'chatTypePrivate' ? 'private' : t._ === 'chatTypeSupergroup' && t.is_channel ? 'channel' : 'group',
@@ -284,6 +290,7 @@ export function toChat(c: Td.chat, k: Cache): Chat | null {
     pinnedMessageId: (c as any).pinned_message_id ?? null,
     lastReadInboxMessageId: c.last_read_inbox_message_id ?? 0,
     lastReadOutboxMessageId: c.last_read_outbox_message_id ?? 0,
+    isPinned, isMuted, isArchived,
   }
 }
 

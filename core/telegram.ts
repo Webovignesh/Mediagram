@@ -418,6 +418,7 @@ function onTdUpdate(cl: Client, u: Td.Update) {
     case 'updateChatTitle': patch(u.chat_id, (c) => { c.title = u.title }); break
     case 'updateChatPhoto': patch(u.chat_id, (c) => { c.photo = u.photo }); break
     case 'updateChatPermissions': patch(u.chat_id, (c) => { c.permissions = u.permissions }); break
+    case 'updateChatNotificationSettings': patch(u.chat_id, (c) => { c.notification_settings = u.notification_settings }); break
     case 'updateChatPosition': patch(u.chat_id, (c) => setPosition(c, u.position)); break
     case 'updateChatLastMessage':
       patch(u.chat_id, (c) => { c.last_message = u.last_message; c.positions = u.positions })
@@ -456,7 +457,19 @@ function onTdUpdate(cl: Client, u: Td.Update) {
       break
     }
     case 'updateFile': {
-      const localPath = (u.file.local.path && fs.existsSync(u.file.local.path)) ? u.file.local.path : null
+      noteReadable(u.file)
+      // Emit TDLib's intended local path immediately without blocking on fs.existsSync.
+      // The protocol handler (protocolFile) performs its own existence check before
+      // serving the file. Emitting early lets the UI set preparedPath sooner so the
+      // video element can begin its own range-request pipeline without waiting for
+      // TDLib to flush its internal write buffer to disk (which can take 4-10 seconds).
+      let localPath = u.file.local.path || null
+      if (!localPath && deps?.dir && u.file.local.downloaded_size > 0) {
+        const tempPath = path.join(deps.dir, 'files', 'temp', String(u.file.id))
+        if (fs.existsSync(tempPath)) {
+          localPath = tempPath
+        }
+      }
       deps.emit({
         type: 'fileProgress',
         fileId: u.file.id,
@@ -533,6 +546,11 @@ export function chatList() {
   listed.sort((a, b) => cmp(order(b, 'chatListMain'), order(a, 'chatListMain'))
     || cmp(order(b, 'chatListArchive'), order(a, 'chatListArchive'))
     || (b.last_message?.date ?? 0) - (a.last_message?.date ?? 0))
+  for (const c of listed) {
+    if (c.photo?.small.id && !c.photo.small.local?.is_downloading_completed) {
+      invoke({ _: 'downloadFile', file_id: c.photo.small.id, priority: 20, offset: 0, limit: 0, synchronous: false }).catch(() => null)
+    }
+  }
   return { chats: listed.map((c) => toChat(c, cache)).filter((c) => c !== null), folders }
 }
 export const chat = (id: number) => { const c = chats.get(id); return c ? toChat(c, cache) : null }
@@ -847,7 +865,7 @@ export async function messages(chatId: number, limit: number, fromMessageId = 0)
     const got = page.messages.filter((m) => m !== null)
     if (!got.length) {
       const msgs = out.map((m) => toMessage(m, c))
-      prefetchThumbs(msgs.map((m) => m.media?.thumb))
+      prefetchThumbs(msgs.map((m) => m.media ? { remoteId: m.media.thumb, fileId: m.media.thumbFileId } : null))
       prefetchPhotos(msgs.filter((m) => m.media?.type === 'photo').slice(0, 10).map((m) => m.media?.file?.id))
       if (out.length) {
         void invoke({ _: 'viewMessages', chat_id: chatId, message_ids: out.map((m) => m.id), force_read: false }).catch(() => {})
@@ -859,7 +877,7 @@ export async function messages(chatId: number, limit: number, fromMessageId = 0)
     from = got[got.length - 1].id
   }
   const msgs = out.map((m) => toMessage(m, c))
-  prefetchThumbs(msgs.map((m) => m.media?.thumb))
+  prefetchThumbs(msgs.map((m) => m.media ? { remoteId: m.media.thumb, fileId: m.media.thumbFileId } : null))
   prefetchPhotos(msgs.filter((m) => m.media?.type === 'photo').slice(0, 10).map((m) => m.media?.file?.id))
   if (out.length) {
     void invoke({ _: 'viewMessages', chat_id: chatId, message_ids: out.map((m) => m.id), force_read: false }).catch(() => {})
@@ -960,9 +978,18 @@ export async function prepareMedia(chatId: number, messageId: number) {
   }
   const localStat = f.local.path ? fs.statSync(f.local.path, { throwIfNoEntry: false }) : null
   const localCompleted = Boolean(f.local.is_downloading_completed || (localStat && localStat.size > 0 && (!f.size || localStat.size >= f.size)))
-  const canUsePath = isImage ? localCompleted : Boolean(localCompleted || (localStat && localStat.size > 0))
+  const tempPath = (!isImage && deps?.dir) ? path.join(deps.dir, 'files', 'temp', String(f.id)) : null
+  const streamPath = (f.local.path && fs.existsSync(f.local.path)) ? f.local.path : tempPath
+  const canUsePath = isImage ? (localCompleted && f.local.path && fs.existsSync(f.local.path)) : Boolean(streamPath)
+  const isVideo = media.type === 'video' || ['mp4', 'm4v', 'mov'].includes(media.ext)
+  if (isVideo && !localCompleted && (media.size || f.size || 0) > 0) {
+    // Proactively prefetch the video tail (moov atom) in the background so it is available
+    // the instant Chromium requests the tail range. Every size gets this: a small non-faststart
+    // MP4 stalls exactly like a large one when its moov sits past the end of the download.
+    fetchVideoTail(f.id, media.size || f.size || 0).catch(() => {})
+  }
   return {
-    path: canUsePath && f.local.path && fs.existsSync(f.local.path) ? f.local.path : null,
+    path: canUsePath ? (isImage ? f.local.path : streamPath) : null,
     fileId: f.id,
     completed: localCompleted,
     size: f.size || f.expected_size || media.size,
@@ -970,6 +997,7 @@ export async function prepareMedia(chatId: number, messageId: number) {
     name: media.name,
     type: media.type,
     duration: media.duration,
+    thumb: media.thumb,
   }
 }
 
@@ -1004,6 +1032,60 @@ export async function clearChat(chatId: number) {
   if (auth.step !== 'ready') throw fail(503, 'Telegram is not connected yet')
   await invoke({ _: 'deleteChatHistory', chat_id: chatId, remove_from_chat_list: false, revoke: false })
   mediaChanged(chatId)
+}
+
+/** Pin or unpin a chat in its current chat list (main or archive) */
+export async function pinChat(chatId: number, pin: boolean) {
+  if (auth.step !== 'ready') throw fail(503, 'Telegram is not connected yet')
+  const c = chats.get(chatId)
+  const isArchive = c?.positions?.some((p) => p.list._ === 'chatListArchive')
+  const chat_list: Td.ChatList$Input = isArchive ? { _: 'chatListArchive' } : { _: 'chatListMain' }
+  await invoke({ _: 'toggleChatIsPinned', chat_list, chat_id: chatId, is_pinned: pin })
+  if (c) {
+    const pos = c.positions.find((p) => p.list._ === chat_list._)
+    if (pos) pos.is_pinned = pin
+    chatsChanged()
+  }
+}
+
+/** Move chat between main list and archive */
+export async function archiveChat(chatId: number, archive: boolean) {
+  if (auth.step !== 'ready') throw fail(503, 'Telegram is not connected yet')
+  const chat_list: Td.ChatList$Input = archive ? { _: 'chatListArchive' } : { _: 'chatListMain' }
+  await invoke({ _: 'addChatToList', chat_id: chatId, chat_list })
+  const c = chats.get(chatId)
+  if (c) {
+    c.positions = c.positions.filter((p) => p.list._ !== 'chatListMain' && p.list._ !== 'chatListArchive')
+    c.positions.push({ _: 'chatPosition', list: chat_list as any, order: '1', is_pinned: false, source: { _: 'chatSourceMtprotoProxy' } as any })
+    chatsChanged()
+  }
+}
+
+/** Mute or unmute notifications for a chat */
+export async function muteChat(chatId: number, mute: boolean) {
+  if (auth.step !== 'ready') throw fail(503, 'Telegram is not connected yet')
+  if (chatId === cache.meId) return
+  await invoke({
+    _: 'setChatNotificationSettings',
+    chat_id: chatId,
+    notification_settings: {
+      _: 'chatNotificationSettings',
+      mute_for: mute ? 2147483647 : 0,
+      use_default_mute_stories: false,
+      use_default_show_preview: true,
+      use_default_sound: true,
+      use_default_disable_pinned_message_notifications: true,
+      use_default_disable_mention_notifications: true,
+    },
+  })
+  const c = chats.get(chatId)
+  if (c) {
+    c.notification_settings = {
+      ...(c.notification_settings || ({} as any)),
+      mute_for: mute ? 2147483647 : 0,
+    }
+    chatsChanged()
+  }
 }
 
 /** Send a text message to a chat */
@@ -1470,6 +1552,28 @@ async function runScan(s: { chatId: number, stop: boolean }) {
 function upkeep(m: Td.message) {
   deps.emit({ type: 'invalidate', topics: [`messages:${m.chat_id}`] })
   if (m.sending_state) return // still being sent: a temporary id
+  if (!m.is_outgoing) {
+    const c = chats.get(m.chat_id)
+    const isMuted = Boolean(c?.notification_settings && (c.notification_settings.mute_for ?? 0) > 0)
+    if (!isMuted) {
+      const chatTitle = c?.title || 'New Message'
+      let textBody = ''
+      if (m.content._ === 'messageText') textBody = m.content.text.text
+      else if (m.content._ === 'messagePhoto') textBody = '📷 Photo'
+      else if (m.content._ === 'messageVideo') textBody = '🎥 Video'
+      else if (m.content._ === 'messageDocument') textBody = '📄 Document'
+      else if (m.content._ === 'messageAudio') textBody = '🎵 Audio'
+      else textBody = 'New message received'
+      deps.emit({
+        type: 'notification',
+        title: chatTitle,
+        body: textBody.slice(0, 150),
+        kind: 'message',
+        chatId: m.chat_id,
+        messageId: m.id,
+      })
+    }
+  }
   const row = getScan(deps.db, m.chat_id)
   if (!row) return
   const x = extractMedia(m)
@@ -1479,6 +1583,8 @@ function upkeep(m: Td.message) {
 }
 
 const thumbPathCache = new Map<string, string>()
+/** Deduplicates concurrent requests for the same thumbnail remote ID. */
+const thumbInflight = new Map<string, Promise<string | null>>()
 
 /** Prefetch recent full photo files in background with low priority so opening image view is instantaneous */
 export function prefetchPhotos(fileIds: (number | null | undefined)[]) {
@@ -1492,36 +1598,305 @@ export function prefetchPhotos(fileIds: (number | null | undefined)[]) {
   }
 }
 
-/** Prefetch remote thumbnail files asynchronously in background with low priority so active downloads get maximum bandwidth */
-export function prefetchThumbs(remoteIds: (string | null | undefined)[]) {
-  for (const id of remoteIds) {
-    if (!id || typeof id !== 'string' || thumbPathCache.has(id)) continue
-    void invoke({ _: 'getRemoteFile', remote_file_id: id }).then((f) => {
+export type ThumbPrefetchItem = string | { remoteId?: string | null, fileId?: number | null }
+
+/** Prefetch remote thumbnail files asynchronously in background with low priority so active downloads get maximum bandwidth.
+ *  Prefers local TDLib getFile (integer file_id lookup) when available to avoid remote network roundtrips. */
+export function prefetchThumbs(items: (ThumbPrefetchItem | null | undefined)[]) {
+  for (const item of items) {
+    if (!item) continue
+    const remoteId = typeof item === 'string' ? item : item.remoteId
+    const fileId = typeof item === 'object' ? item.fileId : null
+
+    if (remoteId && thumbPathCache.has(remoteId)) continue
+
+    const query = (fileId && typeof fileId === 'number')
+      ? invoke({ _: 'getFile', file_id: fileId })
+      : (remoteId && typeof remoteId === 'string')
+      ? invoke({ _: 'getRemoteFile', remote_file_id: remoteId })
+      : null
+
+    if (!query) continue
+
+    void query.then((f) => {
+      const cacheKey = remoteId || f.remote?.id
       // Same 2 MB ceiling as thumbFile: an id whose file is not a thumbnail is left alone (ARCHITECTURE > teleflow://
       // protocol), so a poisoned index cannot pull an arbitrary file down in the background.
       if ((f.expected_size || f.size) > 2 * 2 ** 20) return
       if (!f.local.is_downloading_completed) {
+        // Populate the cache once the background download completes so subsequent
+        // thumbFile() calls get an immediate cache hit instead of re-hitting TDLib.
         return invoke({ _: 'downloadFile', file_id: f.id, priority: 16, offset: 0, limit: 0, synchronous: false })
+          .then((done) => {
+            if (done.local.path && fs.existsSync(done.local.path)) {
+              if (cacheKey) thumbPathCache.set(cacheKey, done.local.path)
+            }
+          }).catch(() => {})
       } else if (f.local.path && fs.existsSync(f.local.path)) {
-        thumbPathCache.set(id, f.local.path)
+        if (cacheKey) thumbPathCache.set(cacheKey, f.local.path)
       }
     }).catch(() => {})
   }
 }
 
-/** Local path of a thumbnail or avatar for teleflow://thumb; the size is checked before anything downloads. */
-export async function thumbFile(remoteId: string) {
+/** Local path of a thumbnail or avatar for teleflow://thumb; the size is checked before anything downloads.
+ *  Concurrent requests for the same remoteId share a single in-flight Promise to avoid duplicate TDLib calls. */
+export function thumbFile(remoteId: string): Promise<string | null> {
+  // Fast path: already resolved and still on disk
   const cached = thumbPathCache.get(remoteId)
-  if (cached && fs.existsSync(cached)) return cached
-  let f = await invoke({ _: 'getRemoteFile', remote_file_id: remoteId })
-  if ((f.expected_size || f.size) > 2 * 2 ** 20) throw fail(413, 'Thumbnail too large')
-  if (!f.local.is_downloading_completed) {
-    f = await invoke({ _: 'downloadFile', file_id: f.id, priority: 32, offset: 0, limit: 0, synchronous: true })
+  if (cached && fs.existsSync(cached)) return Promise.resolve(cached)
+
+  // Dedup: if another request is already downloading this thumbnail, share its promise
+  const inflight = thumbInflight.get(remoteId)
+  if (inflight) return inflight
+
+  const promise = (async (): Promise<string | null> => {
+    try {
+      let f = await invoke({ _: 'getRemoteFile', remote_file_id: remoteId })
+      if ((f.expected_size || f.size) > 2 * 2 ** 20) throw fail(413, 'Thumbnail too large')
+      if (f.local.is_downloading_completed && f.local.path && fs.existsSync(f.local.path)) {
+        thumbPathCache.set(remoteId, f.local.path)
+        return f.local.path
+      }
+
+      // Register listener BEFORE calling downloadFile so we never miss the updateFile event
+      let unsub: () => void = () => {}
+      const updatePromise = new Promise<typeof f>((resolve) => {
+        const timer = setTimeout(() => { unsub(); resolve(f) }, 8000)
+        unsub = onUpdate((u) => {
+          if (u._ !== 'updateFile' || u.file.id !== f.id) return
+          if (u.file.local.is_downloading_completed && u.file.local.path) {
+            clearTimeout(timer)
+            unsub()
+            resolve(u.file)
+          }
+        })
+      })
+
+      // Try synchronous download first for instant resolution of tiny thumbnails (< 200 KB)
+      let dl: any = null
+      try {
+        dl = await Promise.race([
+          invoke({ _: 'downloadFile', file_id: f.id, priority: 32, offset: 0, limit: 0, synchronous: true }),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), 3000)),
+        ])
+      } catch {
+        invoke({ _: 'downloadFile', file_id: f.id, priority: 32, offset: 0, limit: 0, synchronous: false }).catch(() => null)
+        f = await updatePromise
+      }
+      if (dl && dl.local?.is_downloading_completed && dl.local?.path && fs.existsSync(dl.local.path)) {
+        unsub()
+        f = dl
+      }
+
+      // If still not completed according to f, check getFile one more time
+      if (!f.local.path || !fs.existsSync(f.local.path)) {
+        const check = await invoke({ _: 'getFile', file_id: f.id }).catch(() => null)
+        if (check && check.local.is_downloading_completed && check.local.path && fs.existsSync(check.local.path)) {
+          f = check
+        }
+      }
+
+      if (f.local.path && fs.existsSync(f.local.path)) {
+        thumbPathCache.set(remoteId, f.local.path)
+        return f.local.path
+      }
+      return null
+    } catch (e) {
+      if ((e as { status?: number })?.status === 413) throw e
+      return null
+    } finally {
+      thumbInflight.delete(remoteId)
+    }
+  })()
+
+  thumbInflight.set(remoteId, promise)
+  return promise
+}
+
+export type VideoTail = {
+  totalSize: number
+  tailOffset: number
+  buffer: Buffer
+}
+
+const videoTailCache = new Map<number, VideoTail>()
+const videoTailInflight = new Map<number, Promise<VideoTail | null>>()
+
+// A tail fetched out of order leaves a hole in TDLib's temp file. TDLib documents that while a file
+// is downloading "the actual file size may be bigger, and some parts of it may contain garbage", so
+// the on-disk size is not a safe watermark — only the contiguous prefix readable from byte 0 is.
+const tailSeen = new Set<number>()
+const readableEnds = new Map<number, number>()
+const readableProbe = new Map<number, { value: number, at: number }>()
+const readableDone = new Set<number>()
+
+/** True once a tail (moov) range has been requested for this file: its temp file may hold holes. */
+export function tailWasRequested(fileId: number) {
+  return tailSeen.has(fileId)
+}
+
+/** Bytes of TDLib's temp file readable from offset 0; null when TDLib cannot say. */
+export async function getReadableEnd(fileId: number, maxAgeMs = 250): Promise<number | null> {
+  if (readableDone.has(fileId)) return Number.MAX_SAFE_INTEGER
+  const hit = readableProbe.get(fileId)
+  if (hit && Date.now() - hit.at < maxAgeMs) return hit.value
+  if (auth.step !== 'ready') return hit?.value ?? readableEnds.get(fileId) ?? null
+  try {
+    const f = await Promise.race([
+      invoke({ _: 'getFile', file_id: fileId }),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), 1500)),
+    ]).catch(() => null)
+    if (!f) return hit?.value ?? readableEnds.get(fileId) ?? null
+    const local = f.local
+    const tracked = readableEnds.get(fileId) ?? 0
+    const value = local.is_downloading_completed
+      ? (f.size || f.expected_size || 0)
+      : local.download_offset === 0 ? local.downloaded_prefix_size : tracked
+    if (local.is_downloading_completed) readableDone.add(fileId)
+    else if (local.download_offset === 0 && local.downloaded_prefix_size > tracked) {
+      readableEnds.set(fileId, local.downloaded_prefix_size)
+    }
+    readableProbe.set(fileId, { value, at: Date.now() })
+    return value
+  } catch {
+    return hit?.value ?? readableEnds.get(fileId) ?? null
   }
-  if (f.local.path && fs.existsSync(f.local.path)) {
-    thumbPathCache.set(remoteId, f.local.path)
+}
+
+/** Keeps the readable-from-0 watermark current straight from updateFile, without a getFile round trip. */
+function noteReadable(file: Td.file) {
+  const tracked = readableEnds.get(file.id) ?? 0
+  const value = file.local.is_downloading_completed
+    ? (file.size || file.expected_size || 0)
+    : file.local.download_offset === 0 ? file.local.downloaded_prefix_size : 0
+  if (value > tracked) {
+    if (readableEnds.size > 400) {
+      const oldest = readableEnds.keys().next().value
+      if (oldest !== undefined) readableEnds.delete(oldest)
+    }
+    readableEnds.set(file.id, value)
   }
-  return f.local.path
+  if (file.local.is_downloading_completed) readableDone.add(file.id)
+}
+
+export function getVideoTail(fileId: number): VideoTail | undefined {
+  return videoTailCache.get(fileId)
+}
+
+export function setVideoTail(fileId: number, tail: VideoTail) {
+  if (videoTailCache.size > 30) {
+    const firstKey = videoTailCache.keys().next().value
+    if (firstKey !== undefined) videoTailCache.delete(firstKey)
+  }
+  videoTailCache.set(fileId, tail)
+}
+
+/** Reads a range of bytes directly from TDLib file cache via readFilePart */
+export async function readFileRange(fileId: number, offset: number, count: number): Promise<Buffer | null> {
+  if (auth.step !== 'ready') return null
+  const CHUNK_SIZE = 512 * 1024
+  const chunks: Buffer[] = []
+  let currentOffset = offset
+  let remaining = count
+
+  while (remaining > 0) {
+    const toRead = Math.min(remaining, CHUNK_SIZE)
+    try {
+      const res = await invoke({
+        _: 'readFilePart',
+        file_id: fileId,
+        offset: currentOffset,
+        count: toRead,
+      })
+      if (res && res._ === 'data' && res.data) {
+        const buf = Buffer.from(res.data, 'base64')
+        if (buf.length === 0) break
+        chunks.push(buf)
+        currentOffset += buf.length
+        remaining -= buf.length
+        if (buf.length < toRead) break
+      } else {
+        break
+      }
+    } catch {
+      break
+    }
+  }
+
+  return chunks.length > 0 ? Buffer.concat(chunks) : null
+}
+
+const TAIL_BASE = 3 * 1024 * 1024 // covers the moov of an ordinary non-faststart MP4
+const TAIL_MAX = 16 * 1024 * 1024 // ceiling when a long recording carries an unusually large moov
+
+/**
+ * Fetches the tail (last ~3 MB) of a video from Telegram so Chromium can parse the moov atom of a
+ * non-faststart MP4 immediately instead of waiting for the whole file. `fromOffset` widens the window
+ * when Chromium asks for a byte earlier than the cached tail starts at. The bytes land in an in-memory
+ * cache (see getVideoTail); the sequential download is always handed back to byte 0 afterwards, since
+ * a new offset/limit cancels the tail request.
+ */
+export async function fetchVideoTail(fileId: number, totalSize: number, fromOffset?: number): Promise<VideoTail | null> {
+  if (auth.step !== 'ready' || totalSize <= 0) return null
+  tailSeen.add(fileId)
+  const base = Math.max(0, totalSize - Math.min(totalSize, TAIL_BASE))
+  const want = fromOffset === undefined || fromOffset >= base
+    ? base
+    : Math.max(fromOffset, totalSize - TAIL_MAX)
+  const need = fromOffset ?? base
+  const covers = (t: VideoTail, offset: number) => t.tailOffset <= offset && offset < t.tailOffset + t.buffer.length
+
+  const cached = videoTailCache.get(fileId)
+  if (cached && covers(cached, need)) return cached
+
+  const inflight = videoTailInflight.get(fileId)
+  if (inflight) return inflight
+
+  const promise = (async (): Promise<VideoTail | null> => {
+    try {
+      const tailOffset = want
+      const tailSize = Math.max(1, totalSize - tailOffset)
+      const budget = Math.min(8000, 2500 + Math.ceil(tailSize / (1024 * 1024)) * 400)
+
+      // Ask TDLib for exactly this range; synchronous resolves once the range has landed (bounded).
+      let timedOut = false
+      try {
+        await Promise.race([
+          invoke({ _: 'downloadFile', file_id: fileId, priority: 32, offset: tailOffset, limit: tailSize, synchronous: true }),
+          new Promise<never>((_, reject) => setTimeout(() => { timedOut = true; reject(new Error('timeout')) }, budget)),
+        ])
+      } catch {}
+
+      // Read it back. synchronous resolving means the range is on disk already, so one pass is
+      // enough; only a timeout (TDLib still filling it) is worth polling a few times.
+      let buf: Buffer | null = null
+      for (let attempt = 0, attempts = timedOut ? 4 : 1; attempt < attempts; attempt++) {
+        if (attempt > 0) await new Promise((r) => setTimeout(r, 300))
+        const next = await readFileRange(fileId, tailOffset, tailSize)
+        if (!next) continue
+        if (buf && next.length <= buf.length) break // no further progress
+        buf = next
+        if (buf.length >= tailSize) break
+      }
+
+      // Always hand sequential downloading back to byte 0, even when the read came up empty —
+      // otherwise the file would be left downloading only its tail forever.
+      invoke({ _: 'downloadFile', file_id: fileId, priority: 32, offset: 0, limit: 0, synchronous: false }).catch(() => {})
+
+      if (!buf || buf.length <= 0) return null
+      const actualTail: VideoTail = { totalSize, tailOffset, buffer: buf }
+      setVideoTail(fileId, actualTail)
+      return actualTail
+    } catch {
+      return null
+    } finally {
+      videoTailInflight.delete(fileId)
+    }
+  })()
+
+  videoTailInflight.set(fileId, promise)
+  return promise
 }
 
 /** Call once, before any other TDLib use. `tdjson` must point outside app.asar: the OS loader cannot read inside it. */

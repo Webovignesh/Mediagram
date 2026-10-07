@@ -157,6 +157,12 @@ function startup() {
     hasSavedCredentials: hasSaved,
   })
   const finished = (kind: Kind, ok: boolean) => {
+    emit({
+      type: 'notification',
+      title: ok ? `${kind === 'download' ? 'Download' : 'Upload'} Completed` : `${kind === 'download' ? 'Download' : 'Upload'} Failed`,
+      body: ok ? `Your ${kind} transfer finished successfully.` : `A ${kind} transfer failed. Check Queue for details.`,
+      kind: ok ? kind : 'failed',
+    })
     const s = settings()
     if (ok ? !s.notifyComplete : !s.notifyFailed) return
     if (ok) batch[kind]++
@@ -223,6 +229,13 @@ function startup() {
       cacheSize: () => session.defaultSession.getCacheSize(),
       clearCache: async () => { await session.defaultSession.clearCache(); await session.defaultSession.clearCodeCaches({}) },
       clearStorageData: () => session.defaultSession.clearStorageData(),
+      notify: (title: string, body: string) => {
+        if (Notification.isSupported()) {
+          const n = new Notification({ title: title || 'Mediagram', body, icon })
+          n.on('click', showWindow)
+          n.show()
+        }
+      },
     },
   }
   const methods = createMethods(ctx)
@@ -262,7 +275,20 @@ function startup() {
       try {
         const file = req.method === 'GET' ? await protocolFile(req.url, ctx) : null
         if (!file) return new Response(null, { status: 404 })
-        if (req.url.startsWith('mediagram://thumb/') || req.url.startsWith('teleflow://thumb/')) {
+        const isThumb = req.url.startsWith('mediagram://thumb/') || req.url.startsWith('teleflow://thumb/') ||
+                        req.url.startsWith('mediagram://saved/') || req.url.startsWith('teleflow://saved/')
+        if (isThumb) {
+          const etag = `"${Buffer.from(file).toString('base64url')}"`
+          if (req.headers.get('if-none-match') === etag) {
+            return new Response(null, {
+              status: 304,
+              headers: {
+                ...mediaHeaders,
+                'ETag': etag,
+                'Cache-Control': 'public, max-age=2592000, immutable',
+              },
+            })
+          }
           let buf = thumbBufferCache.get(file)
           if (!buf) {
             buf = await fs.promises.readFile(file)
@@ -272,24 +298,151 @@ function startup() {
             }
             thumbBufferCache.set(file, buf)
           }
-          return new Response(new Uint8Array(buf), { headers: { ...mediaHeaders, 'Content-Type': 'image/jpeg', 'Cache-Control': 'public, max-age=2592000, immutable' } })
+          return new Response(new Uint8Array(buf), {
+            headers: {
+              ...mediaHeaders,
+              'Content-Type': 'image/jpeg',
+              'Cache-Control': 'public, max-age=2592000, immutable',
+              'ETag': etag,
+            },
+          })
         }
-        const stat = await fs.promises.stat(file)
-        const size = stat.size
-        const ext = path.extname(file).slice(1).toLowerCase()
+        const reqUrl = new URL(req.url)
+        const queryExt = reqUrl.searchParams.get('ext')?.toLowerCase()
+        const queryTotal = parseInt(reqUrl.searchParams.get('total') || '0', 10)
+
+        let stat = await fs.promises.stat(file).catch(() => null)
+        if (!stat && file.includes(path.join('files', 'temp'))) {
+          for (let i = 0; i < 6; i++) {
+            await new Promise((r) => setTimeout(r, 100))
+            stat = await fs.promises.stat(file).catch(() => null)
+            if (stat) break
+          }
+        }
+        if (!stat) return new Response(null, { status: 404 })
+
+        if (stat.size === 0 && file.includes(path.join('files', 'temp'))) {
+          for (let i = 0; i < 8; i++) {
+            await new Promise((r) => setTimeout(r, 100))
+            const check = await fs.promises.stat(file).catch(() => null)
+            if (check && check.size > 0) {
+              stat = check
+              break
+            }
+          }
+        }
+
+        const currentSize = stat.size
+        const totalSize = (queryTotal && queryTotal > currentSize) ? queryTotal : currentSize
+        const ext = (queryExt || path.extname(file).slice(1)).toLowerCase()
         const mimeMap: Record<string, string> = {
           mp4: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime', mkv: 'video/x-matroska', m4v: 'video/mp4',
           mp3: 'audio/mpeg', ogg: 'audio/ogg', wav: 'audio/wav', m4a: 'audio/mp4', aac: 'audio/aac', flac: 'audio/flac',
           jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', gif: 'image/gif',
         }
-        const mime = mimeMap[ext] || 'application/octet-stream'
+        const mime = mimeMap[ext] || 'video/mp4'
+
+        // Partial files live in TDLib's temp dir under their numeric file id; anything else on disk is
+        // complete and needs neither a tail fetch nor a TDLib watermark.
+        const tempPrefix = path.join(paths.tdlib, 'files', 'temp') + path.sep
+        const isTemp = file.toLowerCase().startsWith(tempPrefix.toLowerCase())
+        const fileId = isTemp ? parseInt(path.basename(file), 10) : NaN
+        const knownId = !isNaN(fileId) && fileId > 0
+        // Bytes readable from offset 0. A tail (moov) fetched out of order leaves holes in the temp
+        // file, and TDLib warns its size may then count garbage — never read past this mark.
+        const readableSize = async (size: number) => {
+          if (!knownId || size <= 0) return size
+          const end = await telegram.getReadableEnd(fileId)
+          return end === null ? size : Math.min(size, end)
+        }
+
+        if (req.method === 'HEAD') {
+          return new Response(null, {
+            status: 200,
+            headers: {
+              ...mediaHeaders,
+              'Content-Type': mime,
+              'Accept-Ranges': 'bytes',
+              'Content-Length': String(totalSize),
+            },
+          })
+        }
 
         const range = req.headers.get('range')
         if (range) {
           const match = range.match(/bytes=(\d+)-(\d*)/)
           if (match) {
             const start = parseInt(match[1], 10)
-            const end = match[2] ? parseInt(match[2], 10) : size - 1
+            const requestedEnd = match[2] ? parseInt(match[2], 10) : totalSize - 1
+
+            // Bytes the sequential download has written from offset 0: everything at or below this streams
+            // straight from disk, so playback starts immediately whatever the file size.
+            let availableSize = await readableSize(currentSize)
+
+            // Non-faststart MP4s (phone cameras, Clipchamp, Premiere) keep moov at the very end. The
+            // demuxer halts the moment it walks into mdat and asks for that tail: answering 416 kills
+            // the decoder for good, so serve it from the cached tail instead. Only a range the download
+            // cannot answer yet takes this path — a plain forward read never waits on it.
+            if (knownId && start > 0 && start >= availableSize && start >= Math.max(0, totalSize - 16 * 1024 * 1024)) {
+              let tail = telegram.getVideoTail(fileId)
+              const covered = tail && start >= tail.tailOffset && start < tail.tailOffset + tail.buffer.length
+              if (!covered) tail = (await telegram.fetchVideoTail(fileId, totalSize, start).catch(() => undefined)) || undefined
+              if (tail && start >= tail.tailOffset && start < tail.tailOffset + tail.buffer.length) {
+                const end = Math.min(requestedEnd, totalSize - 1, tail.tailOffset + tail.buffer.length - 1)
+                if (end >= start) {
+                  const chunk = tail.buffer.subarray(start - tail.tailOffset, end - tail.tailOffset + 1)
+                  return new Response(new Uint8Array(chunk), {
+                    status: 206,
+                    statusText: 'Partial Content',
+                    headers: {
+                      ...mediaHeaders,
+                      'Content-Type': mime,
+                      'Content-Range': `bytes ${start}-${end}/${totalSize}`,
+                      'Accept-Ranges': 'bytes',
+                      'Content-Length': String(chunk.length),
+                    },
+                  })
+                }
+              }
+            }
+
+            // Hold the request while the sequential download catches up. Chromium treats 416 as a
+            // hard media error, so only give up once progress has actually stalled.
+            if (start >= availableSize && availableSize < totalSize) {
+              const deadline = Date.now() + 5000
+              let last = availableSize
+              let stalled = 0
+              while (Date.now() < deadline && availableSize <= start) {
+                await new Promise((r) => setTimeout(r, 150))
+                const refreshed = await fs.promises.stat(file).catch(() => null)
+                if (!refreshed) break
+                availableSize = await readableSize(refreshed.size)
+                if (availableSize === last) { if (++stalled >= 8) break } else stalled = 0
+                last = availableSize
+              }
+              if (availableSize <= start) {
+                return new Response(null, {
+                  status: 416,
+                  statusText: 'Range Not Satisfiable',
+                  headers: {
+                    ...mediaHeaders,
+                    'Content-Range': `bytes */${totalSize}`,
+                  },
+                })
+              }
+            }
+
+            const end = Math.min(requestedEnd, availableSize - 1)
+            if (end < start) {
+              return new Response(null, {
+                status: 416,
+                statusText: 'Range Not Satisfiable',
+                headers: {
+                  ...mediaHeaders,
+                  'Content-Range': `bytes */${totalSize}`,
+                },
+              })
+            }
             const chunksize = (end - start) + 1
             const nodeStream = fs.createReadStream(file, { start, end })
             const webStream = Readable.toWeb(nodeStream) as unknown as ReadableStream
@@ -299,15 +452,27 @@ function startup() {
               headers: {
                 ...mediaHeaders,
                 'Content-Type': mime,
-                'Content-Range': `bytes ${start}-${end}/${size}`,
+                'Content-Range': `bytes ${start}-${end}/${totalSize}`,
                 'Accept-Ranges': 'bytes',
                 'Content-Length': String(chunksize),
-              }
+              },
             })
           }
         }
 
-        const nodeStream = fs.createReadStream(file)
+        // Plain GET: stream only the readable prefix, so an unwritten hole is never played as zeros.
+        const bodySize = await readableSize(currentSize)
+        if (bodySize <= 0) {
+          return new Response(null, {
+            status: 416,
+            statusText: 'Range Not Satisfiable',
+            headers: {
+              ...mediaHeaders,
+              'Content-Range': `bytes */${totalSize}`,
+            },
+          })
+        }
+        const nodeStream = fs.createReadStream(file, { start: 0, end: bodySize - 1 })
         const webStream = Readable.toWeb(nodeStream) as unknown as ReadableStream
         return new Response(webStream, {
           status: 200,
@@ -315,8 +480,8 @@ function startup() {
             ...mediaHeaders,
             'Content-Type': mime,
             'Accept-Ranges': 'bytes',
-            'Content-Length': String(size),
-          }
+            'Content-Length': String(bodySize),
+          },
         })
       } catch { return new Response(null, { status: 404 }) } // not signed in, bad URL, file gone
     }

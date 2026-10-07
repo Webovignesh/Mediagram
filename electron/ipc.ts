@@ -32,6 +32,7 @@ export type Native = {
   cacheSize(): Promise<number>
   clearCache(): Promise<void> // session.clearCache + clearCodeCaches
   clearStorageData(): Promise<void>
+  notify(title: string, body: string): void
 }
 export type Ctx = {
   version: string, tdlib: string, installedAt: number | null,
@@ -208,6 +209,10 @@ export function createMethods(ctx: Ctx) {
       if (!(await fs.promises.stat(dir).catch(() => null))?.isDirectory()) throw fail(404, "That folder doesn't exist yet")
       await open(dir)
     }),
+    'app.notify': method(shape({ title: opt(text(200)), body: text(500) }), ({ title, body }) => {
+      ctx.native.notify(title || 'Mediagram', body)
+      return { ok: true }
+    }),
 
     'auth.get': method(shape({}), () => tg.authState()),
     // The keys go to TDLib and stay in main's memory for the session. Reaching `ready` saves them encrypted for the
@@ -295,6 +300,18 @@ export function createMethods(ctx: Ctx) {
     }),
     'chats.clear': method(shape({ chatId: id }), async ({ chatId }) => {
       await tg.clearChat(chatId)
+      return { ok: true }
+    }),
+    'chats.pin': method(shape({ chatId: id, pin: flag }), async ({ chatId, pin }) => {
+      await tg.pinChat(chatId, pin)
+      return { ok: true }
+    }),
+    'chats.archive': method(shape({ chatId: id, archive: flag }), async ({ chatId, archive }) => {
+      await tg.archiveChat(chatId, archive)
+      return { ok: true }
+    }),
+    'chats.mute': method(shape({ chatId: id, mute: flag }), async ({ chatId, mute }) => {
+      await tg.muteChat(chatId, mute)
       return { ok: true }
     }),
     'chats.send': method(shape({ chatId: id, text: text(4096, 1), replyToMessageId: opt(id) }), async ({ chatId, text: msgText, replyToMessageId }) => {
@@ -510,7 +527,22 @@ export async function protocolFile(url: string, ctx: Pick<Ctx, 'tg' | 'paths' | 
     // 1. TDLib cache/downloads directory: allow direct instant playback
     const tdFiles = path.join(ctx.paths.tdlib, 'files')
     const resolved = path.resolve(arg)
-    if ((within(tdFiles, resolved) || within(ctx.paths.tdlib, resolved) || within(ctx.paths.tmp, resolved)) && await isFile(resolved)) return resolved
+    if (within(tdFiles, resolved) || within(ctx.paths.tdlib, resolved) || within(ctx.paths.tmp, resolved)) {
+      if (await isFile(resolved)) return resolved
+      // If it's a temp file, TDLib may still be writing or may have completed and moved it
+      if (within(path.join(tdFiles, 'temp'), resolved)) {
+        const fileId = parseInt(path.basename(resolved), 10)
+        if (!isNaN(fileId) && ctx.tg?.invoke) {
+          try {
+            const f = await ctx.tg.invoke({ _: 'getFile', file_id: fileId })
+            if (f.local.is_downloading_completed && f.local.path && await isFile(f.local.path)) {
+              return f.local.path
+            }
+          } catch {}
+        }
+        return resolved
+      }
+    }
 
     // 2. Playback URLs carry absolute paths, so they go through the library rule: an existing file inside the root
     // after realpath, or a recorded download. A forged URL names nothing outside those two (ARCHITECTURE > Security).
