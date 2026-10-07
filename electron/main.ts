@@ -81,7 +81,7 @@ function flushNotifications() {
   notifyTimer = undefined
   const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`
   const lines = [batch.download && `${plural(batch.download, 'download')} completed`, batch.upload && `${plural(batch.upload, 'upload')} completed`,
-    batch.failed && `${plural(batch.failed, 'transfer')} failed`].filter(Boolean)
+  batch.failed && `${plural(batch.failed, 'transfer')} failed`].filter(Boolean)
   Object.assign(batch, { download: 0, upload: 0, failed: 0 })
   if (!lines.length || !Notification.isSupported()) return
   const n = new Notification({ title: 'Mediagram', body: lines.join('\n'), icon })
@@ -169,8 +169,10 @@ function startup() {
     else batch.failed++
     notifyTimer ??= setTimeout(flushNotifications, 3000)
   }
-  engine = createEngine({ db, invoke: telegram.invoke, onUpdate: telegram.onUpdate, auth: telegram.authState, chat: telegram.chat,
-    emit, paths, settings, finished })
+  engine = createEngine({
+    db, invoke: telegram.invoke, onUpdate: telegram.onUpdate, auth: telegram.authState, chat: telegram.chat,
+    emit, paths, settings, finished
+  })
   engine.recover()
   const eng = engine
 
@@ -276,7 +278,7 @@ function startup() {
         const file = req.method === 'GET' ? await protocolFile(req.url, ctx) : null
         if (!file) return new Response(null, { status: 404 })
         const isThumb = req.url.startsWith('mediagram://thumb/') || req.url.startsWith('teleflow://thumb/') ||
-                        req.url.startsWith('mediagram://saved/') || req.url.startsWith('teleflow://saved/')
+          req.url.startsWith('mediagram://saved/') || req.url.startsWith('teleflow://saved/')
         if (isThumb) {
           const etag = `"${Buffer.from(file).toString('base64url')}"`
           if (req.headers.get('if-none-match') === etag) {
@@ -348,15 +350,12 @@ function startup() {
         const isTemp = file.toLowerCase().startsWith(tempPrefix.toLowerCase())
         const fileId = isTemp ? parseInt(path.basename(file), 10) : NaN
         const knownId = !isNaN(fileId) && fileId > 0
-        // Bytes readable from offset 0. A tail (moov) fetched out of order leaves holes in the temp
-        // file, and TDLib warns its size may then count garbage — never read past this mark.
+        // Bytes readable from offset 0. Never read past what has actually been written sequentially.
         const readableSize = async (size: number) => {
           if (!knownId || size <= 0) return size
-          if (!telegram.tailWasRequested(fileId)) {
-            return size
-          }
           const end = await telegram.getReadableEnd(fileId)
-          return end === null ? size : Math.min(size, end)
+          if (end === null) return size
+          return Math.max(0, Math.min(size, end))
         }
 
         if (req.method === 'HEAD') {
@@ -412,10 +411,7 @@ function startup() {
             // Hold the request while the sequential download catches up. Chromium treats 416 as a
             // hard media error, so give plenty of time and keep TDLib download prioritized.
             if (start >= availableSize && availableSize < totalSize) {
-              if (knownId && start > availableSize + 2 * 1024 * 1024) {
-                telegram.seekStreamingDownload(fileId, start)
-              }
-              const deadline = Date.now() + 60000
+              const deadline = Date.now() + 45000
               let last = availableSize
               let stalled = 0
               while (Date.now() < deadline && availableSize <= start) {
@@ -502,24 +498,24 @@ function startup() {
     protocol.handle('teleflow', handleMediaProtocol)
     ipcMain.handle('call', (e, req) => {
       let sender: string | null = null
-      try { sender = e.senderFrame?.url ?? null } catch {} // disposed frame → reject
+      try { sender = e.senderFrame?.url ?? null } catch { } // disposed frame → reject
       return handleCall(methods, rendererKey, sender, req)
     })
     // Preload's pathOf(): record which files the user chose. Same sender rule as the call channel, and the work is
     // synchronous, so it lands before the uploads.add that follows it in the same message queue.
     ipcMain.handle('grant', (e, paths) => {
       let sender: string | null = null
-      try { sender = e.senderFrame?.url ?? null } catch {}
+      try { sender = e.senderFrame?.url ?? null } catch { }
       if (!fromRenderer(rendererKey, sender)) return false
       grants.add(paths)
       return true
     })
     ipcMain.handle('theme', (e, { color, symbolColor, id: themeId }) => {
       let sender: string | null = null
-      try { sender = e.senderFrame?.url ?? null } catch {}
+      try { sender = e.senderFrame?.url ?? null } catch { }
       if (!fromRenderer(rendererKey, sender)) return false
       if (themeId && typeof themeId === 'string') {
-        try { putSetting(db, 'theme', themeId) } catch {}
+        try { putSetting(db, 'theme', themeId) } catch { }
       }
       if (win && !win.isDestroyed() && process.platform === 'win32') {
         win.setTitleBarOverlay({ color, symbolColor: symbolColor || '#94a3b8', height: 36 })
@@ -601,7 +597,7 @@ function createWindow(url: string, db: DB, hidden: boolean, closeToTray: () => b
   const saved = readSetting(db, 'window') as Partial<WindowState> | undefined
   const initialTheme = getThemeColors(readSetting(db, 'theme') as string | undefined)
   const w = new BrowserWindow({
-    ...initialBounds(saved), minWidth: 1024, minHeight: 640, icon, show: !hidden,
+    ...initialBounds(saved), minWidth: 1024, minHeight: 640, icon, show: false,
     backgroundColor: initialTheme.color,
     titleBarStyle: 'hidden',
     titleBarOverlay: { color: initialTheme.color, symbolColor: initialTheme.symbolColor, height: 36 },
@@ -610,7 +606,14 @@ function createWindow(url: string, db: DB, hidden: boolean, closeToTray: () => b
       contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true,
     },
   })
-  if (saved?.maximized && !hidden) w.maximize()
+  if (saved?.maximized) {
+    w.maximize()
+  }
+  w.once('ready-to-show', () => {
+    if (!hidden) {
+      w.show()
+    }
+  })
   // Saved debounced on move and resize; emits no topic, so Settings does not refetch while the window moves.
   let timer: NodeJS.Timeout | undefined
   const save = () => {

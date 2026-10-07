@@ -983,9 +983,6 @@ export async function prepareMedia(chatId: number, messageId: number) {
   const canUsePath = isImage ? (localCompleted && f.local.path && fs.existsSync(f.local.path)) : Boolean(streamPath)
   const isVideo = media.type === 'video' || ['mp4', 'm4v', 'mov'].includes(media.ext)
   if (isVideo && !localCompleted && (media.size || f.size || 0) > 0) {
-    // Proactively prefetch the video tail (moov atom) in the background so it is available
-    // the instant Chromium requests the tail range. Every size gets this: a small non-faststart
-    // MP4 stalls exactly like a large one when its moov sits past the end of the download.
     fetchVideoTail(f.id, media.size || f.size || 0).catch(() => {})
   }
   return {
@@ -1750,18 +1747,16 @@ export async function getReadableEnd(fileId: number, maxAgeMs = 250): Promise<nu
     if (!f) return hit?.value ?? readableEnds.get(fileId) ?? null
     const local = f.local
     const tracked = readableEnds.get(fileId) ?? 0
-    const isTail = tailSeen.has(fileId)
     let value = 0
     if (local.is_downloading_completed) {
       value = f.size || f.expected_size || 0
-    } else if (!isTail) {
-      value = Math.max(local.downloaded_size || 0, local.downloaded_prefix_size || 0)
+      readableDone.add(fileId)
+    } else if (tailSeen.has(fileId)) {
+      value = Math.max(local.downloaded_prefix_size || 0, tracked)
     } else {
-      const prefixFromDownloaded = Math.max(0, (local.downloaded_size || 0) - TAIL_MAX)
-      value = Math.max(local.downloaded_prefix_size || 0, prefixFromDownloaded, tracked)
+      value = Math.max(local.downloaded_prefix_size || 0, local.downloaded_size || 0, tracked)
     }
-    if (local.is_downloading_completed) readableDone.add(fileId)
-    else if (value > tracked) {
+    if (value > tracked) {
       readableEnds.set(fileId, value)
     }
     readableProbe.set(fileId, { value, at: Date.now() })
@@ -1774,15 +1769,14 @@ export async function getReadableEnd(fileId: number, maxAgeMs = 250): Promise<nu
 /** Keeps the readable-from-0 watermark current straight from updateFile, without a getFile round trip. */
 function noteReadable(file: Td.file) {
   const tracked = readableEnds.get(file.id) ?? 0
-  const isTail = tailSeen.has(file.id)
   let value = 0
   if (file.local.is_downloading_completed) {
     value = file.size || file.expected_size || 0
-  } else if (!isTail) {
-    value = Math.max(file.local.downloaded_size || 0, file.local.downloaded_prefix_size || 0)
+    readableDone.add(file.id)
+  } else if (tailSeen.has(file.id)) {
+    value = Math.max(file.local.downloaded_prefix_size || 0, tracked)
   } else {
-    const prefixFromDownloaded = Math.max(0, (file.local.downloaded_size || 0) - TAIL_MAX)
-    value = Math.max(file.local.downloaded_prefix_size || 0, prefixFromDownloaded, tracked)
+    value = Math.max(file.local.downloaded_prefix_size || 0, file.local.downloaded_size || 0, tracked)
   }
   if (value > tracked) {
     if (readableEnds.size > 400) {
@@ -1791,7 +1785,6 @@ function noteReadable(file: Td.file) {
     }
     readableEnds.set(file.id, value)
   }
-  if (file.local.is_downloading_completed) readableDone.add(file.id)
 }
 
 /** Re-assert priority 32 sequential download from offset 0 if background stream was waiting */

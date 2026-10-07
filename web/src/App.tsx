@@ -184,14 +184,6 @@ export default function App() {
     }
     prevConnection.current = isAuthed ? now : undefined
   }, [auth?.connection, auth?.step])
-  // Minimum splash display time on app launch (600ms) guarantees that the splash screen never flashes
-  // away in a split-second, giving TDLib time to report session readiness without any login screen flash.
-  const [minSplashDone, setMinSplashDone] = useState(false)
-  useEffect(() => {
-    const timer = setTimeout(() => setMinSplashDone(true), 600)
-    return () => clearTimeout(timer)
-  }, [])
-
   // Sustained logout state: stays active throughout the entire logout pipeline (closing sockets, wiping local
   // session, restarting with saved keys) until the phone/credentials step is fully established and stable.
   const [isLoggingOut, setIsLoggingOut] = useState(false)
@@ -204,13 +196,11 @@ export default function App() {
     }
   }, [auth?.step, isLoggingOut])
 
-  // Which of the four full-screen states is up. The boot splash also covers the engine restart nothing
-  // has been shown for yet — but once a screen has been seen, `starting` belongs to Login, whose
-  // verification screen carries a restart (Settings changing the keys, a logout relaunching TDLib)
-  // instead of yanking the user back to the splash and dropping the sign-in where it stood.
+  // Which of the four full-screen states is up.
   const seenScreen = useRef(false)
+  const isColdBoot = useRef(true)
   const screen: Screen = isLoggingOut || auth?.step === 'logging-out' ? 'logout'
-    : loading || !auth || (!seenScreen.current && auth.step === 'starting') || (!minSplashDone && auth.step === 'ready') ? 'splash'
+    : loading || !auth || (!seenScreen.current && auth.step === 'starting') ? 'splash'
       : auth.step !== 'ready' ? 'login' : 'app'
 
   // Every switch cross-fades: the screen being left stays mounted — on top, and inert — for the length
@@ -222,8 +212,14 @@ export default function App() {
     if (lastScreen.current === screen) return
     const from = lastScreen.current
     lastScreen.current = screen
+    // On cold boot, if transitioning straight from initial splash to app, avoid cross-fade flash
+    if (isColdBoot.current && from === 'splash' && screen === 'app') {
+      isColdBoot.current = false
+      return
+    }
+    isColdBoot.current = false
     setLeaving({ screen: from, id: Date.now() })
-    const timer = setTimeout(() => setLeaving(null), 470)
+    const timer = setTimeout(() => setLeaving(null), 280)
     return () => clearTimeout(timer)
   }, [screen])
 
@@ -333,7 +329,7 @@ export default function App() {
   // The screen on top plays its entrance; the one it replaced lingers above it, inert, and fades out.
   return (
     <div className="relative h-screen w-screen overflow-hidden bg-bg">
-      <div className={`absolute inset-0 ${ENTER[screen]}`}>{view(screen)}</div>
+      <div className={`absolute inset-0 ${isColdBoot.current && screen === 'app' ? '' : ENTER[screen]}`}>{view(screen)}</div>
       {leaving && (
         <div key={leaving.id} className={`pointer-events-none absolute inset-0 z-40 ${EXIT[leaving.screen]}`}>
           {view(leaving.screen)}

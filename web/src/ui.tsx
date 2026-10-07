@@ -1256,7 +1256,9 @@ function CustomVideoPlayer({
       for (let i = 0; i < b.length; i++) {
         if (b.end(i) > maxEnd) maxEnd = b.end(i)
       }
-      setBufferedEnd(maxEnd)
+      if (maxEnd > 0) {
+        setBufferedEnd((prev) => Math.max(prev, maxEnd))
+      }
     }
   }
 
@@ -1285,15 +1287,13 @@ function CustomVideoPlayer({
     }
   }, [speed])
 
-  // Instant playback attempt on mount or source change
+  // Playback attempt on mount or source change
   useEffect(() => {
     if (!src) return
-    setBuffering(false)
-    setHasStarted(true)
+    setHasStarted(false)
+    setBuffering(true)
     if (videoRef.current) {
-      videoRef.current.play().catch(() => {
-        setPlaying(false)
-      })
+      videoRef.current.play().catch(() => {})
     }
   }, [src])
 
@@ -1309,14 +1309,11 @@ function CustomVideoPlayer({
 
   // Auto-resume playback as background download buffer expands
   useEffect(() => {
-    if (videoRef.current && playing && (buffering || videoRef.current.paused)) {
-      if (videoRef.current.readyState >= 2) {
-        videoRef.current.play().then(() => {
-          setBuffering(false)
-        }).catch(() => {})
-      }
+    const v = videoRef.current
+    if (v && playing && v.paused && v.readyState >= 2) {
+      v.play().catch(() => {})
     }
-  }, [downloadProgress?.downloaded, isCompleted, playing, buffering])
+  }, [downloadProgress?.downloaded, isCompleted, playing])
 
   const resetHideTimer = () => {
     setShowControls(true)
@@ -1327,24 +1324,13 @@ function CustomVideoPlayer({
   }
 
   const togglePlay = () => {
-    if (!videoRef.current) return
-    if (videoRef.current.paused || !playing) {
-      videoRef.current.play().then(() => {
-        setPlaying(true)
-        setBuffering(false)
-      }).catch(() => {
-        if (videoRef.current) {
-          const cur = videoRef.current.currentTime
-          videoRef.current.load()
-          videoRef.current.currentTime = cur
-          videoRef.current.play().then(() => {
-            setPlaying(true)
-            setBuffering(false)
-          }).catch(() => {})
-        }
-      })
+    const v = videoRef.current
+    if (!v) return
+    if (v.paused) {
+      v.play().catch(() => {})
+      setPlaying(true)
     } else {
-      videoRef.current.pause()
+      v.pause()
       setPlaying(false)
     }
     resetHideTimer()
@@ -1420,9 +1406,7 @@ function CustomVideoPlayer({
     ? Math.min(100, Math.max(0, (downloadProgress.downloaded / downloadProgress.total) * 100))
     : 0
   const timeBufferedPct = duration > 0 ? Math.min(100, Math.max(0, (bufferedEnd / duration) * 100)) : 0
-  const bufferedPct = isCompleted
-    ? 100
-    : Math.min(100, Math.max(progressPct, dlPct, timeBufferedPct))
+  const actualBufferedPct = isCompleted ? 100 : timeBufferedPct
 
   return (
     <div
@@ -1461,12 +1445,7 @@ function CustomVideoPlayer({
           playsInline
           preload="auto"
           onClick={togglePlay}
-          onProgress={() => {
-            updateBuffered()
-            if (buffering && playing && videoRef.current && videoRef.current.paused && videoRef.current.readyState >= 2) {
-              videoRef.current.play().then(() => setBuffering(false)).catch(() => {})
-            }
-          }}
+          onProgress={updateBuffered}
           onTimeUpdate={() => {
             if (videoRef.current) {
               setCurrentTime(videoRef.current.currentTime)
@@ -1486,13 +1465,8 @@ function CustomVideoPlayer({
           onSeeked={() => setBuffering(false)}
           onCanPlay={() => {
             setBuffering(false)
-            if (playing && videoRef.current && videoRef.current.paused) {
+            if (playing && videoRef.current?.paused) {
               videoRef.current.play().catch(() => {})
-            }
-          }}
-          onStalled={() => {
-            if (videoRef.current && playing && videoRef.current.paused && videoRef.current.readyState >= 2) {
-              videoRef.current.play().then(() => setBuffering(false)).catch(() => {})
             }
           }}
           onLoadedData={() => {
@@ -1506,33 +1480,12 @@ function CustomVideoPlayer({
           }}
           onPlay={() => {
             setPlaying(true)
-            setBuffering(false)
           }}
           onPause={() => {
-            if (!buffering) {
-              setPlaying(false)
-            }
+            setPlaying(false)
           }}
           onError={() => {
-            if (videoRef.current && (!isCompleted || currentTime > 0)) {
-              const savedTime = currentTime
-              const wasPlaying = playing
-              setTimeout(() => {
-                if (videoRef.current) {
-                  videoRef.current.load()
-                  videoRef.current.currentTime = savedTime
-                  if (wasPlaying) {
-                    videoRef.current.play().then(() => {
-                      setPlaying(true)
-                      setBuffering(false)
-                    }).catch(() => {})
-                  }
-                }
-              }, 400)
-            } else {
-              setPlaying(false)
-              setBuffering(false)
-            }
+            setBuffering(false)
           }}
           className="relative z-10 w-full h-full object-contain cursor-pointer"
         />
@@ -1566,11 +1519,19 @@ function CustomVideoPlayer({
           }}
         >
           <div className="w-full h-1.5 group-hover/scrub:h-2 bg-white/20 rounded-full overflow-hidden transition-all relative">
-            {/* Background buffered track */}
+            {/* Background downloaded track (file bytes downloaded from Telegram) */}
+            {!isCompleted && dlPct > 0 && (
+              <div
+                className="absolute left-0 top-0 h-full bg-cyan/15 rounded-full transition-all duration-150"
+                style={{ width: `${dlPct}%` }}
+                title={`Downloaded: ${Math.round(dlPct)}%`}
+              />
+            )}
+            {/* Playable buffered track (actual media decoded and playable) */}
             <div
-              className="absolute left-0 top-0 h-full bg-cyan/35 rounded-full transition-all duration-150"
-              style={{ width: `${bufferedPct}%` }}
-              title={bufferedPct > 0 ? `Buffered: ${Math.round(bufferedPct)}%` : undefined}
+              className="absolute left-0 top-0 h-full bg-cyan/40 rounded-full transition-all duration-150"
+              style={{ width: `${actualBufferedPct}%` }}
+              title={actualBufferedPct > 0 ? `Buffered: ${Math.round(actualBufferedPct)}%` : undefined}
             />
             {/* Foreground playback progress track */}
             <div
@@ -1602,12 +1563,9 @@ function CustomVideoPlayer({
             </span>
 
             {/* Background buffered progress badge on seekbar */}
-            {!isCompleted && bufferedPct > 0 && (
-              <span className="inline-flex items-center gap-1.5 font-mono text-[10.5px] font-semibold text-cyan/90 bg-cyan/15 border border-cyan/30 px-2 py-0.5 rounded-full tabular-nums whitespace-nowrap select-none">
-                {buffering && playing && (
-                  <span className="size-1.5 rounded-full bg-cyan animate-pulse" />
-                )}
-                {Math.round(bufferedPct)}% buffered
+            {!isCompleted && (actualBufferedPct > 0 || dlPct > 0) && (
+              <span className="font-mono text-[10.5px] font-semibold text-cyan/90 bg-cyan/15 border border-cyan/30 px-2 py-0.5 rounded-full tabular-nums whitespace-nowrap select-none">
+                {actualBufferedPct > 0 ? `${Math.round(actualBufferedPct)}% buffered` : `${Math.round(dlPct)}% downloaded`}
               </span>
             )}
 
@@ -1695,6 +1653,7 @@ export function MediaPreviewModal({
   const [actualSize, setActualSize] = useState<number>(item?.size || 0)
   const [naturalDims, setNaturalDims] = useState<{ width: number, height: number } | null>(null)
   const [isFullLoaded, setIsFullLoaded] = useState(false)
+  const [isDownloadCompleted, setIsDownloadCompleted] = useState(false)
   const [imgError, setImgError] = useState(false)
   const [thumbError, setThumbError] = useState(false)
   const [speed, setSpeed] = useState<number>(1)
@@ -1722,6 +1681,7 @@ export function MediaPreviewModal({
     setActualSize(item?.size || 0)
     setNaturalDims(null)
     setIsFullLoaded(Boolean(item?.path))
+    setIsDownloadCompleted(Boolean(item?.path))
     setImgError(false)
     setThumbError(false)
     setModalThumb(null)
@@ -1775,7 +1735,9 @@ export function MediaPreviewModal({
             havePath = true
             setPreparedPath(res.path)
           }
-          if (!res.completed && res.size) {
+          if (res.completed) {
+            setIsDownloadCompleted(true)
+          } else if (res.size) {
             setPrepProgress({ downloaded: res.downloaded || 0, total: res.size })
           }
           if (!havePath && active && attempts < 3) retryTimer = setTimeout(prepare, 2500)
@@ -1797,10 +1759,11 @@ export function MediaPreviewModal({
           havePath = true
           setPreparedPath((prev) => (event.completed ? event.path! : (prev || event.path!)))
         }
-        if (!event.completed && event.total > 0) {
-          setPrepProgress({ downloaded: event.downloaded, total: event.total })
-        } else if (event.completed) {
+        if (event.completed) {
+          setIsDownloadCompleted(true)
           setPrepProgress(null)
+        } else if (event.total && event.total > 0) {
+          setPrepProgress({ downloaded: event.downloaded, total: event.total })
         }
       }
     })
@@ -1911,7 +1874,7 @@ export function MediaPreviewModal({
               poster={thumbUrl}
               initialDuration={item.duration}
               downloadProgress={prepProgress}
-              isCompleted={Boolean(item.path || (prepProgress && prepProgress.downloaded >= prepProgress.total))}
+              isCompleted={Boolean(item.path || isDownloadCompleted || (prepProgress && prepProgress.downloaded >= prepProgress.total))}
             />
           ) : (
             <div
