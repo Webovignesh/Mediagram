@@ -224,6 +224,28 @@
   animation: appEnter 0.45s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
+/* The screen being left lingers over the one arriving and leaves the way it came in, so the auth
+   pipeline (splash → login → dashboard → logout → login) cross-fades instead of cutting to bg. */
+@keyframes splashEnter {
+  0% { opacity: 0; }
+  100% { opacity: 1; }
+}
+
+.splash-enter {
+  animation: splashEnter 0.4s ease both;
+}
+
+@keyframes screenExit {
+  0% { opacity: 1; transform: scale(1); filter: blur(0px); }
+  100% { opacity: 0; transform: scale(0.97); filter: blur(3px); }
+}
+
+.splash-exit,
+.logout-exit,
+.app-exit {
+  animation: screenExit 0.46s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
 @keyframes fadeEnter {
   0% { opacity: 0; transform: scale(0.97); }
   100% { opacity: 1; transform: scale(1); }
@@ -231,6 +253,104 @@
 
 .fade-enter {
   animation: fadeEnter 0.35s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* The `animate-in fade-in slide-in-from-* zoom-in-95` utilities the UI was written against come from
+   tailwindcss-animate, which is not installed — so they never did anything. One keyframe reads the
+   per-class entry values, and `--tw-duration` (set by every duration-* utility) times it. */
+@keyframes twEnter {
+  from {
+    opacity: var(--tw-enter-opacity, 1);
+    translate: var(--tw-enter-translate-x, 0) var(--tw-enter-translate-y, 0);
+    scale: var(--tw-enter-scale, 1);
+  }
+}
+
+.animate-in {
+  animation-name: twEnter;
+  animation-duration: var(--tw-duration, 0.15s);
+  animation-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+  animation-fill-mode: both;
+}
+.fade-in { --tw-enter-opacity: 0; }
+.slide-in-from-top-3 { --tw-enter-translate-y: -0.75rem; }
+.slide-in-from-bottom-2 { --tw-enter-translate-y: 0.5rem; }
+.zoom-in-95 { --tw-enter-scale: 0.95; }
+
+/* Login > "How to get your Telegram API credentials": a popover pinned to the right of the sign-in
+   card (which stays centred — the popover never re-flows it), dropping beneath it on narrow windows. */
+.guide-pop {
+  position: absolute;
+  left: calc(100% + 18px);
+  top: 50%;
+  translate: 0 -50%;
+  width: 330px;
+  animation: guidePopIn 0.34s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.guide-pop.is-closing { animation: guidePopOut 0.16s ease-in both; }
+
+/* The tail lands on the "View guide" row: both offsets are measured from layout boxes (offsetTop), so
+   the running entrance transform cannot skew them. */
+.guide-pop-tail {
+  position: absolute;
+  left: -7px;
+  top: var(--guide-tail-top, 50%);
+  width: 13px;
+  height: 13px;
+  rotate: 45deg;
+  background: inherit;
+  border-left: 1px solid var(--color-border);
+  border-bottom: 1px solid var(--color-border);
+  border-bottom-left-radius: 3px;
+}
+
+.guide-step { animation: guideStepIn 0.4s cubic-bezier(0.16, 1, 0.3, 1) both; }
+.guide-step:nth-child(1) { animation-delay: 0.07s; }
+.guide-step:nth-child(2) { animation-delay: 0.13s; }
+.guide-step:nth-child(3) { animation-delay: 0.19s; }
+.guide-step:nth-child(4) { animation-delay: 0.25s; }
+
+@keyframes guidePopIn {
+  from { opacity: 0; transform: translateX(22px) scale(0.96); }
+  to { opacity: 1; transform: translateX(0) scale(1); }
+}
+@keyframes guidePopOut {
+  from { opacity: 1; transform: translateX(0) scale(1); }
+  to { opacity: 0; transform: translateX(16px) scale(0.97); }
+}
+@keyframes guideStepIn {
+  from { opacity: 0; translate: 0 6px; }
+  to { opacity: 1; translate: 0 0; }
+}
+
+/* Not enough room to the right of the 420px card (the window is allowed down to 1024px): the popover
+   stacks below it instead and its tail points up at the card. */
+@media (max-width: 1160px) {
+  .guide-pop {
+    left: 50%;
+    top: calc(100% + 16px);
+    translate: -50% 0;
+    animation-name: guidePopInUp;
+  }
+  .guide-pop.is-closing { animation-name: guidePopOutUp; }
+  .guide-pop-tail {
+    left: var(--guide-tail-x, 50%);
+    top: -7px;
+    border-left: 1px solid var(--color-border);
+    border-bottom: 0;
+    border-top: 1px solid var(--color-border);
+    border-bottom-left-radius: 0;
+    border-top-left-radius: 3px;
+  }
+}
+
+@keyframes guidePopInUp {
+  from { opacity: 0; transform: translateY(16px) scale(0.97); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes guidePopOutUp {
+  from { opacity: 1; transform: translateY(0) scale(1); }
+  to { opacity: 0; transform: translateY(10px) scale(0.98); }
 }
 
 @keyframes splashPulse {
@@ -306,6 +426,14 @@
 * {
   scrollbar-width: thin;
   scrollbar-color: color-mix(in srgb, var(--color-muted) 35%, transparent) transparent;
+}
+
+.no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
 }
 
 @keyframes shrinkWidth {

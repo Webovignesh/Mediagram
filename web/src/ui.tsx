@@ -25,9 +25,12 @@ export const fmtEta = (s: number | null) => {
 }
 const rtf = new Intl.RelativeTimeFormat('en', { numeric: 'auto', style: 'short' })
 export const fmtAgo = (unix: number) => {
-  if (unix === 0) return 'Never'
-  const s = (Date.now() - unix * 1000) / 1000
-  if (s < 60) return rtf.format(-Math.floor(s), 'second')
+  if (!unix || unix === 0) return 'Never'
+  const ms = unix > 1e11 ? unix : unix * 1000
+  const s = (Date.now() - ms) / 1000
+  if (s < 5 && s > -5) return 'just now'
+  if (s < 0) return 'just now'
+  if (s < 60) return rtf.format(-Math.max(1, Math.floor(s)), 'second')
   if (s < 3600) return rtf.format(-Math.floor(s / 60), 'minute')
   if (s < 86400) return rtf.format(-Math.floor(s / 3600), 'hour')
   if (s < 2592000) return rtf.format(-Math.floor(s / 86400), 'day')
@@ -290,22 +293,115 @@ export function Badge({ count }: { count: number }) {
   return <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-primary px-1.5 text-[11px] font-semibold">{count}</span>
 }
 
-export function Select({ label, value, options, onChange, className }: { 
-  label?: string, value: string | number, options: { value: string | number, label: string }[], 
-  onChange: (value: string | number) => void, className?: string 
+export function Select({
+  label,
+  value,
+  options,
+  onChange,
+  className,
+  disabled,
+}: {
+  label?: string
+  value: string | number
+  options: { value: string | number; label: string; icon?: ReactNode }[]
+  onChange: (value: string | number) => void
+  className?: string
+  disabled?: boolean
 }) {
+  const [open, setOpen] = useState(false)
+  const [menuAlign, setMenuAlign] = useState<'left' | 'right'>('left')
+  const containerRef = useRef<HTMLDivElement>(null)
+
+  const selectedOption = options.find((o) => o.value === value) || options[0]
+
+  useEffect(() => {
+    if (!open) return
+    if (containerRef.current) {
+      const rect = containerRef.current.getBoundingClientRect()
+      if (rect.right + 140 > window.innerWidth) {
+        setMenuAlign('right')
+      } else {
+        setMenuAlign('left')
+      }
+    }
+    const handleClickOutside = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setOpen(false)
+      }
+    }
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside)
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [open])
+
   const sel = (
-    <div className="relative">
-      <select
-        value={value} onChange={(e) => onChange(options.find((o) => String(o.value) === e.target.value)!.value)}
-        className={`appearance-none rounded-md border border-border bg-tile py-1.5 pl-3 pr-8 text-[12.5px] hover:border-primary ${className || ''}`}
+    <div ref={containerRef} className="relative inline-block text-left">
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={() => setOpen((prev) => !prev)}
+        className={`group inline-flex items-center justify-between gap-2 rounded-lg border border-border bg-tile py-1.5 pl-3 pr-2.5 text-[12.5px] text-text font-normal hover:border-primary focus:outline-none transition-all cursor-pointer select-none ${
+          open ? 'border-primary ring-1 ring-primary/40' : ''
+        } ${disabled ? 'opacity-50 cursor-not-allowed' : ''} ${className || ''}`}
       >
-        {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-      </select>
-      <ChevronDown size={14} className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-muted" />
+        <span className="truncate pr-1">
+          {selectedOption?.label ?? String(value)}
+        </span>
+        <ChevronDown
+          size={14}
+          className={`shrink-0 text-muted transition-transform duration-200 group-hover:text-text ${
+            open ? 'rotate-180 text-primary' : ''
+          }`}
+        />
+      </button>
+
+      {open && (
+        <div
+          role="listbox"
+          className={`absolute ${menuAlign === 'right' ? 'right-0' : 'left-0'} top-full mt-1.5 min-w-full w-max max-w-[300px] max-h-64 overflow-y-auto rounded-xl border border-border bg-panel/95 backdrop-blur-md shadow-2xl p-1 z-50 text-[12.5px]`}
+        >
+          {options.map((opt) => {
+            const isSelected = opt.value === value
+            return (
+              <button
+                key={String(opt.value)}
+                type="button"
+                role="option"
+                aria-selected={isSelected}
+                onClick={() => {
+                  onChange(opt.value)
+                  setOpen(false)
+                }}
+                className={`flex w-full items-center justify-between gap-2.5 px-3 py-1.5 rounded-lg text-left transition-colors cursor-pointer ${
+                  isSelected
+                    ? 'bg-primary/20 text-primary font-medium'
+                    : 'text-text-2 hover:bg-tile hover:text-text'
+                }`}
+              >
+                <span className="truncate">{opt.label}</span>
+                {isSelected && <Check size={13} className="shrink-0 text-primary ml-auto" />}
+              </button>
+            )
+          })}
+        </div>
+      )}
     </div>
   )
-  return label ? <label className="block text-[12px] text-muted">{label}<div className="mt-1">{sel}</div></label> : sel
+
+  return label ? (
+    <label className="block text-[12px] text-muted">
+      {label}
+      <div className="mt-1">{sel}</div>
+    </label>
+  ) : (
+    sel
+  )
 }
 
 export function Segmented({ options, value, onChange }: { 
@@ -420,14 +516,32 @@ export function Pagination({ page, pageSize, total, onPage }: {
   )
 }
 
+export function getAvatarInitial(name: string): string {
+  if (!name) return '?'
+  const clean = name.trim()
+  const letter = clean.match(/[\p{L}\p{N}]/u)
+  if (letter) return letter[0].toUpperCase()
+  const first = Array.from(clean)[0]
+  return first ? first.toUpperCase() : '?'
+}
+
 export function Avatar({ src, name, size = 36 }: { src: string | null, name: string, size?: number }) {
   const [loaded, setLoaded] = useState(false)
   const [failed, setFailed] = useState(false)
+  const [retries, setRetries] = useState(0)
   const isSaved = name?.toLowerCase().includes('saved')
+  const initial = getAvatarInitial(name)
   const colors = ['#f43f5e', '#a855f7', '#6366f1', '#0ea5e9', '#14b8a6', '#22c55e', '#f97316', '#eab308']
-  const color = colors[(name ? name.charCodeAt(0) : 0) % colors.length]
+  const color = colors[((initial.codePointAt(0) || 0)) % colors.length]
 
-  if (isSaved && (!src || failed)) {
+  // Compute URL unconditionally before any conditional returns (hooks rule).
+  const url = (src && !failed)
+    ? (src.startsWith('mediagram://') || src.startsWith('teleflow://') || src.startsWith('data:') || src.startsWith('blob:') || src.startsWith('http')
+        ? src
+        : `mediagram://thumb/${src}`)
+    : null
+
+  if (isSaved && !url) {
     return (
       <div
         className="flex items-center justify-center rounded-lg select-none bg-primary/20 text-primary border border-primary/30 shadow-sm shrink-0"
@@ -439,30 +553,34 @@ export function Avatar({ src, name, size = 36 }: { src: string | null, name: str
     )
   }
 
-  if (!src || failed) {
+  if (!url) {
     return (
       <div
-        className="flex items-center justify-center rounded-lg font-semibold select-none text-white shadow-sm shrink-0"
+        className="flex items-center justify-center rounded-lg font-semibold select-none text-white shadow-sm shrink-0 text-[13px]"
         style={{ width: size, height: size, backgroundColor: color }}
       >
-        {name[0]?.toUpperCase()}
+        {initial}
       </div>
     )
   }
-
-  const url = src.startsWith('mediagram://') || src.startsWith('teleflow://') || src.startsWith('data:') || src.startsWith('blob:') || src.startsWith('http')
-    ? src
-    : `mediagram://thumb/${src}`
 
   return (
     <div className="relative shrink-0 rounded-lg overflow-hidden" style={{ width: size, height: size }}>
       {!loaded && <div className="absolute inset-0 bg-white/10 animate-pulse rounded-lg" />}
       <img
+        key={`${url}-${retries}`}
         src={url}
         alt={name}
         loading="lazy"
+        decoding="async"
         onLoad={() => setLoaded(true)}
-        onError={() => setFailed(true)}
+        onError={() => {
+          if (retries < 2) {
+            setTimeout(() => setRetries((r) => r + 1), 1200)
+          } else {
+            setFailed(true)
+          }
+        }}
         className={`rounded-lg object-cover transition-opacity duration-200 ${loaded ? 'opacity-100' : 'opacity-0'}`}
         style={{ width: size, height: size }}
       />
@@ -475,17 +593,20 @@ export function Thumb({ src, name }: { src: string | null, name: string }) {
   const [failed, setFailed] = useState(false)
   const ext = (name.split('.').pop() || 'FILE').toUpperCase()
 
-  if (!src || failed) {
+  // Compute URL unconditionally before any conditional returns (hooks rule).
+  const url = (src && !failed)
+    ? (src.startsWith('mediagram://') || src.startsWith('teleflow://') || src.startsWith('data:') || src.startsWith('blob:') || src.startsWith('http')
+        ? src
+        : `mediagram://thumb/${src}`)
+    : null
+
+  if (!url) {
     return (
       <div className="flex h-7 w-10 shrink-0 items-center justify-center rounded bg-tile text-[9px] font-bold uppercase text-muted border border-border/40 select-none">
         {ext.slice(0, 3)}
       </div>
     )
   }
-
-  const url = src.startsWith('mediagram://') || src.startsWith('teleflow://') || src.startsWith('data:') || src.startsWith('blob:') || src.startsWith('http')
-    ? src
-    : `mediagram://thumb/${src}`
 
   return (
     <div className="relative h-7 w-10 shrink-0 rounded overflow-hidden border border-border/40 bg-tile/60">
@@ -498,6 +619,7 @@ export function Thumb({ src, name }: { src: string | null, name: string }) {
         src={url}
         alt={name}
         loading="lazy"
+        decoding="async"
         onLoad={() => setLoaded(true)}
         onError={() => setFailed(true)}
         className={`h-full w-full object-cover transition-opacity duration-200 ${loaded ? 'opacity-100' : 'opacity-0'}`}
@@ -522,7 +644,16 @@ export function ChatMediaThumb({
   const [loaded, setLoaded] = useState(false)
   const [failed, setFailed] = useState(false)
 
-  if (!src || failed) {
+  // Compute URL unconditionally (hook rules require this before any conditional return).
+  // useMemo avoids rebuilding the string on every render during scroll.
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  const url = (src && !failed)
+    ? (src.startsWith('mediagram://') || src.startsWith('teleflow://') || src.startsWith('data:') || src.startsWith('blob:') || src.startsWith('http')
+        ? src
+        : `mediagram://thumb/${src}`)
+    : null
+
+  if (!url) {
     return (
       <div
         className={`flex w-full flex-col items-center justify-center gap-2 bg-panel/80 text-muted ${className}`}
@@ -535,10 +666,6 @@ export function ChatMediaThumb({
       </div>
     )
   }
-
-  const url = src.startsWith('mediagram://') || src.startsWith('teleflow://') || src.startsWith('data:') || src.startsWith('blob:') || src.startsWith('http')
-    ? src
-    : `mediagram://thumb/${src}`
 
   return (
     <div className="relative w-full overflow-hidden bg-panel/40" style={{ minHeight }}>
@@ -557,9 +684,10 @@ export function ChatMediaThumb({
         src={url}
         alt={alt}
         loading="lazy"
+        decoding="async"
         onLoad={() => setLoaded(true)}
         onError={() => setFailed(true)}
-        className={`w-full h-auto object-cover transition-all duration-300 ${loaded ? 'opacity-100 scale-100' : 'opacity-0 scale-[1.01]'} ${className}`}
+        className={`max-w-full max-h-[500px] w-auto h-auto object-contain mx-auto block transition-all duration-300 ${loaded ? 'opacity-100 scale-100' : 'opacity-0 scale-[1.01]'} ${className}`}
         style={{ minHeight, maxHeight }}
       />
     </div>
@@ -1089,12 +1217,16 @@ function CustomVideoPlayer({
   onSpeedChange,
   poster,
   initialDuration,
+  downloadProgress,
+  isCompleted,
 }: {
   src: string
   speed: number
   onSpeedChange: (speed: number) => void
   poster?: string | null
   initialDuration?: number
+  downloadProgress?: { downloaded: number, total: number } | null
+  isCompleted?: boolean
 }) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -1107,7 +1239,45 @@ function CustomVideoPlayer({
   const [showControls, setShowControls] = useState(true)
   const [buffering, setBuffering] = useState(true)
   const [hasStarted, setHasStarted] = useState(false)
+  const [bufferedEnd, setBufferedEnd] = useState(0)
   const hideTimerRef = useRef<NodeJS.Timeout | null>(null)
+  const prevSrcRef = useRef(src)
+
+  useEffect(() => {
+    if (initialDuration && initialDuration > 0 && (!duration || duration === 0)) {
+      setDuration(initialDuration)
+    }
+  }, [initialDuration, duration])
+
+  const updateBuffered = () => {
+    if (videoRef.current && videoRef.current.buffered.length > 0) {
+      const b = videoRef.current.buffered
+      let maxEnd = 0
+      for (let i = 0; i < b.length; i++) {
+        if (b.end(i) > maxEnd) maxEnd = b.end(i)
+      }
+      setBufferedEnd(maxEnd)
+    }
+  }
+
+  // Preserve playback position if source changes (e.g. transitioning from temp to finished file)
+  useEffect(() => {
+    if (prevSrcRef.current !== src) {
+      prevSrcRef.current = src
+      const savedTime = currentTime
+      const wasPlaying = playing
+      if (videoRef.current && savedTime > 0) {
+        const onLoaded = () => {
+          if (videoRef.current) {
+            videoRef.current.currentTime = savedTime
+            if (wasPlaying) videoRef.current.play().catch(() => {})
+          }
+          videoRef.current?.removeEventListener('loadedmetadata', onLoaded)
+        }
+        videoRef.current.addEventListener('loadedmetadata', onLoaded)
+      }
+    }
+  }, [src, currentTime, playing])
 
   useEffect(() => {
     if (videoRef.current) {
@@ -1117,6 +1287,7 @@ function CustomVideoPlayer({
 
   // Instant playback attempt on mount or source change
   useEffect(() => {
+    if (!src) return
     setBuffering(true)
     setHasStarted(false)
     if (videoRef.current) {
@@ -1126,10 +1297,20 @@ function CustomVideoPlayer({
     }
   }, [src])
 
+  // Reload and start playing when background download completes if playback hasn't started yet
+  useEffect(() => {
+    if (isCompleted && videoRef.current) {
+      if (!hasStarted) {
+        videoRef.current.load()
+        videoRef.current.play().catch(() => {})
+      }
+    }
+  }, [isCompleted, hasStarted])
+
   const resetHideTimer = () => {
     setShowControls(true)
     if (hideTimerRef.current) clearTimeout(hideTimerRef.current)
-    if (playing) {
+    if (playing && hasStarted && !buffering) {
       hideTimerRef.current = setTimeout(() => setShowControls(false), 2500)
     }
   }
@@ -1137,7 +1318,7 @@ function CustomVideoPlayer({
   const togglePlay = () => {
     if (!videoRef.current) return
     if (videoRef.current.paused) {
-      videoRef.current.play()
+      videoRef.current.play().catch(() => {})
       setPlaying(true)
     } else {
       videoRef.current.pause()
@@ -1209,13 +1390,24 @@ function CustomVideoPlayer({
   }
 
   const progressPct = duration > 0 ? Math.min(100, Math.max(0, (currentTime / duration) * 100)) : 0
+  const dlPct = downloadProgress && downloadProgress.total > 0
+    ? Math.min(100, Math.max(0, (downloadProgress.downloaded / downloadProgress.total) * 100))
+    : 0
+  const timeBufferedPct = duration > 0 ? Math.min(100, Math.max(0, (bufferedEnd / duration) * 100)) : 0
+  const bufferedPct = isCompleted
+    ? 100
+    : Math.min(100, Math.max(progressPct, dlPct, timeBufferedPct))
 
   return (
     <div
       ref={containerRef}
       className="relative flex items-center justify-center w-full max-w-5xl aspect-video min-h-[360px] max-h-[86vh] rounded-2xl overflow-hidden group select-none bg-black shadow-2xl cursor-default"
       onMouseMove={resetHideTimer}
-      onMouseLeave={() => playing && setShowControls(false)}
+      onMouseLeave={() => {
+        if (playing && hasStarted && !buffering) {
+          setShowControls(false)
+        }
+      }}
       onClick={(e) => e.stopPropagation()}
     >
       {/* Thumbnail backdrop: stays visible while buffering before video starts, preventing any pitch-black flash */}
@@ -1223,54 +1415,73 @@ function CustomVideoPlayer({
         <img
           src={poster}
           alt=""
+          onError={(e) => {
+            setTimeout(() => {
+              if (e.currentTarget && poster) e.currentTarget.src = poster
+            }, 1500)
+          }}
           className={`absolute inset-0 w-full h-full object-contain pointer-events-none transition-opacity duration-300 z-0 ${
             hasStarted ? 'opacity-0' : 'opacity-100'
           }`}
         />
       )}
 
-      <video
-        ref={videoRef}
-        src={src}
-        poster={poster || undefined}
-        autoPlay
-        playsInline
-        preload="auto"
-        onClick={togglePlay}
-        onTimeUpdate={() => {
-          if (videoRef.current) {
-            setCurrentTime(videoRef.current.currentTime)
-            if (videoRef.current.currentTime > 0) setHasStarted(true)
-          }
-        }}
-        onLoadedMetadata={() => {
-          if (videoRef.current) {
-            setDuration(videoRef.current.duration || initialDuration || 0)
-          }
-        }}
-        onLoadStart={() => setBuffering(true)}
-        onWaiting={() => setBuffering(true)}
-        onSeeking={() => setBuffering(true)}
-        onSeeked={() => setBuffering(false)}
-        onCanPlay={() => setBuffering(false)}
-        onLoadedData={() => {
-          setBuffering(false)
-          setHasStarted(true)
-        }}
-        onPlaying={() => {
-          setPlaying(true)
-          setBuffering(false)
-          setHasStarted(true)
-        }}
-        onPlay={() => {
-          setPlaying(true)
-          setBuffering(false)
-        }}
-        onPause={() => setPlaying(false)}
-        className={`relative z-10 w-full h-full object-contain cursor-pointer transition-opacity duration-300 ${
-          hasStarted ? 'opacity-100' : 'opacity-0'
-        }`}
-      />
+      {src && (
+        <video
+          ref={videoRef}
+          src={src}
+          poster={poster || undefined}
+          autoPlay
+          playsInline
+          preload="auto"
+          onClick={togglePlay}
+          onProgress={updateBuffered}
+          onTimeUpdate={() => {
+            if (videoRef.current) {
+              setCurrentTime(videoRef.current.currentTime)
+              if (videoRef.current.currentTime > 0) setHasStarted(true)
+              updateBuffered()
+            }
+          }}
+          onLoadedMetadata={() => {
+            if (videoRef.current) {
+              setDuration(videoRef.current.duration || initialDuration || 0)
+              updateBuffered()
+            }
+          }}
+          onLoadStart={() => setBuffering(true)}
+          onWaiting={() => setBuffering(true)}
+          onSeeking={() => setBuffering(true)}
+          onSeeked={() => setBuffering(false)}
+          onCanPlay={() => setBuffering(false)}
+          onLoadedData={() => {
+            setBuffering(false)
+            setHasStarted(true)
+          }}
+          onPlaying={() => {
+            setPlaying(true)
+            setBuffering(false)
+            setHasStarted(true)
+          }}
+          onPlay={() => {
+            setPlaying(true)
+            setBuffering(false)
+          }}
+          onPause={() => setPlaying(false)}
+          onError={() => {
+            // Keep buffering active and schedule a fast reload attempt in 1.5s
+            setBuffering(true)
+            setTimeout(() => {
+              if (videoRef.current && !hasStarted) {
+                videoRef.current.load()
+              }
+            }, 1500)
+          }}
+          className={`relative z-10 w-full h-full object-contain cursor-pointer transition-opacity duration-300 ${
+            hasStarted ? 'opacity-100' : 'opacity-0'
+          }`}
+        />
+      )}
 
       {/* Loading Spinner Circle when buffering / initial loading - rendered on top of thumbnail backdrop */}
       {buffering && (
@@ -1282,9 +1493,24 @@ function CustomVideoPlayer({
             <Loader2 size={28} className="animate-spin text-cyan" />
           </div>
           {!hasStarted && (
-            <span className="text-[12px] font-semibold text-white/90 bg-black/60 backdrop-blur-md px-3.5 py-1 rounded-full border border-white/10 shadow-lg tracking-wide">
-              Starting playback…
-            </span>
+            downloadProgress && downloadProgress.total > 0 ? (
+              <div className="flex flex-col items-center gap-1.5">
+                <span className="text-[12px] font-semibold text-white/95 bg-black/75 backdrop-blur-md px-3.5 py-1 rounded-full border border-white/15 shadow-xl tracking-wide flex items-center gap-2 font-mono">
+                  <span className="text-cyan font-bold">{Math.round(dlPct)}%</span>
+                  <span className="text-white/40 font-sans">•</span>
+                  <span className="text-slate-200 font-sans font-medium text-[11px]">
+                    {fmtBytes(downloadProgress.downloaded)} / {fmtBytes(downloadProgress.total)}
+                  </span>
+                </span>
+                <span className="text-[10.5px] font-medium text-slate-300 bg-black/60 backdrop-blur-sm px-2.5 py-0.5 rounded-full border border-white/10">
+                  Buffering in background…
+                </span>
+              </div>
+            ) : (
+              <span className="text-[12px] font-semibold text-white/90 bg-black/60 backdrop-blur-md px-3.5 py-1 rounded-full border border-white/10 shadow-lg tracking-wide">
+                Starting playback…
+              </span>
+            )
           )}
         </div>
       )}
@@ -1301,10 +1527,10 @@ function CustomVideoPlayer({
         </div>
       )}
 
-      {/* Sleek Custom Bottom Video Controls Bar - only shown after video frames have started playing */}
+      {/* Sleek Custom Bottom Video Controls Bar - always visible when showControls is true */}
       <div
         className={`absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/95 via-black/75 to-transparent px-4 pb-3.5 pt-8 flex flex-col gap-2 transition-opacity duration-300 z-30 ${
-          showControls && hasStarted ? 'opacity-100' : 'opacity-0 pointer-events-none'
+          showControls ? 'opacity-100' : 'opacity-0 pointer-events-none'
         }`}
         onClick={(e) => e.stopPropagation()}
       >
@@ -1317,8 +1543,15 @@ function CustomVideoPlayer({
           }}
         >
           <div className="w-full h-1.5 group-hover/scrub:h-2 bg-white/20 rounded-full overflow-hidden transition-all relative">
+            {/* Background buffered track */}
             <div
-              className="h-full bg-cyan rounded-full transition-all duration-75"
+              className="absolute left-0 top-0 h-full bg-cyan/35 rounded-full transition-all duration-150"
+              style={{ width: `${bufferedPct}%` }}
+              title={bufferedPct > 0 ? `Buffered: ${Math.round(bufferedPct)}%` : undefined}
+            />
+            {/* Foreground playback progress track */}
+            <div
+              className="absolute left-0 top-0 h-full bg-cyan rounded-full transition-all duration-75"
               style={{ width: `${progressPct}%` }}
             />
           </div>
@@ -1344,6 +1577,13 @@ function CustomVideoPlayer({
             <span className="font-mono text-[11.5px] text-slate-200 tabular-nums whitespace-nowrap select-none">
               {formatTime(currentTime)} / {formatTime(duration)}
             </span>
+
+            {/* Background buffered progress badge on seekbar */}
+            {!isCompleted && bufferedPct > 0 && (
+              <span className="font-mono text-[10.5px] font-semibold text-cyan/90 bg-cyan/15 border border-cyan/30 px-2 py-0.5 rounded-full tabular-nums whitespace-nowrap select-none">
+                {Math.round(bufferedPct)}% buffered
+              </span>
+            )}
 
             {/* Full Volume Control with Slider */}
             <div className="flex items-center gap-1.5 ml-1 group/vol">
@@ -1432,6 +1672,7 @@ export function MediaPreviewModal({
   const [imgError, setImgError] = useState(false)
   const [thumbError, setThumbError] = useState(false)
   const [speed, setSpeed] = useState<number>(1)
+  const [modalThumb, setModalThumb] = useState<string | null>(null)
   const audioRef = useRef<HTMLAudioElement>(null)
 
   const ext = item?.name.split('.').pop()?.toLowerCase() || ''
@@ -1445,7 +1686,7 @@ export function MediaPreviewModal({
       const stored = localStorage.getItem('mediagram_prebuffer_video')
       if (stored !== null) return stored !== 'false'
     } catch {}
-    return true
+    return false
   })
 
   useEffect(() => {
@@ -1457,8 +1698,26 @@ export function MediaPreviewModal({
     }
   }, [settings?.prebufferVideo])
 
-  // true = wait for full download before playing; false = start playing as soon as TDLib gives any path
-  const shouldPrebuffer = settings?.prebufferVideo ?? localPrebuffer
+  // Snapshot the prebuffer preference at modal-open time so that an async settings
+  // response arriving after the download effect has started doesn't re-trigger it
+  // (which would cause a double media.prepare race) and so the value never flips
+  // mid-download from ON→OFF or OFF→ON.
+  const prebufferSnapshot = useRef<boolean | null>(null)
+  useEffect(() => {
+    if (open) {
+      // Lock in the effective value the moment the modal opens.
+      prebufferSnapshot.current = settings?.prebufferVideo ?? localPrebuffer
+    } else {
+      prebufferSnapshot.current = null
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open])
+
+  // For render-time usage (e.g. deciding which waiting UI to show):
+  // use the snapshot when open, otherwise the live value.
+  const shouldPrebuffer = open
+    ? (prebufferSnapshot.current ?? settings?.prebufferVideo ?? localPrebuffer)
+    : (settings?.prebufferVideo ?? localPrebuffer)
 
   // Sync Electron native title bar overlay color with modal background when open
   useEffect(() => {
@@ -1478,6 +1737,7 @@ export function MediaPreviewModal({
     setIsFullLoaded(Boolean(item?.path))
     setImgError(false)
     setThumbError(false)
+    setModalThumb(null)
   }, [item])
 
   useEffect(() => {
@@ -1503,29 +1763,49 @@ export function MediaPreviewModal({
 
     let targetFileId: number | null = null
     let active = true
+    // A path can be missing for a beat (TDLib has not created its temp file yet). Ask again instead of
+    // leaving the stage on "Starting playback…" with nothing to play — this is what makes an un-downloaded
+    // video start at any size when prebuffering is off.
+    let havePath = false
+    let attempts = 0
+    let retryTimer: NodeJS.Timeout | undefined
 
-    call<{ completed: boolean, path: string | null, fileId: number, size: number, downloaded: number }>('media.prepare', {
-      chatId: item.chatId,
-      messageId: item.messageId,
-    })
-      .then((res) => {
-        if (!active) return
-        targetFileId = res.fileId
-        if (res.size && res.size > 0) {
-          setActualSize(res.size)
-        }
-        if (res.path) {
-          if (!isImage && !shouldPrebuffer) {
-            setPreparedPath(res.path)
-          } else if (res.completed) {
-            setPreparedPath(res.path)
-          }
-        }
-        if (!res.completed && res.size) {
-          setPrepProgress({ downloaded: res.downloaded || 0, total: res.size })
-        }
+    const prepare = () => {
+      attempts++
+      call<{ completed: boolean, path: string | null, fileId: number, size: number, downloaded: number, thumb?: string | null }>('media.prepare', {
+        chatId: item!.chatId,
+        messageId: item!.messageId,
       })
-      .catch(() => {})
+        .then((res) => {
+          if (!active) return
+          targetFileId = res.fileId
+          if (res.size && res.size > 0) {
+            setActualSize(res.size)
+          }
+          if (res.thumb) {
+            setModalThumb(res.thumb)
+          }
+          // Read the snapshot (frozen at modal-open time) so that a late-arriving
+          // settings response cannot flip the behavior mid-download.
+          const prebuffer = prebufferSnapshot.current ?? localPrebuffer
+          if (res.path) {
+            havePath = true
+            if (!isImage && !prebuffer) {
+              setPreparedPath(res.path)
+            } else if (res.completed) {
+              setPreparedPath(res.path)
+            }
+          }
+          if (!res.completed && res.size) {
+            setPrepProgress({ downloaded: res.downloaded || 0, total: res.size })
+          }
+          if (!havePath && active && attempts < 3) retryTimer = setTimeout(prepare, 2500)
+        })
+        .catch(() => {
+          if (active && attempts < 3) retryTimer = setTimeout(prepare, 2500)
+        })
+    }
+    prepare()
 
     const unsub = on((event) => {
       if (!active) return
@@ -1534,25 +1814,37 @@ export function MediaPreviewModal({
         if (event.total && event.total > 0) {
           setActualSize(event.total)
         }
+        // Read the snapshot (frozen at modal-open time) so that a late-arriving
+        // settings response cannot flip the behavior mid-download.
+        const prebuffer = prebufferSnapshot.current ?? localPrebuffer
         if (event.path) {
-          if (!isImage && !shouldPrebuffer) {
-            setPreparedPath(event.path)
+          havePath = true
+          if (!isImage && !prebuffer) {
+            setPreparedPath((prev) => (event.completed ? event.path! : (prev || event.path!)))
           } else if (event.completed) {
             setPreparedPath(event.path)
+            setPrepProgress(null)
           }
         }
         if (!event.completed && event.total > 0) {
           setPrepProgress({ downloaded: event.downloaded, total: event.total })
+        } else if (event.completed) {
+          setPrepProgress(null)
         }
       }
     })
 
     return () => {
       active = false
+      clearTimeout(retryTimer)
       window.removeEventListener('keydown', handleKey)
       unsub()
     }
-  }, [open, item, onClose, shouldPrebuffer, isImage])
+  // Item identity (chatId+messageId) drives the effect, not the whole item object.
+  // shouldPrebuffer is intentionally excluded: we snapshot it at open-time via
+  // prebufferSnapshot.current to prevent a double media.prepare when settings loads.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, item?.chatId, item?.messageId, item?.path, onClose])
 
   useEffect(() => {
     if (audioRef.current) audioRef.current.playbackRate = speed
@@ -1572,8 +1864,11 @@ export function MediaPreviewModal({
   if (!open || !item) return null
 
   const resolvedPath = item.path || preparedPath
-  const mediaUrl = resolvedPath ? `mediagram://file/${encodeURIComponent(resolvedPath)}` : null
-  const thumbUrl = item.thumb ? `mediagram://thumb/${item.thumb}` : null
+  const mediaUrl = resolvedPath
+    ? `mediagram://file/${encodeURIComponent(resolvedPath)}?total=${actualSize || item.size || 0}&ext=${encodeURIComponent(ext)}`
+    : null
+  const effectiveThumb = item.thumb || modalThumb
+  const thumbUrl = effectiveThumb ? `mediagram://thumb/${effectiveThumb}` : null
 
   return (
     <div
@@ -1638,6 +1933,7 @@ export function MediaPreviewModal({
       {/* Center Media Stage - Backdrop click closes modal; media element stops propagation */}
       <div className="flex flex-1 items-center justify-center w-full h-full p-4 overflow-hidden">
         {isVideo ? (
+          // A streamable path means playback starts now — the rest of the file keeps arriving behind it.
           mediaUrl ? (
             <CustomVideoPlayer
               src={mediaUrl}
@@ -1645,9 +1941,12 @@ export function MediaPreviewModal({
               onSpeedChange={setSpeed}
               poster={thumbUrl}
               initialDuration={item.duration}
+              downloadProgress={prepProgress}
+              isCompleted={Boolean(item.path || (prepProgress && prepProgress.downloaded >= prepProgress.total))}
             />
-          ) : shouldPrebuffer ? (
-            // Prebuffer ON: show download progress spinner on top of thumbnail, wait for full download
+          ) : (
+            // Nothing to play yet. With prebuffering ON this is the full-file wait, showing how far the
+            // fetch has come; with it OFF it is only the moment until the first bytes are on disk.
             <div
               className="relative flex items-center justify-center w-full max-w-5xl aspect-video min-h-[360px] max-h-[86vh] rounded-2xl overflow-hidden bg-black cursor-default shadow-2xl"
               onClick={(e) => e.stopPropagation()}
@@ -1656,6 +1955,7 @@ export function MediaPreviewModal({
                 <img
                   src={thumbUrl}
                   alt={item.name}
+                  onError={(e) => { e.currentTarget.style.display = 'none' }}
                   className="absolute inset-0 w-full h-full object-contain pointer-events-none opacity-60 filter blur-[1px]"
                 />
               ) : (
@@ -1664,7 +1964,7 @@ export function MediaPreviewModal({
                 </div>
               )}
               <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/40 backdrop-blur-xs gap-3 pointer-events-none z-10">
-                {prepProgress && prepProgress.total > 0 ? (
+                {shouldPrebuffer && prepProgress && prepProgress.total > 0 ? (
                   <>
                     <div className="relative size-16 flex items-center justify-center">
                       <svg className="size-16 -rotate-90" viewBox="0 0 64 64">
@@ -1699,32 +1999,6 @@ export function MediaPreviewModal({
                     </span>
                   </div>
                 )}
-              </div>
-            </div>
-          ) : (
-            // Prebuffer OFF: show continuous thumbnail with spinner until playback frames decode seamlessly
-            <div
-              className="relative flex items-center justify-center w-full max-w-5xl aspect-video min-h-[360px] max-h-[86vh] rounded-2xl overflow-hidden bg-black cursor-default shadow-2xl"
-              onClick={(e) => e.stopPropagation()}
-            >
-              {thumbUrl ? (
-                <img
-                  src={thumbUrl}
-                  alt={item.name}
-                  className="absolute inset-0 w-full h-full object-contain pointer-events-none"
-                />
-              ) : (
-                <div className="w-80 h-52 flex items-center justify-center bg-slate-900/80 rounded-2xl">
-                  <Film size={36} className="text-muted" />
-                </div>
-              )}
-              <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 pointer-events-none z-10">
-                <div className="size-14 rounded-full bg-black/75 backdrop-blur-md border border-white/20 flex items-center justify-center text-cyan shadow-2xl">
-                  <Loader2 size={28} className="animate-spin text-cyan" />
-                </div>
-                <span className="text-[12px] font-semibold text-white/90 bg-black/60 backdrop-blur-md px-3.5 py-1 rounded-full border border-white/10 shadow-lg tracking-wide">
-                  Starting playback…
-                </span>
               </div>
             </div>
           )

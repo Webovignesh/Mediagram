@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, type ReactNode } from 'react'
 import { Home, Download, Upload, ListOrdered, Settings as SettingsIcon, ChevronDown, LogOut, PanelLeftClose, PanelLeftOpen } from 'lucide-react'
 import { call, useCall, useLive, useRoute, navigate } from './api.ts'
 import { Empty, ErrorState, Badge, Avatar, toast, confirm, MediagramLogo } from './ui.tsx'
@@ -137,6 +137,12 @@ function Sidebar({
   )
 }
 
+// The four full-screen states of the auth pipeline, and the class each one enters and exits with.
+// Leaving one and entering another is always a cross-fade of the two, never a cut.
+type Screen = 'splash' | 'logout' | 'login' | 'app'
+const ENTER: Record<Screen, string> = { splash: 'splash-enter', logout: 'fade-enter', login: 'login-enter', app: 'app-enter' }
+const EXIT: Record<Screen, string> = { splash: 'splash-exit', logout: 'logout-exit', login: 'login-exit', app: 'app-exit' }
+
 // Main App with full-height sidebar and topbar inside main flex container
 export default function App() {
   const [collapsed, setCollapsed] = useState(false)
@@ -198,89 +204,34 @@ export default function App() {
     }
   }, [auth?.step, isLoggingOut])
 
-  // Hand-off from Login form to Dashboard: only applies when user actually went through the Login form
-  const [leavingLogin, setLeavingLogin] = useState(false)
-  const seenLogin = useRef(false)
+  // Which of the four full-screen states is up. The boot splash also covers the engine restart nothing
+  // has been shown for yet — but once a screen has been seen, `starting` belongs to Login, whose
+  // verification screen carries a restart (Settings changing the keys, a logout relaunching TDLib)
+  // instead of yanking the user back to the splash and dropping the sign-in where it stood.
+  const seenScreen = useRef(false)
+  const screen: Screen = isLoggingOut || auth?.step === 'logging-out' ? 'logout'
+    : loading || !auth || (!seenScreen.current && auth.step === 'starting') || (!minSplashDone && auth.step === 'ready') ? 'splash'
+      : auth.step !== 'ready' ? 'login' : 'app'
+
+  // Every switch cross-fades: the screen being left stays mounted — on top, and inert — for the length
+  // of its exit, so no transition ever cuts to the bare background before the next one fades in.
+  const [leaving, setLeaving] = useState<{ screen: Screen, id: number } | null>(null)
+  const lastScreen = useRef(screen)
   useEffect(() => {
-    if (auth?.step !== 'ready') {
-      if (auth && auth.step !== 'starting' && auth.step !== 'logging-out' && !isLoggingOut) seenLogin.current = true
-      return
-    }
-    if (!seenLogin.current) return
-    seenLogin.current = false
-    setLeavingLogin(true)
-    const timer = setTimeout(() => setLeavingLogin(false), 480)
+    if (screen === 'login' || screen === 'app') seenScreen.current = true
+    if (lastScreen.current === screen) return
+    const from = lastScreen.current
+    lastScreen.current = screen
+    setLeaving({ screen: from, id: Date.now() })
+    const timer = setTimeout(() => setLeaving(null), 470)
     return () => clearTimeout(timer)
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- runs once per login, not on connection pushes
-  }, [auth?.step, isLoggingOut])
+  }, [screen])
 
   if (error) {
     return (
       <div className="flex h-full flex-col">
         <div className="drag h-10 shrink-0" />
         <ErrorState error={error} onRetry={reload} />
-      </div>
-    )
-  }
-
-  // Sustained Signing Out screen during logout pipeline (stays steadily visible until logout completes)
-  if (isLoggingOut || auth?.step === 'logging-out') {
-    return (
-      <div className="fade-enter relative flex h-screen w-screen flex-col items-center justify-center bg-bg select-none overflow-hidden">
-        <WindowDragBar />
-        <div className="flex flex-col items-center gap-4">
-          <div className="logout-icon grid size-16 place-items-center rounded-2xl bg-danger/15 text-danger shadow-[0_0_35px_rgba(239,68,68,0.3)] border border-danger/30">
-            <LogOut size={28} />
-          </div>
-          <div className="flex flex-col items-center gap-1.5 text-center">
-            <div className="text-[19px] font-bold text-text tracking-wide">Signing out…</div>
-            <div className="text-[12px] text-muted font-medium flex items-center gap-2">
-              <span className="size-1.5 rounded-full bg-danger animate-pulse" />
-              Closing Telegram session securely
-            </div>
-          </div>
-        </div>
-      </div>
-    )
-  }
-
-  // Sustained Splash screen on app launch: stays active until session check is complete and minSplashDone elapsed
-  if (loading || !auth || auth.step === 'starting' || (!minSplashDone && auth.step === 'ready')) {
-    return (
-      <div className="relative flex h-screen w-screen flex-col items-center justify-center bg-bg select-none overflow-hidden">
-        <WindowDragBar />
-        <div className="flex flex-col items-center gap-4">
-          <div className="relative flex size-20 items-center justify-center">
-            {/* Dedicated theme aura: pulses using pure var(--color-primary) with zero blue leakage */}
-            <div
-              className="splash-aura absolute -inset-2 rounded-3xl"
-              style={{
-                backgroundColor: 'var(--color-primary)',
-                filter: 'blur(22px)',
-              }}
-            />
-            {/* Logo */}
-            <div className="splash-icon relative z-10 drop-shadow-md">
-              <MediagramLogo size={64} className="rounded-2xl" />
-            </div>
-          </div>
-          <div className="flex flex-col items-center gap-1.5 text-center">
-            <div className="text-[19px] font-bold text-text tracking-wide">Mediagram</div>
-            <div className="text-[12px] text-muted font-medium flex items-center gap-2">
-              <span className="size-1.5 rounded-full bg-primary animate-pulse" />
-              Connecting to Telegram…
-            </div>
-          </div>
-        </div>
-      </div>
-    )
-  }
-
-  // Auth gate: any other non-ready step shows Login with smooth entrance animation
-  if (auth && auth.step !== 'ready') {
-    return (
-      <div className="login-enter h-screen w-screen overflow-hidden">
-        <Login />
       </div>
     )
   }
@@ -322,14 +273,70 @@ export default function App() {
     </div>
   )
 
-  // Through the hand-off the dashboard mounts beneath Login, which fades out as a layer over it. The tree shape
-  // stays put either way, so nothing inside the dashboard remounts when the overlay leaves.
+  // One of the four full-screen states, as a tree. Only the ones actually on screen are mounted.
+  const view = (s: Screen): ReactNode => {
+    if (s === 'logout') {
+      // Sustained Signing Out screen (stays steadily visible until the logout pipeline completes)
+      return (
+        <div className="relative flex h-screen w-screen flex-col items-center justify-center bg-bg select-none overflow-hidden">
+          <WindowDragBar />
+          <div className="flex flex-col items-center gap-4">
+            <div className="logout-icon grid size-16 place-items-center rounded-2xl bg-danger/15 text-danger shadow-[0_0_35px_rgba(239,68,68,0.3)] border border-danger/30">
+              <LogOut size={28} />
+            </div>
+            <div className="flex flex-col items-center gap-1.5 text-center">
+              <div className="text-[19px] font-bold text-text tracking-wide">Signing out…</div>
+              <div className="text-[12px] text-muted font-medium flex items-center gap-2">
+                <span className="size-1.5 rounded-full bg-danger animate-pulse" />
+                Closing Telegram session securely
+              </div>
+            </div>
+          </div>
+        </div>
+      )
+    }
+    if (s === 'splash') {
+      // Sustained splash on launch: holds until the session check is in and minSplashDone has elapsed
+      return (
+        <div className="relative flex h-screen w-screen flex-col items-center justify-center bg-bg select-none overflow-hidden">
+          <WindowDragBar />
+          <div className="flex flex-col items-center gap-4">
+            <div className="relative flex size-20 items-center justify-center">
+              {/* Dedicated theme aura: pulses using pure var(--color-primary) with zero blue leakage */}
+              <div
+                className="splash-aura absolute -inset-2 rounded-3xl"
+                style={{
+                  backgroundColor: 'var(--color-primary)',
+                  filter: 'blur(22px)',
+                }}
+              />
+              {/* Logo */}
+              <div className="splash-icon relative z-10 drop-shadow-md">
+                <MediagramLogo size={64} className="rounded-2xl" />
+              </div>
+            </div>
+            <div className="flex flex-col items-center gap-1.5 text-center">
+              <div className="text-[19px] font-bold text-text tracking-wide">Mediagram</div>
+              <div className="text-[12px] text-muted font-medium flex items-center gap-2">
+                <span className="size-1.5 rounded-full bg-primary animate-pulse" />
+                Connecting to Telegram…
+              </div>
+            </div>
+          </div>
+        </div>
+      )
+    }
+    if (s === 'login') return <div className="h-screen w-screen overflow-hidden"><Login /></div>
+    return shell
+  }
+
+  // The screen on top plays its entrance; the one it replaced lingers above it, inert, and fades out.
   return (
     <div className="relative h-screen w-screen overflow-hidden bg-bg">
-      <div className={leavingLogin ? 'app-enter absolute inset-0' : 'absolute inset-0'}>{shell}</div>
-      {leavingLogin && (
-        <div className="login-exit absolute inset-0 z-40">
-          <Login />
+      <div className={`absolute inset-0 ${ENTER[screen]}`}>{view(screen)}</div>
+      {leaving && (
+        <div key={leaving.id} className={`pointer-events-none absolute inset-0 z-40 ${EXIT[leaving.screen]}`}>
+          {view(leaving.screen)}
         </div>
       )}
     </div>

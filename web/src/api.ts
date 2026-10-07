@@ -4,6 +4,7 @@ import type { Bridge } from '../../electron/preload.ts'
 import type { AuthState } from '../../core/shapes.ts'
 import type { AppEvent } from '../../core/db.ts'
 import type { LiveStats } from '../../core/transfers.ts'
+import { addNotification, isChatMuted } from './notifications.ts'
 
 declare global {
   interface Window { mediagram?: Bridge; teleflow: Bridge }
@@ -164,6 +165,16 @@ function initEventListener() {
         typingSnapshot = next
       }
       notifyTyping()
+    } else if (e.type === 'notification') {
+      if (!e.chatId || !isChatMuted(e.chatId)) {
+        addNotification({
+          title: e.title,
+          body: e.body,
+          type: e.kind,
+          chatId: e.chatId,
+          messageId: e.messageId,
+        })
+      }
     }
     if (changed) {
       liveListeners.forEach((l) => l())
