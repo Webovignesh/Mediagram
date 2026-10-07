@@ -1,8 +1,9 @@
 import React, { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback } from 'react'
-import { Plus, RotateCcw, Download, Folder, CheckSquare, Square, FolderOpen, Send, ExternalLink, Copy, Filter, FileText, MessageSquare, ChevronDown, Play, Pause, Music, SlidersHorizontal, ArrowDown, Trash2, Film, LogOut, MoreVertical, RefreshCw, AlertCircle, Clock } from 'lucide-react'
+import { Plus, RotateCcw, Download, Folder, CheckSquare, Square, FolderOpen, Send, ExternalLink, Copy, Filter, FileText, MessageSquare, ChevronDown, Play, Pause, Music, SlidersHorizontal, ArrowDown, Trash2, Film, LogOut, MoreVertical, RefreshCw, AlertCircle, Clock, LayoutGrid, List, Check, Sparkles, Image as ImageIcon, Pin, PinOff, Bell, BellOff, Archive, FolderUp, ArrowLeft } from 'lucide-react'
 import { call, useCall, useLive, useTyping, navigate } from '../api.ts'
 import { Panel, SearchInput, Chip, Select, Button, Avatar, Pill, Thumb, TypeChip, Pagination, Empty, Skeleton, ErrorState, OpenChatDialog, MediaPreviewModal, Dialog, fmtBytes, fmtAgo, fmtDate, fmtDuration, toast, triggerFlyToQueue, confirm, CheckDuplicatesModal, MediagramLogo, TelegramInviteModal, type DuplicateCheckResult } from '../ui.tsx'
 import { ChatView } from './ChatView.tsx'
+import { useNotifications, setChatMuted, setChatPinned, setChatArchived, registerMutedChats } from '../notifications.ts'
 
 function LinkifiedText({
   text,
@@ -39,6 +40,14 @@ function LinkifiedText({
       })}
     </p>
   )
+}
+
+function isPrebufferEnabled(): boolean {
+  try {
+    const v = localStorage.getItem('mediagram_prebuffer_video')
+    if (v !== null) return v !== 'false'
+  } catch {}
+  return false
 }
 
 function getDateGroup(timestampSec: number): string {
@@ -193,9 +202,13 @@ interface ChatFilterState {
   page: number
   mediaOnlyChat: boolean
   chatMsgSearch: string
+  fileViewMode?: 'table' | 'grid'
+  gridSize?: 'sm' | 'md' | 'lg' | 'xl'
 }
 
 const CHAT_FILTERS_STORAGE_KEY = 'mediagram_chat_filters'
+const MEDIA_VIEW_MODE_KEY = 'mediagram_media_view_mode'
+const MEDIA_GRID_SIZE_KEY = 'mediagram_media_grid_size'
 
 const defaultChatFilter: ChatFilterState = {
   mediaType: 'all',
@@ -208,6 +221,8 @@ const defaultChatFilter: ChatFilterState = {
   page: 1,
   mediaOnlyChat: false,
   chatMsgSearch: '',
+  fileViewMode: 'table',
+  gridSize: 'md',
 }
 
 function loadInitialChatFilters(): Record<number, Partial<ChatFilterState>> {
@@ -226,6 +241,280 @@ function loadInitialChatViewModes(): Record<number, 'files' | 'chat'> {
     if (raw) return JSON.parse(raw)
   } catch {}
   return {}
+}
+
+function loadInitialFileViewMode(): 'table' | 'grid' {
+  try {
+    const raw = localStorage.getItem(MEDIA_VIEW_MODE_KEY)
+    if (raw === 'grid' || raw === 'table') return raw
+  } catch {}
+  return 'table'
+}
+
+function loadInitialGridSize(): 'sm' | 'md' | 'lg' | 'xl' {
+  try {
+    const raw = localStorage.getItem(MEDIA_GRID_SIZE_KEY)
+    if (raw === 'sm' || raw === 'md' || raw === 'lg' || raw === 'xl') return raw
+  } catch {}
+  return 'md'
+}
+
+function MediaGridThumb({
+  thumb,
+  name,
+  type,
+  aspectClass,
+}: {
+  thumb: string | null
+  name: string
+  type: string
+  aspectClass: string
+}) {
+  const [loaded, setLoaded] = useState(false)
+  const [failed, setFailed] = useState(false)
+  const ext = (name.split('.').pop() || 'FILE').toUpperCase()
+
+  const url = thumb && !failed
+    ? (thumb.startsWith('mediagram://') || thumb.startsWith('teleflow://') || thumb.startsWith('data:') || thumb.startsWith('blob:') || thumb.startsWith('http')
+        ? thumb
+        : `teleflow://thumb/${thumb}`)
+    : null
+
+  const getMediaIcon = () => {
+    switch (type) {
+      case 'video':
+      case 'video_note':
+        return <Film size={26} className="text-primary/75" />
+      case 'photo':
+        return <ImageIcon size={26} className="text-cyan/75" />
+      case 'audio':
+        return <Music size={26} className="text-amber-400/75" />
+      case 'animation':
+        return <Sparkles size={26} className="text-pink-400/75" />
+      default:
+        return <FileText size={26} className="text-slate-400" />
+    }
+  }
+
+  return (
+    <div className={`relative w-full ${aspectClass} overflow-hidden bg-tile/90 select-none`}>
+      {url ? (
+        <>
+          {!loaded && (
+            <div className="absolute inset-0 bg-panel/90 animate-pulse flex flex-col items-center justify-center gap-1.5 z-10">
+              <div className="size-10 rounded-xl bg-tile border border-border/60 flex items-center justify-center">
+                {getMediaIcon()}
+              </div>
+              <span className="text-[9px] uppercase font-bold tracking-wider text-muted/70">{ext}</span>
+            </div>
+          )}
+          <img
+            src={url}
+            alt={name}
+            loading="lazy"
+            decoding="async"
+            onLoad={() => setLoaded(true)}
+            onError={() => setFailed(true)}
+            className={`w-full h-full object-cover transition-all duration-300 group-hover:scale-105 ${
+              loaded ? 'opacity-100 scale-100' : 'opacity-0 scale-[1.02]'
+            }`}
+          />
+        </>
+      ) : (
+        <div className="w-full h-full flex flex-col items-center justify-center gap-1.5 bg-gradient-to-br from-panel/90 via-tile/80 to-panel/90 text-muted p-2">
+          <div className="size-11 rounded-xl bg-panel/85 border border-border/60 flex items-center justify-center shadow-xs">
+            {getMediaIcon()}
+          </div>
+          <span className="text-[10px] font-bold uppercase tracking-wider text-muted">{ext}</span>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function MediaGridCard({
+  item,
+  index,
+  isSelected,
+  selectedCount,
+  gridSize,
+  aspectClass,
+  onToggleSelect,
+  onPreview,
+  onDownload,
+  onReveal,
+  onPrepare,
+}: {
+  item: any
+  index: number
+  isSelected: boolean
+  selectedCount: number
+  gridSize: 'sm' | 'md' | 'lg' | 'xl'
+  aspectClass: string
+  onToggleSelect: () => void
+  onPreview: () => void
+  onDownload: (force: boolean, e?: React.MouseEvent) => void
+  onReveal: () => void
+  onPrepare: () => void
+}) {
+  const isVideo = item.type === 'video' || item.type === 'video_note'
+
+  return (
+    <div
+      data-testid="media-grid-card"
+      data-message-id={item.messageId}
+      className={`group relative flex flex-col rounded-xl border transition-all duration-200 overflow-hidden ${
+        isSelected
+          ? 'border-primary bg-primary/10 ring-2 ring-primary/40 shadow-lg shadow-primary/10'
+          : 'border-border/80 bg-tile/60 hover:bg-tile hover:border-primary/50 hover:shadow-md'
+      }`}
+      onMouseEnter={onPrepare}
+    >
+      {/* Thumbnail Area with Overlays */}
+      <div
+        className="relative cursor-pointer overflow-hidden"
+        onClick={onPreview}
+        title="Click to preview"
+      >
+        <MediaGridThumb
+          thumb={item.thumb}
+          name={item.name}
+          type={item.type}
+          aspectClass={aspectClass}
+        />
+
+        {/* Ambient Dark Gradient on Hover */}
+        <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/20 to-black/35 opacity-40 group-hover:opacity-75 transition-opacity pointer-events-none" />
+
+        {/* Telegram Center Play Overlay for Videos */}
+        {isVideo && (
+          <div className="absolute inset-0 flex items-center justify-center pointer-events-none opacity-0 group-hover:opacity-100 transition-all duration-200">
+            <div className="size-11 rounded-full bg-black/60 backdrop-blur-md border border-white/25 text-white flex items-center justify-center shadow-xl group-hover:scale-110 transition-transform">
+              <Play size={18} className="fill-white ml-0.5" />
+            </div>
+          </div>
+        )}
+
+        {/* Top-Left: Selection Checkbox (refined Telegram circle) */}
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation()
+            onToggleSelect()
+          }}
+          className={`absolute top-2 left-2 z-20 size-[19px] rounded-full flex items-center justify-center transition-all cursor-pointer ${
+            isSelected
+              ? 'bg-primary text-white border-[1.5px] border-white shadow-sm opacity-100 scale-100'
+              : `bg-black/40 hover:bg-black/70 backdrop-blur-xs border-[1.5px] border-white/60 text-transparent hover:border-white shadow-xs ${
+                  selectedCount > 0 ? 'opacity-90' : 'opacity-0 group-hover:opacity-90'
+                }`
+          }`}
+          title={isSelected ? 'Deselect item' : 'Select item'}
+        >
+          <Check size={11} className={isSelected ? 'stroke-[3] text-white' : 'opacity-0'} />
+        </button>
+
+        {/* Top-Right: Quick Download / Saved Status */}
+        <div className="absolute top-2 right-2 z-20 flex items-center gap-1">
+          {item.status === 'downloaded' ? (
+            <div className="flex items-center gap-1">
+              <span className="flex items-center gap-1 rounded-full bg-emerald-500/90 backdrop-blur-md px-2 py-0.5 text-[10px] font-semibold text-white shadow-sm pointer-events-none">
+                <Check size={11} className="stroke-[3]" />
+                <span className={gridSize === 'sm' ? 'hidden' : 'inline'}>Saved</span>
+              </span>
+              {item.path && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onReveal()
+                  }}
+                  className="size-6.5 rounded-full bg-black/60 hover:bg-primary backdrop-blur-md border border-white/20 text-white flex items-center justify-center shadow-md transition-all hover:scale-110 cursor-pointer opacity-0 group-hover:opacity-100"
+                  title="Show in folder"
+                >
+                  <FolderOpen size={12} />
+                </button>
+              )}
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation()
+                onDownload(false, e)
+              }}
+              className="size-7 rounded-full bg-black/60 hover:bg-primary backdrop-blur-md border border-white/25 text-white flex items-center justify-center shadow-md transition-all hover:scale-110 cursor-pointer"
+              title="Download"
+            >
+              <Download size={13} />
+            </button>
+          )}
+        </div>
+
+        {/* Bottom-Right: Duration Badge */}
+        {item.duration ? (
+          <span className="absolute bottom-2 right-2 flex items-center gap-1 rounded-full bg-black/75 backdrop-blur-md px-2 py-0.5 text-[10.5px] font-medium text-white shadow-sm pointer-events-none">
+            <Play size={9} className="fill-white" />
+            <span>{fmtDuration(item.duration)}</span>
+          </span>
+        ) : null}
+
+        {/* Bottom-Left: Size Badge (shown on md, lg, xl sizes) */}
+        {gridSize !== 'sm' && (
+          <span className="absolute bottom-2 left-2 rounded-md bg-black/70 backdrop-blur-md px-1.5 py-0.5 text-[10px] font-medium text-slate-200 tabular-nums pointer-events-none shadow-sm">
+            {fmtBytes(item.size)}
+          </span>
+        )}
+      </div>
+
+      {/* Card Info Strip */}
+      <div className="p-2.5 flex flex-col justify-between flex-1 gap-1.5 bg-tile/40">
+        <div
+          className="font-medium text-[12.5px] text-text truncate group-hover:text-primary transition-colors cursor-pointer"
+          title={item.name}
+          onClick={onPreview}
+        >
+          {item.name}
+        </div>
+        <div className="flex items-center justify-between gap-1 text-[11px] text-muted">
+          <div className="flex items-center gap-1.5 min-w-0">
+            <TypeChip ext={item.ext} />
+            <span className="text-[11px] tabular-nums text-text-2 font-medium shrink-0">{fmtBytes(item.size)}</span>
+            {gridSize !== 'sm' && (
+              item.status === 'downloaded' ? (
+                <span className="text-[10.5px] text-emerald-400 font-semibold flex items-center gap-1 shrink-0">
+                  <span className="size-1.5 rounded-full bg-emerald-400" />
+                  Saved
+                </span>
+              ) : item.status === 'active' || item.status === 'downloading' ? (
+                <span className="text-[10.5px] text-cyan font-semibold flex items-center gap-1 animate-pulse shrink-0">
+                  <span className="size-1.5 rounded-full bg-cyan" />
+                  Downloading
+                </span>
+              ) : item.status === 'queued' ? (
+                <span className="text-[10.5px] text-amber-400 font-semibold shrink-0">Queued</span>
+              ) : null
+            )}
+          </div>
+          {gridSize !== 'sm' && item.status === 'downloaded' ? (
+            <div className="flex items-center gap-1 shrink-0">
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onDownload(true, e)
+                }}
+                className="rounded p-1 text-muted hover:text-primary hover:bg-tile transition-colors cursor-pointer"
+                title="Download again"
+              >
+                <RotateCcw size={13} />
+              </button>
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  )
 }
 
 export default function Downloads() {
@@ -253,6 +542,60 @@ export default function Downloads() {
       return 'files'
     }
   })
+  const [globalFileViewMode, setGlobalFileViewMode] = useState<'table' | 'grid'>(loadInitialFileViewMode)
+  const [globalGridSize, setGlobalGridSize] = useState<'sm' | 'md' | 'lg' | 'xl'>(loadInitialGridSize)
+
+  const [sidebarWidth, setSidebarWidth] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('mediagram_chats_sidebar_width')
+      if (saved) {
+        const parsed = parseInt(saved, 10)
+        if (parsed >= 260 && parsed <= 520) return parsed
+      }
+    } catch {}
+    return 300
+  })
+  const [isResizingSidebar, setIsResizingSidebar] = useState(false)
+  const sidebarWidthRef = useRef(sidebarWidth)
+  sidebarWidthRef.current = sidebarWidth
+
+  const handleSidebarResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault()
+    setIsResizingSidebar(true)
+    const startX = e.clientX
+    const startWidth = sidebarWidthRef.current
+
+    const onMouseMove = (moveEvent: MouseEvent) => {
+      const delta = moveEvent.clientX - startX
+      const newWidth = Math.min(520, Math.max(260, startWidth + delta))
+      setSidebarWidth(newWidth)
+    }
+
+    const onMouseUp = () => {
+      setIsResizingSidebar(false)
+      window.removeEventListener('mousemove', onMouseMove)
+      window.removeEventListener('mouseup', onMouseUp)
+      try {
+        localStorage.setItem('mediagram_chats_sidebar_width', String(sidebarWidthRef.current))
+      } catch {}
+    }
+
+    window.addEventListener('mousemove', onMouseMove)
+    window.addEventListener('mouseup', onMouseUp)
+  }, [])
+
+  useEffect(() => {
+    try {
+      const p = new URLSearchParams(window.location.search).get('chat')
+      if (p) {
+        const id = Number(p)
+        if (!isNaN(id) && id !== 0) {
+          setChatId(id)
+          setView('chat')
+        }
+      }
+    } catch {}
+  }, [])
 
   useEffect(() => {
     try {
@@ -323,11 +666,129 @@ export default function Downloads() {
   const [inviteLoading, setInviteLoading] = useState(false)
   const [inviteRequestSent, setInviteRequestSent] = useState(false)
 
+  // Notification & Chat management (Pin, Mute, Archive, Leave, Select)
+  const { isPinned, togglePin, isMuted, toggleMute, isArchived, toggleArchive, addNotification } = useNotifications()
+  const [inArchiveFolder, setInArchiveFolder] = useState(false)
+  const [chatContextMenu, setChatContextMenu] = useState<{ x: number, y: number, chat: any } | null>(null)
+  const [leaveChatModal, setLeaveChatModal] = useState<any | null>(null)
+  const [isSelectingChats, setIsSelectingChats] = useState(false)
+  const [selectedChatIds, setSelectedChatIds] = useState<number[]>([])
+
+  // Close context menu on outside click
+  useEffect(() => {
+    const closeMenu = (e: MouseEvent) => {
+      if (e.button === 2) return
+      setChatContextMenu(null)
+    }
+    window.addEventListener('click', closeMenu)
+    return () => window.removeEventListener('click', closeMenu)
+  }, [])
+
   // Data fetching
   const { data: authData } = useCall<any>('auth.get', undefined, ['auth'])
   const me = authData?.me
 
   const { data: chatsData, error: chatsErr, reload: chatsReload } = useCall<{ chats: any[], folders: any[] }>('chats.list', {}, ['chats'])
+
+  // Register muted chats from chatsData
+  useEffect(() => {
+    if (chatsData?.chats) {
+      const mutedIds = chatsData.chats.filter((c: any) => c.isMuted).map((c: any) => c.id)
+      if (mutedIds.length > 0) registerMutedChats(mutedIds)
+    }
+  }, [chatsData])
+
+  // Chat action helpers
+  const handleTogglePinChat = async (c: any) => {
+    setChatContextMenu(null)
+    const next = !isPinned(c.id)
+    togglePin(c.id)
+    try {
+      await call('chats.pin', { chatId: c.id, pin: next })
+      chatsReload()
+    } catch {}
+  }
+
+  const handleToggleMuteChat = async (c: any) => {
+    setChatContextMenu(null)
+    const next = !isMuted(c.id)
+    toggleMute(c.id)
+    try {
+      await call('chats.mute', { chatId: c.id, mute: next })
+      chatsReload()
+    } catch {}
+  }
+
+  const handleToggleArchiveChat = async (c: any) => {
+    setChatContextMenu(null)
+    const next = !isArchived(c.id)
+    toggleArchive(c.id)
+    try {
+      await call('chats.archive', { chatId: c.id, archive: next })
+      chatsReload()
+    } catch {}
+  }
+
+  const handleStartSelectChat = (c: any) => {
+    setChatContextMenu(null)
+    setIsSelectingChats(true)
+    setSelectedChatIds((prev) => Array.from(new Set([...prev, c.id])))
+  }
+
+  const handleLeaveChatConfirm = async () => {
+    if (!leaveChatModal) return
+    const targetChat = leaveChatModal
+    setLeaveChatModal(null)
+    try {
+      await call('chats.leave', { chatId: targetChat.id })
+      toast(`Left "${targetChat.title}"`)
+      if (activeChatId === targetChat.id) {
+        setChatId(null)
+      }
+      chatsReload()
+    } catch (e: any) {
+      toast(e.message || 'Failed to leave chat', 'danger')
+    }
+  }
+
+  const handleBatchPin = async () => {
+    const ids = [...selectedChatIds]
+    const allAlreadyPinned = ids.every((id) => isPinned(id))
+    const next = !allAlreadyPinned
+    ids.forEach((id) => {
+      if (isPinned(id) !== next) togglePin(id)
+    })
+    for (const id of ids) {
+      await call('chats.pin', { chatId: id, pin: next }).catch(() => {})
+    }
+    chatsReload()
+  }
+
+  const handleBatchMute = async () => {
+    const ids = [...selectedChatIds]
+    const allAlreadyMuted = ids.every((id) => isMuted(id))
+    const next = !allAlreadyMuted
+    ids.forEach((id) => {
+      if (isMuted(id) !== next) toggleMute(id)
+    })
+    for (const id of ids) {
+      await call('chats.mute', { chatId: id, mute: next }).catch(() => {})
+    }
+    chatsReload()
+  }
+
+  const handleBatchArchive = async () => {
+    const ids = [...selectedChatIds]
+    const allAlreadyArchived = ids.every((id) => isArchived(id))
+    const next = !allAlreadyArchived
+    ids.forEach((id) => {
+      if (isArchived(id) !== next) toggleArchive(id)
+    })
+    for (const id of ids) {
+      await call('chats.archive', { chatId: id, archive: next }).catch(() => {})
+    }
+    chatsReload()
+  }
 
   // chats.list already arrives in Telegram's own order (main-list position: pinned first, then most recent),
   // so the sidebar keeps it: re-sorting by date would sink pinned chats and the chats TDLib has no last message for.
@@ -411,12 +872,41 @@ export default function Downloads() {
   const setMediaOnlyChat = (v: boolean | ((prev: boolean) => boolean)) => updateActiveChatFilter({ mediaOnlyChat: typeof v === 'function' ? v(mediaOnlyChat) : v })
   const setChatMsgSearch = (v: string) => updateActiveChatFilter({ chatMsgSearch: v })
 
-  // Filter chats by kind/search; the order stays Telegram's - newest activity (and pinned chats) at the top
-  const filteredChats = allChats
-    .filter((c) => {
+  const fileViewMode = currentFilter.fileViewMode || globalFileViewMode
+  const gridSize = currentFilter.gridSize || globalGridSize
+
+  const setFileViewMode = (mode: 'table' | 'grid') => {
+    setGlobalFileViewMode(mode)
+    try {
+      localStorage.setItem(MEDIA_VIEW_MODE_KEY, mode)
+    } catch {}
+    updateActiveChatFilter({ fileViewMode: mode })
+  }
+
+  const setGridSize = (size: 'sm' | 'md' | 'lg' | 'xl') => {
+    setGlobalGridSize(size)
+    try {
+      localStorage.setItem(MEDIA_GRID_SIZE_KEY, size)
+    } catch {}
+    updateActiveChatFilter({ gridSize: size })
+  }
+
+  // Archived chats list
+  const archivedChatsList = useMemo(() => {
+    return allChats.filter((c: any) => isArchived(c.id) || c.isArchived)
+  }, [allChats, isArchived])
+
+  // Filter chats by kind/search/archive, with pinned chats pinned to the top
+  const filteredChats = useMemo(() => {
+    const sourceList = inArchiveFolder
+      ? archivedChatsList
+      : allChats.filter((c: any) => !(isArchived(c.id) || c.isArchived))
+
+    const list = sourceList.filter((c: any) => {
       if (chatSearch && !c.title.toLowerCase().includes(chatSearch.toLowerCase()) && !(c.username && c.username.toLowerCase().includes(chatSearch.toLowerCase()))) {
         return false
       }
+      if (inArchiveFolder) return true
       if (chatKind === 'channels') return c.kind === 'channel'
       if (chatKind === 'groups') return c.kind === 'group' || c.kind === 'supergroup'
       if (chatKind === 'folders') {
@@ -428,6 +918,15 @@ export default function Downloads() {
       }
       return true
     })
+
+    // Sort: pinned chats always stay on top
+    return [...list].sort((a: any, b: any) => {
+      const aPin = (isPinned(a.id) || a.isPinned) ? 1 : 0
+      const bPin = (isPinned(b.id) || b.isPinned) ? 1 : 0
+      if (aPin !== bPin) return bPin - aPin
+      return 0
+    })
+  }, [allChats, inArchiveFolder, archivedChatsList, chatSearch, chatKind, selectedFolderId, allFolders, isPinned, isArchived])
 
   // Media query params with custom size/duration sorting
   const resolvedSort =
@@ -1023,15 +1522,16 @@ export default function Downloads() {
                   onChange={(e) => setCustomSizeMin(e.target.value)}
                   className="w-full rounded-md border border-border bg-tile px-2.5 py-1.5 text-[13px] text-text outline-none focus:border-primary"
                 />
-                <select
+                <Select
                   value={customSizeMinUnit}
-                  onChange={(e) => setCustomSizeMinUnit(e.target.value as any)}
-                  className="rounded-md border border-border bg-tile px-2 py-1.5 text-[12px] text-text cursor-pointer"
-                >
-                  <option value="KB">KB</option>
-                  <option value="MB">MB</option>
-                  <option value="GB">GB</option>
-                </select>
+                  onChange={(v) => setCustomSizeMinUnit(v as any)}
+                  options={[
+                    { value: 'KB', label: 'KB' },
+                    { value: 'MB', label: 'MB' },
+                    { value: 'GB', label: 'GB' },
+                  ]}
+                  className="w-20"
+                />
               </div>
             </div>
             <div>
@@ -1046,15 +1546,16 @@ export default function Downloads() {
                   onChange={(e) => setCustomSizeMax(e.target.value)}
                   className="w-full rounded-md border border-border bg-tile px-2.5 py-1.5 text-[13px] text-text outline-none focus:border-primary"
                 />
-                <select
+                <Select
                   value={customSizeMaxUnit}
-                  onChange={(e) => setCustomSizeMaxUnit(e.target.value as any)}
-                  className="rounded-md border border-border bg-tile px-2 py-1.5 text-[12px] text-text cursor-pointer"
-                >
-                  <option value="KB">KB</option>
-                  <option value="MB">MB</option>
-                  <option value="GB">GB</option>
-                </select>
+                  onChange={(v) => setCustomSizeMaxUnit(v as any)}
+                  options={[
+                    { value: 'KB', label: 'KB' },
+                    { value: 'MB', label: 'MB' },
+                    { value: 'GB', label: 'GB' },
+                  ]}
+                  className="w-20"
+                />
               </div>
             </div>
           </div>
@@ -1088,15 +1589,16 @@ export default function Downloads() {
                   onChange={(e) => setCustomDurationMin(e.target.value)}
                   className="w-full rounded-md border border-border bg-tile px-2.5 py-1.5 text-[13px] text-text outline-none focus:border-primary"
                 />
-                <select
+                <Select
                   value={customDurationMinUnit}
-                  onChange={(e) => setCustomDurationMinUnit(e.target.value as any)}
-                  className="rounded-md border border-border bg-tile px-2 py-1.5 text-[12px] text-text cursor-pointer"
-                >
-                  <option value="sec">Sec</option>
-                  <option value="min">Min</option>
-                  <option value="hr">Hours</option>
-                </select>
+                  onChange={(v) => setCustomDurationMinUnit(v as any)}
+                  options={[
+                    { value: 'sec', label: 'Sec' },
+                    { value: 'min', label: 'Min' },
+                    { value: 'hr', label: 'Hours' },
+                  ]}
+                  className="w-20"
+                />
               </div>
             </div>
             <div>
@@ -1111,15 +1613,16 @@ export default function Downloads() {
                   onChange={(e) => setCustomDurationMax(e.target.value)}
                   className="w-full rounded-md border border-border bg-tile px-2.5 py-1.5 text-[13px] text-text outline-none focus:border-primary"
                 />
-                <select
+                <Select
                   value={customDurationMaxUnit}
-                  onChange={(e) => setCustomDurationMaxUnit(e.target.value as any)}
-                  className="rounded-md border border-border bg-tile px-2 py-1.5 text-[12px] text-text cursor-pointer"
-                >
-                  <option value="sec">Sec</option>
-                  <option value="min">Min</option>
-                  <option value="hr">Hours</option>
-                </select>
+                  onChange={(v) => setCustomDurationMaxUnit(v as any)}
+                  options={[
+                    { value: 'sec', label: 'Sec' },
+                    { value: 'min', label: 'Min' },
+                    { value: 'hr', label: 'Hours' },
+                  ]}
+                  className="w-20"
+                />
               </div>
             </div>
           </div>
@@ -1130,8 +1633,150 @@ export default function Downloads() {
         </div>
       </Dialog>
 
-      {/* Column 1: Chats & Channels (~300px) */}
-      <div className="flex w-[300px] shrink-0 flex-col border-r border-border bg-panel/40">
+      {/* Chat Right-Click Context Menu Tool Box */}
+      {chatContextMenu && (
+        <>
+          <div
+            className="fixed inset-0 z-40"
+            onClick={() => setChatContextMenu(null)}
+            onContextMenu={(e) => {
+              e.preventDefault()
+              setChatContextMenu(null)
+            }}
+          />
+          <div
+            style={{
+              top: `${chatContextMenu.y}px`,
+              left: `${chatContextMenu.x}px`,
+            }}
+            className="fixed z-50 min-w-[220px] rounded-2xl border border-border/80 bg-panel/95 backdrop-blur-xl p-1.5 shadow-2xl animate-in fade-in zoom-in-95 duration-100 select-none"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Target Chat Info preview */}
+            <div className="flex items-center gap-2 px-3 py-2 border-b border-border/50 mb-1">
+              <Avatar src={chatContextMenu.chat.photo} name={chatContextMenu.chat.title} size={24} />
+              <div className="min-w-0 flex-1">
+                <div className="text-[12px] font-semibold text-text truncate">{chatContextMenu.chat.title}</div>
+                <div className="text-[10.5px] text-muted truncate">
+                  {chatContextMenu.chat.username ? `@${chatContextMenu.chat.username}` : chatContextMenu.chat.kind}
+                </div>
+              </div>
+            </div>
+
+            {/* PIN / UNPIN */}
+            <button
+              type="button"
+              onClick={() => handleTogglePinChat(chatContextMenu.chat)}
+              className="flex items-center gap-2.5 w-full px-3 py-2 text-[12.5px] rounded-xl text-text hover:bg-tile transition-colors cursor-pointer text-left"
+            >
+              {isPinned(chatContextMenu.chat.id) || chatContextMenu.chat.isPinned ? (
+                <>
+                  <PinOff size={15} className="text-muted" />
+                  <span>Unpin from Top</span>
+                </>
+              ) : (
+                <>
+                  <Pin size={15} className="text-primary" />
+                  <span>Pin to Top</span>
+                </>
+              )}
+            </button>
+
+            {/* MUTE / UNMUTE (wired to notifications) */}
+            <button
+              type="button"
+              onClick={() => handleToggleMuteChat(chatContextMenu.chat)}
+              className="flex items-center gap-2.5 w-full px-3 py-2 text-[12.5px] rounded-xl text-text hover:bg-tile transition-colors cursor-pointer text-left"
+            >
+              {isMuted(chatContextMenu.chat.id) || chatContextMenu.chat.isMuted ? (
+                <>
+                  <Bell size={15} className="text-primary" />
+                  <span>Unmute Notifications</span>
+                </>
+              ) : (
+                <>
+                  <BellOff size={15} className="text-muted" />
+                  <span>Mute Notifications</span>
+                </>
+              )}
+            </button>
+
+            {/* ARCHIVE / UNARCHIVE (make archive work like a folder) */}
+            <button
+              type="button"
+              onClick={() => handleToggleArchiveChat(chatContextMenu.chat)}
+              className="flex items-center gap-2.5 w-full px-3 py-2 text-[12.5px] rounded-xl text-text hover:bg-tile transition-colors cursor-pointer text-left"
+            >
+              {isArchived(chatContextMenu.chat.id) || chatContextMenu.chat.isArchived ? (
+                <>
+                  <FolderUp size={15} className="text-primary" />
+                  <span>Unarchive Chat</span>
+                </>
+              ) : (
+                <>
+                  <Archive size={15} className="text-muted" />
+                  <span>Archive Chat</span>
+                </>
+              )}
+            </button>
+
+            {/* LEAVE CHAT / CHANNEL (Not applicable for personal Saved Messages) */}
+            {chatContextMenu.chat.kind !== 'saved' && (
+              <>
+                <div className="h-px bg-border/50 my-1" />
+                <button
+                  type="button"
+                  onClick={() => {
+                    const target = chatContextMenu.chat
+                    setChatContextMenu(null)
+                    setLeaveChatModal(target)
+                  }}
+                  className="flex items-center gap-2.5 w-full px-3 py-2 text-[12.5px] rounded-xl text-danger hover:bg-danger/10 transition-colors cursor-pointer text-left font-medium"
+                >
+                  <LogOut size={15} className="text-danger" />
+                  <span>{chatContextMenu.chat.kind === 'channel' ? 'Leave Channel' : 'Leave Chat'}</span>
+                </button>
+              </>
+            )}
+          </div>
+        </>
+      )}
+
+      {/* Leave Chat / Channel Confirmation Dialog */}
+      <Dialog
+        open={!!leaveChatModal}
+        onClose={() => setLeaveChatModal(null)}
+        title={leaveChatModal?.kind === 'channel' ? 'Leave Channel' : 'Leave Chat'}
+      >
+        <div className="space-y-4">
+          <p className="text-[13px] text-text-2 leading-relaxed">
+            Are you sure you want to leave <strong className="text-text font-semibold">{leaveChatModal?.title}</strong>? You will no longer receive new messages or media from this {leaveChatModal?.kind || 'chat'}.
+          </p>
+          <div className="flex justify-end gap-2 pt-2 border-t border-border">
+            <Button
+              variant="secondary"
+              onClick={() => setLeaveChatModal(null)}
+              className="px-4 py-1.5 text-[12.5px]"
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="danger"
+              onClick={handleLeaveChatConfirm}
+              className="flex items-center gap-1.5 px-4 py-1.5 text-[12.5px]"
+            >
+              <LogOut size={14} />
+              <span>Leave {leaveChatModal?.kind === 'channel' ? 'Channel' : 'Chat'}</span>
+            </Button>
+          </div>
+        </div>
+      </Dialog>
+
+      {/* Column 1: Chats & Channels (Resizable) */}
+      <div
+        style={{ width: `${sidebarWidth}px`, minWidth: 260, maxWidth: 520 }}
+        className="flex shrink-0 flex-col border-r border-border bg-panel/40 select-none overflow-hidden"
+      >
         <div className="flex items-center justify-between border-b border-border p-3.5">
           <div className="text-[14px] font-semibold text-text tracking-wide">Chats &amp; Channels</div>
           <button
@@ -1150,14 +1795,27 @@ export default function Downloads() {
             onChange={setChatSearch}
           />
           <div className="flex flex-wrap gap-1">
-            <Chip label="All" active={chatKind === 'all'} onClick={() => { setChatKind('all'); setSelectedFolderId(null) }} />
-            <Chip label="Channels" active={chatKind === 'channels'} onClick={() => { setChatKind('channels'); setSelectedFolderId(null) }} />
-            <Chip label="Groups" active={chatKind === 'groups'} onClick={() => { setChatKind('groups'); setSelectedFolderId(null) }} />
+            <Chip
+              label="All"
+              active={!inArchiveFolder && chatKind === 'all'}
+              onClick={() => { setInArchiveFolder(false); setChatKind('all'); setSelectedFolderId(null) }}
+            />
+            <Chip
+              label="Channels"
+              active={!inArchiveFolder && chatKind === 'channels'}
+              onClick={() => { setInArchiveFolder(false); setChatKind('channels'); setSelectedFolderId(null) }}
+            />
+            <Chip
+              label="Groups"
+              active={!inArchiveFolder && chatKind === 'groups'}
+              onClick={() => { setInArchiveFolder(false); setChatKind('groups'); setSelectedFolderId(null) }}
+            />
             {allFolders.length > 0 && (
               <Chip
                 label="Folders"
-                active={chatKind === 'folders'}
+                active={!inArchiveFolder && chatKind === 'folders'}
                 onClick={() => {
+                  setInArchiveFolder(false)
                   setChatKind('folders')
                   if (selectedFolderId === null && allFolders.length > 0) {
                     setSelectedFolderId(allFolders[0].id)
@@ -1200,81 +1858,226 @@ export default function Downloads() {
           </div>
         )}
 
-        <div className="flex-1 overflow-y-auto p-2 space-y-1">
+        {isSelectingChats && (
+          <div className="p-2 border-b border-border bg-panel/70 flex flex-col gap-1.5 text-[12px]">
+            <div className="flex items-center justify-between">
+              <span className="font-semibold text-text">{selectedChatIds.length} selected</span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (selectedChatIds.length === filteredChats.length) {
+                      setSelectedChatIds([])
+                    } else {
+                      setSelectedChatIds(filteredChats.map((c: any) => c.id))
+                    }
+                  }}
+                  className="text-[11px] text-primary hover:underline cursor-pointer"
+                >
+                  {selectedChatIds.length === filteredChats.length ? 'Deselect All' : 'Select All'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsSelectingChats(false)
+                    setSelectedChatIds([])
+                  }}
+                  className="text-[11px] text-muted hover:text-text cursor-pointer"
+                >
+                  Done
+                </button>
+              </div>
+            </div>
+            {selectedChatIds.length > 0 && (
+              <div className="flex items-center gap-1 pt-1 overflow-x-auto">
+                <Button variant="secondary" className="py-0.5 px-2 text-[10.5px] flex items-center gap-1" onClick={handleBatchPin}>
+                  <Pin size={11} /> Pin
+                </Button>
+                <Button variant="secondary" className="py-0.5 px-2 text-[10.5px] flex items-center gap-1" onClick={handleBatchMute}>
+                  <BellOff size={11} /> Mute
+                </Button>
+                <Button variant="secondary" className="py-0.5 px-2 text-[10.5px] flex items-center gap-1" onClick={handleBatchArchive}>
+                  <Archive size={11} /> Archive
+                </Button>
+              </div>
+            )}
+          </div>
+        )}
+
+        <div className="flex-1 overflow-y-auto p-2 space-y-1 no-scrollbar">
           {chatsErr ? (
             <ErrorState error={chatsErr} onRetry={chatsReload} />
           ) : !chatsData ? (
             <div className="space-y-2 p-2">
               {[...Array(6)].map((_, i) => <Skeleton key={i} className="h-12 w-full" />)}
             </div>
-          ) : filteredChats.length === 0 ? (
-            <div className="py-8 text-center text-muted text-[12px]">
-              <p>{chatKind === 'folders' ? 'No chats in this folder' : 'No chats found'}</p>
-              <Button variant="secondary" className="mt-2 text-[11px] py-1 px-3" onClick={() => setOpenChat(true)}>Connect Channel</Button>
-            </div>
           ) : (
-            filteredChats.map((c: any) => {
-              const active = activeChatId === c.id
-              return (
+            <>
+              {/* In Archive Folder header */}
+              {inArchiveFolder && (
+                <div className="flex items-center justify-between p-2 mb-1.5 rounded-xl border border-primary/30 bg-primary/10">
+                  <button
+                    type="button"
+                    onClick={() => setInArchiveFolder(false)}
+                    className="flex items-center gap-2 text-[12.5px] font-semibold text-text hover:text-primary transition-colors cursor-pointer"
+                  >
+                    <ArrowLeft size={15} />
+                    <span>Archived Chats</span>
+                    <span className="text-[11px] text-muted font-normal">({archivedChatsList.length})</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setInArchiveFolder(false)}
+                    className="text-[11px] text-primary hover:underline cursor-pointer"
+                  >
+                    Back
+                  </button>
+                </div>
+              )}
+
+              {/* Archive folder item row at top of main chat list */}
+              {!inArchiveFolder && archivedChatsList.length > 0 && (
                 <div
-                  key={c.id}
                   onClick={() => {
-                    if (c.id !== activeChatId) {
-                      const savedMode = chatViewModes[c.id] || 'files'
-                      setView(savedMode)
-                    }
-                    setChatId(c.id)
-                    setSelectedIds([])
-                    setChannelMenuOpen(false)
-                    c.unread = 0
+                    setInArchiveFolder(true)
+                    setSelectedFolderId(null)
                   }}
-                  className={`group relative flex w-full items-center gap-2.5 rounded-lg p-2 text-left transition-colors cursor-pointer ${
-                    active ? 'bg-primary/20 border border-primary/30 text-text' : 'hover:bg-tile text-text-2 hover:text-text'
-                  }`}
+                  className="flex w-full items-center gap-2.5 rounded-xl p-2 text-left transition-colors cursor-pointer hover:bg-tile/80 border border-border/60 bg-tile/40 group mb-1.5 shadow-2xs"
                 >
-                  <Avatar src={c.photo} name={c.title} size={32} />
+                  <span className="grid size-8 shrink-0 place-items-center rounded-lg border border-primary/25 bg-primary/10 text-primary">
+                    <Archive size={16} />
+                  </span>
                   <div className="min-w-0 flex-1">
-                    {/* Line 1 never moves: the time is nowrap, so an unread badge (line 2) cannot squeeze it
-                        into a second line or push the title around. */}
-                    <div className="flex items-center gap-2">
-                      <div className="min-w-0 flex-1 truncate text-[13px] font-medium text-text" title={c.title}>{c.title}</div>
-                      {c.lastDate ? (
-                        <span className="shrink-0 whitespace-nowrap text-[11px] text-muted" title={fmtDate(c.lastDate)}>
-                          {fmtAgo(c.lastDate)}
-                        </span>
-                      ) : null}
+                    <div className="flex items-center justify-between">
+                      <div className="text-[13px] font-semibold text-text group-hover:text-primary transition-colors">Archived Chats</div>
+                      <span className="text-[10.5px] font-medium text-muted bg-panel px-1.5 py-0.5 rounded border border-border">
+                        {archivedChatsList.length}
+                      </span>
                     </div>
-                    <div className="flex items-center justify-between gap-2 text-[11px] text-muted">
-                      {typingMap[c.id] ? (
-                        <span className="min-w-0 truncate text-cyan font-medium animate-pulse flex items-center gap-1">
-                          <span className="size-1.5 rounded-full bg-cyan animate-ping inline-block shrink-0" />
-                          <span className="min-w-0 truncate">{typingMap[c.id]}</span>
-                        </span>
-                      ) : (
-                        <span className="min-w-0 truncate" title={c.username ? `@${c.username}` : c.kind}>
-                          {c.username ? `@${c.username}` : c.kind}
-                        </span>
-                      )}
-                      {c.unread > 0 && (
-                        <span className="shrink-0 rounded-full bg-primary px-1.5 py-0.5 text-[10px] font-bold text-white">
-                          {c.unread}
-                        </span>
-                      )}
+                    <div className="text-[11px] text-muted truncate mt-0.5">
+                      {archivedChatsList.length === 1 ? '1 chat archived' : `${archivedChatsList.length} chats archived`}
                     </div>
                   </div>
-                  {active && scan?.state === 'scanning' && (
-                    <span
-                      className="flex shrink-0 items-center gap-1 rounded-full bg-primary/20 px-1.5 py-0.5 text-[10px] font-semibold text-primary"
-                      title="Indexing this chat's media"
-                    >
-                      <span className="size-1.5 animate-pulse rounded-full bg-primary" /> Indexing
-                    </span>
+                </div>
+              )}
+
+              {filteredChats.length === 0 ? (
+                <div className="py-8 text-center text-muted text-[12px]">
+                  <p>{inArchiveFolder ? 'No archived chats' : chatKind === 'folders' ? 'No chats in this folder' : 'No chats found'}</p>
+                  {inArchiveFolder ? (
+                    <Button variant="secondary" className="mt-2 text-[11px] py-1 px-3" onClick={() => setInArchiveFolder(false)}>Back to Chats</Button>
+                  ) : (
+                    <Button variant="secondary" className="mt-2 text-[11px] py-1 px-3" onClick={() => setOpenChat(true)}>Connect Channel</Button>
                   )}
                 </div>
-              )
-            })
+              ) : (
+                filteredChats.map((c: any) => {
+                  const active = activeChatId === c.id
+                  const isChatPinnedNow = isPinned(c.id) || Boolean(c.isPinned)
+                  const isChatMutedNow = isMuted(c.id) || Boolean(c.isMuted)
+                  const isSelected = selectedChatIds.includes(c.id)
+
+                  return (
+                    <div
+                      key={c.id}
+                      onContextMenu={(e) => {
+                        e.preventDefault()
+                        e.stopPropagation()
+                        const menuWidth = 220
+                        const menuHeight = 240
+                        const x = Math.min(window.innerWidth - menuWidth - 10, Math.max(10, e.clientX))
+                        const y = Math.min(window.innerHeight - menuHeight - 10, Math.max(10, e.clientY))
+                        setChatContextMenu({ x, y, chat: c })
+                      }}
+                      onClick={() => {
+                        if (isSelectingChats) {
+                          setSelectedChatIds((prev) =>
+                            prev.includes(c.id) ? prev.filter((id) => id !== c.id) : [...prev, c.id]
+                          )
+                          return
+                        }
+                        if (c.id !== activeChatId) {
+                          const savedMode = chatViewModes[c.id] || 'files'
+                          setView(savedMode)
+                        }
+                        setChatId(c.id)
+                        setSelectedIds([])
+                        setChannelMenuOpen(false)
+                        c.unread = 0
+                      }}
+                      className={`group relative flex w-full items-center gap-3 rounded-xl py-2.5 px-3 text-left transition-all cursor-pointer select-none min-h-[58px] ${
+                        active
+                          ? 'bg-primary/20 border border-primary/30 text-text'
+                          : 'hover:bg-tile/80 text-text-2 hover:text-text border border-transparent'
+                      }`}
+                    >
+                      <Avatar src={c.photo} name={c.title} size={38} />
+                      <div className="min-w-0 flex-1 flex flex-col justify-center gap-1">
+                        <div className="flex items-center justify-between gap-1.5 leading-tight">
+                          <span className="min-w-0 truncate text-[13.5px] font-semibold text-text" title={c.title}>
+                            {c.title}
+                          </span>
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            {isChatMutedNow && (
+                              <span title="Muted notifications" className="inline-flex items-center text-muted">
+                                <BellOff size={11} />
+                              </span>
+                            )}
+                            {isChatPinnedNow && (
+                              <span title="Pinned to top" className="inline-flex items-center text-primary">
+                                <Pin size={11} />
+                              </span>
+                            )}
+                            {c.lastDate ? (
+                              <span className="whitespace-nowrap text-[11px] text-muted ml-0.5" title={fmtDate(c.lastDate)}>
+                                {fmtAgo(c.lastDate)}
+                              </span>
+                            ) : null}
+                          </div>
+                        </div>
+                        <div className="flex items-center justify-between gap-2 text-[11.5px] text-muted leading-tight">
+                          {typingMap[c.id] ? (
+                            <span className="min-w-0 truncate text-cyan font-medium flex items-center gap-1.5 leading-none">
+                              <span className="relative flex size-2 items-center justify-center shrink-0">
+                                <span className="absolute inline-flex size-full rounded-full bg-cyan opacity-75 animate-ping" />
+                                <span className="relative inline-flex size-1.5 rounded-full bg-cyan" />
+                              </span>
+                              <span className="min-w-0 truncate leading-none">{typingMap[c.id]}</span>
+                            </span>
+                          ) : (
+                            <span className="min-w-0 truncate" title={c.username ? `@${c.username}` : c.kind}>
+                              {c.username ? `@${c.username}` : c.kind}
+                            </span>
+                          )}
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            {c.unread > 0 && (
+                              <span className="flex items-center justify-center min-w-5 h-4.5 px-1.5 rounded-full bg-primary text-[10.5px] font-bold text-white shadow-xs">
+                                {c.unread > 99 ? '99+' : c.unread}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )
+                })
+              )}
+            </>
           )}
         </div>
+      </div>
+
+      {/* Resize Handle / Support Divider */}
+      <div
+        onMouseDown={handleSidebarResizeStart}
+        className={`relative w-2.5 -ml-1 shrink-0 z-20 cursor-col-resize select-none group flex items-center justify-center transition-colors ${
+          isResizingSidebar ? 'bg-primary/40' : 'hover:bg-primary/25'
+        }`}
+        title="Drag to resize Chats & Channels panel"
+      >
+        <div className={`w-0.5 h-10 rounded-full transition-colors ${
+          isResizingSidebar ? 'bg-primary' : 'bg-border/80 group-hover:bg-primary'
+        }`} />
       </div>
 
       {/* Column 2: Files View / Chat View (Center flexible) */}
@@ -1364,18 +2167,6 @@ export default function Downloads() {
                         : scan.state === 'paused'
                         ? 'Indexing Paused'
                         : 'Indexing Interrupted'}
-                    </span>
-                    <span
-                      className={`inline-flex items-center gap-1 px-1.5 py-0.2 rounded-full text-[10px] font-semibold border ${
-                        scan.state === 'failed'
-                          ? 'bg-danger/15 text-danger border-danger/30'
-                          : scan.state === 'paused'
-                          ? 'bg-amber-400/15 text-amber-500 border-amber-400/30'
-                          : 'bg-primary/15 text-primary border-primary/30'
-                      }`}
-                    >
-                      {scan.state === 'scanning' && <span className="size-1.5 rounded-full bg-primary animate-pulse" />}
-                      {scan.state === 'scanning' ? 'Live' : scan.state === 'paused' ? 'Paused' : 'Stopped'}
                     </span>
                   </div>
 
@@ -1481,56 +2272,12 @@ export default function Downloads() {
                 </div>
 
                 {/* Search files in this channel aligned with chat name */}
-                <div className="w-64 shrink-0">
+                <div className="w-72 shrink-0">
                   <SearchInput
                     placeholder="Search files in this channel…"
                     value={fileSearch}
                     onChange={(v) => { setFileSearch(v); setPage(1) }}
                   />
-                </div>
-
-                {/* 3-dot channel menu */}
-                <div className="relative">
-                  <button
-                    onClick={() => setChannelMenuOpen(!channelMenuOpen)}
-                    className="flex size-8 items-center justify-center rounded-lg border border-border bg-tile text-muted hover:text-text hover:border-primary transition-colors cursor-pointer"
-                    title="Channel Actions"
-                  >
-                    <MoreVertical size={16} />
-                  </button>
-                  {channelMenuOpen && (
-                    <>
-                      <div className="fixed inset-0 z-40" onClick={() => setChannelMenuOpen(false)} />
-                      <div
-                        className="absolute right-0 top-full mt-1.5 z-50 w-48 rounded-xl border border-border bg-panel p-1.5 shadow-2xl backdrop-blur-xl space-y-0.5"
-                        onClick={() => setChannelMenuOpen(false)}
-                      >
-                        {activeChat.username && (
-                          <button
-                            onClick={() => copyChatLink(activeChat.username)}
-                            className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12px] text-text hover:bg-white/10 transition-colors"
-                          >
-                            <Copy size={13} className="text-muted" />
-                            <span>Copy Link</span>
-                          </button>
-                        )}
-                        <button
-                          onClick={() => clearChatHistory(activeChat.id, activeChat.title)}
-                          className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12px] text-text hover:bg-white/10 transition-colors"
-                        >
-                          <RotateCcw size={13} className="text-muted" />
-                          <span>Clear Chat History</span>
-                        </button>
-                        <button
-                          onClick={() => confirmLeaveChat(activeChat.id, activeChat.title)}
-                          className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12px] text-danger hover:bg-danger/15 transition-colors"
-                        >
-                          <Trash2 size={13} />
-                          <span>Leave / Delete Channel</span>
-                        </button>
-                      </div>
-                    </>
-                  )}
                 </div>
               </div>
             )}
@@ -1613,6 +2360,52 @@ export default function Downloads() {
                   Edit Duration
                 </button>
               )}
+
+              {/* View mode toggle switch */}
+              <div className="flex items-center rounded-md border border-border bg-tile p-0.5" role="group" aria-label="View mode">
+                <button
+                  type="button"
+                  onClick={() => setFileViewMode('table')}
+                  className={`flex items-center gap-1.5 rounded px-2.5 py-1 text-[12px] transition-colors cursor-pointer ${
+                    fileViewMode === 'table' ? 'bg-primary text-white font-medium shadow-xs' : 'text-text-2 hover:text-text'
+                  }`}
+                  title="Table view"
+                >
+                  <List size={13} />
+                  <span>Table</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setFileViewMode('grid')}
+                  className={`flex items-center gap-1.5 rounded px-2.5 py-1 text-[12px] transition-colors cursor-pointer ${
+                    fileViewMode === 'grid' ? 'bg-primary text-white font-medium shadow-xs' : 'text-text-2 hover:text-text'
+                  }`}
+                  title="Grid view (Telegram)"
+                >
+                  <LayoutGrid size={13} />
+                  <span>Grid</span>
+                </button>
+              </div>
+
+              {/* Grid size switch (visible when Grid View is active) */}
+              {fileViewMode === 'grid' && (
+                <div className="flex items-center rounded-md border border-border bg-tile p-0.5 text-xs text-text-2" role="group" aria-label="Grid size">
+                  {(['sm', 'md', 'lg', 'xl'] as const).map((s) => (
+                    <button
+                      key={s}
+                      type="button"
+                      onClick={() => setGridSize(s)}
+                      className={`rounded px-2 py-0.5 uppercase text-[11px] font-semibold transition-colors cursor-pointer ${
+                        gridSize === s ? 'bg-primary text-white shadow-xs' : 'text-muted hover:text-text'
+                      }`}
+                      title={`Grid size: ${s === 'sm' ? 'Small' : s === 'md' ? 'Medium' : s === 'lg' ? 'Large' : 'Extra Large'}`}
+                    >
+                      {s.toUpperCase()}
+                    </button>
+                  ))}
+                </div>
+              )}
+
               <button
                 onClick={resetFilters}
                 className="flex items-center gap-1 rounded-md border border-border bg-tile px-2.5 py-1.5 text-[12px] text-text-2 hover:border-primary hover:text-text transition-colors"
@@ -1651,144 +2444,228 @@ export default function Downloads() {
               </div>
             )}
 
-            {/* Files View Table */}
-            <div className="rounded-[14px] border border-border bg-panel/85 p-3 flex-1 flex flex-col justify-between">
-              {mediaErr ? (
-                <ErrorState error={mediaErr} onRetry={mediaReload} />
-              ) : !mediaData ? (
-                <div className="space-y-3 p-4">
-                  {[...Array(7)].map((_, i) => <Skeleton key={i} className="h-10 w-full" />)}
-                </div>
-              ) : mediaItems.length === 0 ? (
-                <div className="py-16 text-center">
-                  <Empty message="No media files found matching the criteria" />
-                  <Button variant="secondary" onClick={resetFilters} className="mt-2 text-[12px]">Reset filters</Button>
-                </div>
-              ) : (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-[13px]">
-                    <thead className="border-b border-border text-[12px] text-muted">
-                      <tr>
-                        <th className="py-2.5 px-1 text-center w-10">
-                          <button onClick={toggleSelectAll} className="text-muted hover:text-text">
+            {/* Files View Table or Telegram Grid */}
+            {(() => {
+              const gridColsClass =
+                gridSize === 'sm'
+                  ? 'grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-7 2xl:grid-cols-8 gap-2.5'
+                  : gridSize === 'md'
+                  ? 'grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-3.5'
+                  : gridSize === 'lg'
+                  ? 'grid grid-cols-1 sm:grid-cols-2 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4'
+                  : 'grid grid-cols-1 sm:grid-cols-1 md:grid-cols-2 lg:grid-cols-2 xl:grid-cols-3 gap-5'
+
+              const aspectClass =
+                gridSize === 'sm' ? 'aspect-square' : gridSize === 'md' ? 'aspect-[16/10]' : 'aspect-video'
+
+              return (
+                <div className="rounded-[14px] border border-border bg-panel/85 p-3 flex-1 flex flex-col justify-between">
+                  {mediaErr ? (
+                    <ErrorState error={mediaErr} onRetry={mediaReload} />
+                  ) : !mediaData ? (
+                    fileViewMode === 'grid' ? (
+                      <div className={gridColsClass}>
+                        {[...Array(gridSize === 'sm' ? 14 : gridSize === 'md' ? 8 : 6)].map((_, i) => (
+                          <div key={i} className="rounded-xl border border-border/60 bg-tile/50 p-2 space-y-2">
+                            <Skeleton className={`w-full ${aspectClass} rounded-lg`} />
+                            <Skeleton className="h-4 w-3/4 rounded" />
+                            <div className="flex justify-between">
+                              <Skeleton className="h-3 w-1/4 rounded" />
+                              <Skeleton className="h-3 w-1/4 rounded" />
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="space-y-3 p-4">
+                        {[...Array(7)].map((_, i) => <Skeleton key={i} className="h-10 w-full" />)}
+                      </div>
+                    )
+                  ) : mediaItems.length === 0 ? (
+                    <div className="py-16 text-center">
+                      <Empty message="No media files found matching the criteria" />
+                      <Button variant="secondary" onClick={resetFilters} className="mt-2 text-[12px]">Reset filters</Button>
+                    </div>
+                  ) : fileViewMode === 'grid' ? (
+                    <div>
+                      {/* Grid sub-toolbar: Select all and item counter */}
+                      <div className="flex items-center justify-between pb-2.5 mb-3 border-b border-border/60 text-[12px] text-muted">
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={toggleSelectAll}
+                            className="flex items-center gap-1.5 text-muted hover:text-text transition-colors cursor-pointer select-none"
+                          >
                             {selectedIds.length === mediaItems.length && mediaItems.length > 0 ? (
                               <CheckSquare size={15} className="text-primary" />
                             ) : (
                               <Square size={15} />
                             )}
+                            <span className="font-medium">Select All</span>
                           </button>
-                        </th>
-                        <th className="py-2.5 px-1 text-center w-10 text-muted font-normal">#</th>
-                        <th className="py-2.5 px-2 text-center w-16 font-medium">Preview</th>
-                        <th className="py-2.5 px-3 text-left w-[36%] font-medium">File Name</th>
-                        <th className="py-2.5 px-2 text-center w-20 font-medium">Type</th>
-                        <th className="py-2.5 px-2 text-center w-24 font-medium">Size</th>
-                        <th className="py-2.5 px-2 text-center w-24 font-medium">Duration</th>
-                        <th className="py-2.5 px-2 text-center w-32 font-medium">Status</th>
-                        <th className="py-2.5 px-3 text-right w-24 font-medium">Action</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-border">
-                      {mediaItems.map((m: any, i: number) => {
-                        const isSelected = selectedIds.includes(m.messageId)
-                        return (
-                          <tr key={m.messageId} className={`hover:bg-tile/70 transition-colors ${isSelected ? 'bg-primary/10' : ''}`}>
-                            <td className="py-2.5 px-1 text-center">
-                              <button onClick={() => toggleSelect(m.messageId)} className="text-muted hover:text-text">
-                                {isSelected ? <CheckSquare size={15} className="text-primary" /> : <Square size={15} />}
-                              </button>
-                            </td>
-                            <td className="py-2.5 px-1 text-center text-muted text-[11px]">{(page - 1) * 20 + i + 1}</td>
-                            <td
-                              className="py-2.5 px-2 text-center cursor-pointer hover:opacity-80 transition-opacity"
-                              title="Click for preview"
-                              onMouseEnter={() => {
-                                if ((m.type === 'video' || m.type === 'video_note') && m.messageId && activeChatId) {
+                          {selectedIds.length > 0 && (
+                            <span className="text-primary font-semibold">({selectedIds.length} selected)</span>
+                          )}
+                        </div>
+                        <div className="tabular-nums">
+                          Showing {mediaItems.length} of {mediaData.total} items
+                        </div>
+                      </div>
+
+                      {/* Telegram Media Grid */}
+                      <div className={gridColsClass}>
+                        {mediaItems.map((m: any, i: number) => {
+                          const isSelected = selectedIds.includes(m.messageId)
+                          return (
+                            <MediaGridCard
+                              key={m.messageId}
+                              item={m}
+                              index={(page - 1) * 20 + i + 1}
+                              isSelected={isSelected}
+                              selectedCount={selectedIds.length}
+                              gridSize={gridSize}
+                              aspectClass={aspectClass}
+                              onToggleSelect={() => toggleSelect(m.messageId)}
+                              onPreview={() => setPreviewItem({ name: m.name, path: m.path, thumb: m.thumb, type: m.type, size: m.size, duration: m.duration, chatId: activeChatId || m.chatId, messageId: m.messageId })}
+                              onDownload={(force, e) => downloadItems([{ chatId: activeChatId!, messageId: m.messageId }], force, e)}
+                              onReveal={() => m.path && revealFile(m.path)}
+                              onPrepare={() => {
+                                if (isPrebufferEnabled() && (m.type === 'video' || m.type === 'video_note') && m.messageId && activeChatId) {
                                   call('media.prepare', { chatId: activeChatId, messageId: m.messageId }).catch(() => {})
                                 }
                               }}
-                              onClick={() => setPreviewItem({ name: m.name, path: m.path, thumb: m.thumb, type: m.type, size: m.size, duration: m.duration, chatId: activeChatId || m.chatId, messageId: m.messageId })}
-                            >
-                              <div className="flex justify-center">
-                                <Thumb src={m.thumb ? `teleflow://thumb/${m.thumb}` : null} name={m.name} />
-                              </div>
-                            </td>
-                            <td className="py-2.5 px-3 min-w-0">
-                              <div
-                                className="font-medium truncate text-text cursor-pointer hover:text-primary transition-colors text-[13px]"
-                                title={m.name}
-                                onMouseEnter={() => {
-                                  if ((m.type === 'video' || m.type === 'video_note') && m.messageId && activeChatId) {
-                                    call('media.prepare', { chatId: activeChatId, messageId: m.messageId }).catch(() => {})
-                                  }
-                                }}
-                                onClick={() => setPreviewItem({ name: m.name, path: m.path, thumb: m.thumb, type: m.type, size: m.size, duration: m.duration, chatId: activeChatId || m.chatId, messageId: m.messageId })}
-                              >
-                                {m.name}
-                              </div>
-                            </td>
-                            <td className="py-2.5 px-2 text-center">
-                              <TypeChip ext={m.ext} />
-                            </td>
-                            <td className="py-2.5 px-2 text-center tabular-nums text-text-2 font-medium">
-                              {fmtBytes(m.size)}
-                            </td>
-                            <td className="py-2.5 px-2 text-center tabular-nums text-muted text-[12px]">
-                              {m.duration ? fmtDuration(m.duration) : '-'}
-                            </td>
-                            <td className="py-2.5 px-2 text-center">
-                              <Pill status={m.status} />
-                            </td>
-                            <td className="py-2.5 px-3 text-right">
-                              {m.status === 'downloaded' ? (
-                                <div className="flex items-center justify-end gap-1">
-                                  {m.path && (
-                                    <button
-                                      onClick={() => revealFile(m.path)}
-                                      className="rounded p-1.5 text-primary hover:bg-primary/20 transition-colors"
-                                      title="Show in folder"
-                                    >
-                                      <FolderOpen size={16} />
+                            />
+                          )
+                        })}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-[13px]">
+                        <thead className="border-b border-border text-[12px] text-muted">
+                          <tr>
+                            <th className="py-2.5 px-1 text-center w-10">
+                              <button onClick={toggleSelectAll} className="text-muted hover:text-text">
+                                {selectedIds.length === mediaItems.length && mediaItems.length > 0 ? (
+                                  <CheckSquare size={15} className="text-primary" />
+                                ) : (
+                                  <Square size={15} />
+                                )}
+                              </button>
+                            </th>
+                            <th className="py-2.5 px-1 text-center w-10 text-muted font-normal">#</th>
+                            <th className="py-2.5 px-2 text-center w-16 font-medium">Preview</th>
+                            <th className="py-2.5 px-3 text-left w-[36%] font-medium">File Name</th>
+                            <th className="py-2.5 px-2 text-center w-20 font-medium">Type</th>
+                            <th className="py-2.5 px-2 text-center w-24 font-medium">Size</th>
+                            <th className="py-2.5 px-2 text-center w-24 font-medium">Duration</th>
+                            <th className="py-2.5 px-2 text-center w-32 font-medium">Status</th>
+                            <th className="py-2.5 px-3 text-right w-24 font-medium">Action</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-border">
+                          {mediaItems.map((m: any, i: number) => {
+                            const isSelected = selectedIds.includes(m.messageId)
+                            return (
+                              <tr key={m.messageId} className={`hover:bg-tile/70 transition-colors ${isSelected ? 'bg-primary/10' : ''}`}>
+                                <td className="py-2.5 px-1 text-center">
+                                  <button onClick={() => toggleSelect(m.messageId)} className="text-muted hover:text-text">
+                                    {isSelected ? <CheckSquare size={15} className="text-primary" /> : <Square size={15} />}
+                                  </button>
+                                </td>
+                                <td className="py-2.5 px-1 text-center text-muted text-[11px]">{(page - 1) * 20 + i + 1}</td>
+                                <td
+                                  className="py-2.5 px-2 text-center cursor-pointer hover:opacity-80 transition-opacity"
+                                  title="Click for preview"
+                                  onMouseEnter={() => {
+                                    if (isPrebufferEnabled() && (m.type === 'video' || m.type === 'video_note') && m.messageId && activeChatId) {
+                                      call('media.prepare', { chatId: activeChatId, messageId: m.messageId }).catch(() => {})
+                                    }
+                                  }}
+                                  onClick={() => setPreviewItem({ name: m.name, path: m.path, thumb: m.thumb, type: m.type, size: m.size, duration: m.duration, chatId: activeChatId || m.chatId, messageId: m.messageId })}
+                                >
+                                  <div className="flex justify-center">
+                                    <Thumb src={m.thumb ? `teleflow://thumb/${m.thumb}` : null} name={m.name} />
+                                  </div>
+                                </td>
+                                <td className="py-2.5 px-3 min-w-0">
+                                  <div
+                                    className="font-medium truncate text-text cursor-pointer hover:text-primary transition-colors text-[13px]"
+                                    title={m.name}
+                                    onMouseEnter={() => {
+                                      if (isPrebufferEnabled() && (m.type === 'video' || m.type === 'video_note') && m.messageId && activeChatId) {
+                                        call('media.prepare', { chatId: activeChatId, messageId: m.messageId }).catch(() => {})
+                                      }
+                                    }}
+                                    onClick={() => setPreviewItem({ name: m.name, path: m.path, thumb: m.thumb, type: m.type, size: m.size, duration: m.duration, chatId: activeChatId || m.chatId, messageId: m.messageId })}
+                                  >
+                                    {m.name}
+                                  </div>
+                                </td>
+                                <td className="py-2.5 px-2 text-center">
+                                  <TypeChip ext={m.ext} />
+                                </td>
+                                <td className="py-2.5 px-2 text-center tabular-nums text-text-2 font-medium">
+                                  {fmtBytes(m.size)}
+                                </td>
+                                <td className="py-2.5 px-2 text-center tabular-nums text-muted text-[12px]">
+                                  {m.duration ? fmtDuration(m.duration) : '-'}
+                                </td>
+                                <td className="py-2.5 px-2 text-center">
+                                  <Pill status={m.status} />
+                                </td>
+                                <td className="py-2.5 px-3 text-right">
+                                  {m.status === 'downloaded' ? (
+                                    <div className="flex items-center justify-end gap-1">
+                                      {m.path && (
+                                        <button
+                                          onClick={() => revealFile(m.path)}
+                                          className="rounded p-1.5 text-primary hover:bg-primary/20 transition-colors"
+                                          title="Show in folder"
+                                        >
+                                          <FolderOpen size={16} />
+                                        </button>
+                                      )}
+                                      <button
+                                        onClick={() => downloadItems([{ chatId: activeChatId!, messageId: m.messageId }], true)}
+                                        className="rounded p-1.5 text-muted hover:text-primary hover:bg-tile transition-colors"
+                                        title="Download again"
+                                      >
+                                        <RotateCcw size={15} />
+                                      </button>
+                                    </div>
+                                  ) : (
+                                      <button
+                                        onClick={(e) => downloadItems([{ chatId: activeChatId!, messageId: m.messageId }], false, e)}
+                                        className="rounded p-1.5 text-muted hover:text-primary hover:bg-tile transition-colors"
+                                        title="Download"
+                                      >
+                                      <Download size={16} />
                                     </button>
                                   )}
-                                  <button
-                                    onClick={() => downloadItems([{ chatId: activeChatId!, messageId: m.messageId }], true)}
-                                    className="rounded p-1.5 text-muted hover:text-primary hover:bg-tile transition-colors"
-                                    title="Download again"
-                                  >
-                                    <RotateCcw size={15} />
-                                  </button>
-                                </div>
-                              ) : (
-                                  <button
-                                    onClick={(e) => downloadItems([{ chatId: activeChatId!, messageId: m.messageId }], false, e)}
-                                    className="rounded p-1.5 text-muted hover:text-primary hover:bg-tile transition-colors"
-                                    title="Download"
-                                  >
-                                  <Download size={16} />
-                                </button>
-                              )}
-                            </td>
-                          </tr>
-                        )
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              )}
+                                </td>
+                              </tr>
+                            )
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
 
-              {/* Pagination */}
-              {mediaData && mediaData.total > 20 && (
-                <div className="pt-3 border-t border-border mt-3">
-                  <Pagination
-                    page={page}
-                    pageSize={20}
-                    total={mediaData.total}
-                    onPage={setPage}
-                  />
+                  {/* Pagination */}
+                  {mediaData && mediaData.total > 20 && (
+                    <div className="pt-3 border-t border-border mt-3">
+                      <Pagination
+                        page={page}
+                        pageSize={20}
+                        total={mediaData.total}
+                        onPage={setPage}
+                      />
+                    </div>
+                  )}
                 </div>
-              )}
-            </div>
+              )
+            })()}
           </div>
         ) : (
           <ChatView
@@ -1807,6 +2684,10 @@ export default function Downloads() {
             onRevealFile={revealFile}
             onOpenLink={handleTelegramLink}
             activeTyping={activeTyping}
+            onSelectChat={(id) => {
+              setChatId(id)
+              setView('chat')
+            }}
           />
         )}
       </div>

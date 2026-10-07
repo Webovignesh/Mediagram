@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import {
   Send, Paperclip, Smile, Reply, Edit3, Pin, Trash2, Copy, Check, Clock, AlertCircle,
   MoreVertical, X, ChevronDown, Download, FolderOpen, Film, Play, FileText, CornerDownRight,
-  ExternalLink, Sparkles, Music, CornerUpRight, Eye, Volume2, Search
+  ExternalLink, Sparkles, Music, CornerUpRight, Eye, Volume2, Search, MessageSquare
 } from 'lucide-react'
 import { call, on } from '../api.ts'
 import { Avatar, Dialog, toast, fmtBytes, fmtDuration, MediagramLogo, CheckDuplicatesModal, ChatMediaThumb } from '../ui.tsx'
@@ -14,6 +14,14 @@ function fmtViews(views?: number | null): string {
   if (views >= 1_000_000) return (views / 1_000_000).toFixed(1).replace(/\.0$/, '') + 'M'
   if (views >= 1000) return (views / 1000).toFixed(1).replace(/\.0$/, '') + 'K'
   return String(views)
+}
+
+function isPrebufferEnabled(): boolean {
+  try {
+    const v = localStorage.getItem('mediagram_prebuffer_video')
+    if (v !== null) return v !== 'false'
+  } catch {}
+  return false
 }
 
 const QUICK_REACTIONS = ['👍', '❤️', '🔥', '🎉', '😂', '👏', '😢', '😍']
@@ -311,6 +319,7 @@ interface ChatViewProps {
   onRevealFile: (path: string) => void
   onOpenLink: (url: string) => void
   activeTyping: string | null
+  onSelectChat?: (chatId: number) => void
 }
 
 export function ChatView({
@@ -329,6 +338,7 @@ export function ChatView({
   onRevealFile,
   onOpenLink,
   activeTyping,
+  onSelectChat,
 }: ChatViewProps) {
   const [inputText, setInputText] = useState('')
   const [sending, setSending] = useState(false)
@@ -807,9 +817,12 @@ export function ChatView({
             </div>
             <div className="text-[12px] text-muted truncate leading-tight mt-0.5">
               {activeTyping ? (
-                <span className="text-primary font-medium animate-pulse flex items-center gap-1.5">
-                  <span className="size-1.5 rounded-full bg-primary animate-ping inline-block" />
-                  <span>{activeTyping}</span>
+                <span className="text-primary font-medium flex items-center gap-1.5 leading-none">
+                  <span className="relative flex size-2 items-center justify-center shrink-0">
+                    <span className="absolute inline-flex size-full rounded-full bg-primary opacity-75 animate-ping" />
+                    <span className="relative inline-flex size-1.5 rounded-full bg-primary" />
+                  </span>
+                  <span className="leading-none">{activeTyping}</span>
                 </span>
               ) : (
                 <>{activeChat?.username ? `@${activeChat.username}` : activeChat?.kind || 'Chat'} • {filteredMessages.length} messages</>
@@ -820,7 +833,8 @@ export function ChatView({
 
         {/* Search & Media filter */}
         <div className="flex items-center gap-2">
-          <div className="relative w-52">
+
+          <div className="relative w-48">
             <Search size={13} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
             <input
               type="text"
@@ -880,21 +894,12 @@ export function ChatView({
           const target = e.currentTarget
           const isNearBottom = target.scrollHeight - target.scrollTop - target.clientHeight < 120
           setShowScrollBottom(!isNearBottom)
+          if (target.scrollTop < 120 && hasMore && !loading) {
+            onLoadOlder()
+          }
         }}
         className="flex-1 overflow-y-auto overflow-x-hidden p-4 space-y-3.5 select-text z-10"
       >
-        {/* Load older messages button */}
-        {hasMore && (
-          <div className="flex justify-center py-2">
-            <button
-              type="button"
-              onClick={onLoadOlder}
-              className="text-[12px] rounded-full px-4 py-1.5 shadow-sm border border-border bg-tile text-text-2 hover:bg-tile/80 hover:text-text transition-all cursor-pointer"
-            >
-              Load older messages
-            </button>
-          </div>
-        )}
 
         {filteredMessages.length === 0 ? (
           <div className="py-24 text-center text-muted">
@@ -902,6 +907,15 @@ export function ChatView({
           </div>
         ) : (
           <div className="space-y-3 pb-2">
+            {/* Loading older messages spinner */}
+            {loading && hasMore && (
+              <div className="flex items-center justify-center py-2 my-1">
+                <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-tile/95 border border-border/80 shadow-xs text-text-2">
+                  <span className="size-3.5 border-2 border-primary border-t-transparent rounded-full animate-spin shrink-0" />
+                  <span className="text-[11.5px] font-medium text-muted">Loading older messages…</span>
+                </div>
+              </div>
+            )}
             {/* Render in chronological order */}
             {[...filteredMessages].reverse().map((m: any, idx: number, arr: any[]) => {
               const currentDateGroup = getDateGroup(m.date)
@@ -1048,17 +1062,17 @@ export function ChatView({
                                 <div
                                   className="relative w-full overflow-hidden bg-black/40 cursor-pointer group/media select-none"
                                   onMouseEnter={() => {
-                                    if (m.media?.type === 'video' || m.media?.type === 'photo') {
+                                    if (isPrebufferEnabled() && (m.media?.type === 'video' || m.media?.type === 'photo')) {
                                       call('media.prepare', { chatId, messageId: m.id }).catch(() => {})
                                     }
                                   }}
                                   onClick={() => onOpenViewer({ name: m.media.name, path: m.media.path, thumb: m.media.thumb, type: m.media.type, size: m.media.size, duration: m.media.duration, chatId, messageId: m.id })}
                                 >
                                   <ChatMediaThumb
-                                    src={m.media.thumb}
+                                    src={(m.media.status === 'downloaded' && m.media.path) ? `mediagram://file/${encodeURIComponent(m.media.path)}` : m.media.thumb}
                                     alt={m.media.name}
-                                    minHeight="180px"
-                                    maxHeight="460px"
+                                    minHeight="140px"
+                                    maxHeight="480px"
                                     className="transition-transform duration-300 group-hover/media:scale-[1.01]"
                                   />
 
@@ -1193,16 +1207,16 @@ export function ChatView({
                               <div
                                 className="relative rounded-2xl overflow-hidden shadow-xl max-w-[460px] w-full group/media cursor-pointer select-none"
                                 onMouseEnter={() => {
-                                  if (m.media?.type === 'video' || m.media?.type === 'photo') {
+                                  if (isPrebufferEnabled() && (m.media?.type === 'video' || m.media?.type === 'photo')) {
                                     call('media.prepare', { chatId, messageId: m.id }).catch(() => {})
                                   }
                                 }}
                                 onClick={() => onOpenViewer({ name: m.media.name, path: m.media.path, thumb: m.media.thumb, type: m.media.type, size: m.media.size, duration: m.media.duration, chatId, messageId: m.id })}
                               >
                                 <ChatMediaThumb
-                                  src={m.media.thumb}
+                                  src={(m.media.status === 'downloaded' && m.media.path) ? `mediagram://file/${encodeURIComponent(m.media.path)}` : m.media.thumb}
                                   alt={m.media.name}
-                                  minHeight="180px"
+                                  minHeight="140px"
                                   maxHeight="480px"
                                   className="rounded-2xl transition-transform duration-300 group-hover/media:scale-[1.01]"
                                 />
