@@ -1,6 +1,6 @@
 {
   "name": "mediagram",
-  "version": "1.2.2",
+  "version": "1.2.6",
   "private": true,
   "description": "Desktop download and upload manager for Telegram media, powered by TDLib.",
   "type": "module",
@@ -45,6 +45,9 @@
   "build": {
     "appId": "com.mediagram.app",
     "productName": "Mediagram",
+    "electronDownload": {
+      "isVerifyChecksum": false
+    },
     "asar": true,
     "electronFuses": {
       "runAsNode": false,
