@@ -152,18 +152,14 @@ export function IconTile({ icon, tone = 'primary' }: { icon: ReactNode, tone?: T
 export function Stat({ icon, tone, label, value, split }: { 
   icon: ReactNode, tone?: Tone, label: string, value: number | string | undefined, split?: string 
 }) {
-  const row = 'flex items-center'
+  if (value === undefined) return <div className="flex gap-3"><IconTile icon={icon} tone={tone} /><div className="h-10 w-20 animate-pulse rounded bg-tile" /></div>
   return (
     <div className="flex gap-3">
       <IconTile icon={icon} tone={tone} />
-      <div className="min-w-0">
-        <div className={`${row} h-[18px] text-[12px] leading-none text-muted`}>{label}</div>
-        <div className={`${row} h-[30px]`}>
-          {value === undefined
-            ? <div className="h-5 w-12 animate-pulse rounded bg-tile" />
-            : <span className="text-[22px] font-bold leading-none tabular-nums">{typeof value === 'number' ? fmtCount(value) : value}</span>}
-        </div>
-        <div className={`${row} h-4 text-[11px] leading-none text-text-2`}>{split}</div>
+      <div>
+        <div className="text-[12px] text-muted">{label}</div>
+        <div className="text-[22px] font-bold tabular-nums">{typeof value === 'number' ? fmtCount(value) : value}</div>
+        {split && <div className="text-[11px] text-text-2">{split}</div>}
       </div>
     </div>
   )
