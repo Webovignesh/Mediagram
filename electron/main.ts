@@ -350,12 +350,10 @@ function startup() {
         const isTemp = file.toLowerCase().startsWith(tempPrefix.toLowerCase())
         const fileId = isTemp ? parseInt(path.basename(file), 10) : NaN
         const knownId = !isNaN(fileId) && fileId > 0
-        // Bytes readable from offset 0. Never read past what has actually been written sequentially.
+        // Bytes readable from offset 0: everything up to currentSize written sequentially to disk.
         const readableSize = async (size: number) => {
           if (!knownId || size <= 0) return size
-          const end = await telegram.getReadableEnd(fileId)
-          if (end === null) return size
-          return Math.max(0, Math.min(size, end))
+          return size
         }
 
         if (req.method === 'HEAD') {
@@ -385,10 +383,13 @@ function startup() {
             // demuxer halts the moment it walks into mdat and asks for that tail: answering 416 kills
             // the decoder for good, so serve it from the cached tail instead. Only a range the download
             // cannot answer yet takes this path — a plain forward read never waits on it.
-            if (knownId && start > 0 && start >= availableSize && start >= Math.max(0, totalSize - 16 * 1024 * 1024)) {
+            const isTailRequest = knownId && start > 0 && start >= availableSize && start >= Math.max(0, totalSize - 16 * 1024 * 1024)
+            if (isTailRequest) {
               let tail = telegram.getVideoTail(fileId)
               const covered = tail && start >= tail.tailOffset && start < tail.tailOffset + tail.buffer.length
-              if (!covered) tail = (await telegram.fetchVideoTail(fileId, totalSize, start).catch(() => undefined)) || undefined
+              if (!covered) {
+                tail = (await telegram.fetchVideoTail(fileId, totalSize, start).catch(() => undefined)) || undefined
+              }
               if (tail && start >= tail.tailOffset && start < tail.tailOffset + tail.buffer.length) {
                 const end = Math.min(requestedEnd, totalSize - 1, tail.tailOffset + tail.buffer.length - 1)
                 if (end >= start) {
@@ -406,12 +407,22 @@ function startup() {
                   })
                 }
               }
+              // If the tail cannot be fetched, return 416 immediately rather than blocking
+              // or stalling sequential playback streams for 45 seconds.
+              return new Response(null, {
+                status: 416,
+                statusText: 'Range Not Satisfiable',
+                headers: {
+                  ...mediaHeaders,
+                  'Content-Range': `bytes */${totalSize}`,
+                },
+              })
             }
 
             // Hold the request while the sequential download catches up. Chromium treats 416 as a
             // hard media error, so give plenty of time and keep TDLib download prioritized.
             if (start >= availableSize && availableSize < totalSize) {
-              const deadline = Date.now() + 45000
+              const deadline = Date.now() + 30000
               let last = availableSize
               let stalled = 0
               while (Date.now() < deadline && availableSize <= start) {

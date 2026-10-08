@@ -1834,7 +1834,6 @@ export async function readFileRange(fileId: number, offset: number, count: numbe
         chunks.push(buf)
         currentOffset += buf.length
         remaining -= buf.length
-        if (buf.length < toRead) break
       } else {
         break
       }
@@ -1846,11 +1845,11 @@ export async function readFileRange(fileId: number, offset: number, count: numbe
   return chunks.length > 0 ? Buffer.concat(chunks) : null
 }
 
-const TAIL_BASE = 3 * 1024 * 1024 // covers the moov of an ordinary non-faststart MP4
+const TAIL_BASE = 5 * 1024 * 1024 // covers the moov of an ordinary non-faststart MP4
 const TAIL_MAX = 16 * 1024 * 1024 // ceiling when a long recording carries an unusually large moov
 
 /**
- * Fetches the tail (last ~3 MB) of a video from Telegram so Chromium can parse the moov atom of a
+ * Fetches the tail (last ~5 MB) of a video from Telegram so Chromium can parse the moov atom of a
  * non-faststart MP4 immediately instead of waiting for the whole file. `fromOffset` widens the window
  * when Chromium asks for a byte earlier than the cached tail starts at. The bytes land in an in-memory
  * cache (see getVideoTail); the sequential download is always handed back to byte 0 afterwards, since
@@ -1870,13 +1869,16 @@ export async function fetchVideoTail(fileId: number, totalSize: number, fromOffs
   if (cached && covers(cached, need)) return cached
 
   const inflight = videoTailInflight.get(fileId)
-  if (inflight) return inflight
+  if (inflight) {
+    const res = await inflight
+    if (res && covers(res, need)) return res
+  }
 
   const promise = (async (): Promise<VideoTail | null> => {
     try {
       const tailOffset = want
       const tailSize = Math.max(1, totalSize - tailOffset)
-      const budget = Math.min(8000, 2500 + Math.ceil(tailSize / (1024 * 1024)) * 400)
+      const budget = 30000
 
       // Ask TDLib for exactly this range; synchronous resolves once the range has landed (bounded).
       let timedOut = false
@@ -1887,14 +1889,12 @@ export async function fetchVideoTail(fileId: number, totalSize: number, fromOffs
         ])
       } catch {}
 
-      // Read it back. synchronous resolving means the range is on disk already, so one pass is
-      // enough; only a timeout (TDLib still filling it) is worth polling a few times.
+      // Read it back. synchronous resolving means the range is in TDLib cache.
       let buf: Buffer | null = null
-      for (let attempt = 0, attempts = timedOut ? 4 : 1; attempt < attempts; attempt++) {
-        if (attempt > 0) await new Promise((r) => setTimeout(r, 300))
+      for (let attempt = 0, attempts = timedOut ? 15 : 1; attempt < attempts; attempt++) {
+        if (attempt > 0) await new Promise((r) => setTimeout(r, 200))
         const next = await readFileRange(fileId, tailOffset, tailSize)
         if (!next) continue
-        if (buf && next.length <= buf.length) break // no further progress
         buf = next
         if (buf.length >= tailSize) break
       }
