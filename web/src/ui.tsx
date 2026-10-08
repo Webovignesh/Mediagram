@@ -1211,6 +1211,37 @@ export function MediagramLogo({ size = 20, className = '' }: { size?: number, cl
   )
 }
 
+/**
+ * The one place a media failure becomes a sentence. Prefer the element's own MediaError: a
+ * rejected play() usually fires *after* one and reporting its generic name instead would replace
+ * "The connection dropped" with the useless "Playback is unavailable".
+ */
+function describeMediaError(err: MediaError | null, rejection?: string): string {
+  if (err && err.code > 1) {
+    if (err.code === 2) return 'The connection dropped while loading this file'
+    if (err.code === 4) return "This file's format isn't supported"
+    return 'Playback failed'
+  }
+  return rejection === 'NotSupportedError' ? "This file can't be played" : 'Playback is unavailable'
+}
+
+/** Everything worth knowing when a player dies, so console and main.log agree on why. */
+function logMediaFailure(where: string, v: HTMLVideoElement | null, err: MediaError | null, rejection?: string) {
+  const detail = {
+    mediaError: err ? { code: err.code, message: err.message } : null,
+    rejection: rejection ?? null,
+    networkState: v?.networkState,
+    readyState: v?.readyState,
+    currentSrc: v?.currentSrc,
+    duration: v?.duration,
+    seekable: v && v.seekable.length ? `${v.seekable.start(0)}..${v.seekable.end(v.seekable.length - 1)}` : 'none',
+    buffered: v && v.buffered.length ? `${v.buffered.start(0)}..${v.buffered.end(v.buffered.length - 1)}` : 'none',
+  }
+  // One string, not a string plus an object: the packaged build forwards only the message text to
+  // main.log, and an object argument there prints as "[object Object]" — losing the reason entirely.
+  console.warn(`[player] ${where}: ${JSON.stringify(detail)}`)
+}
+
 function CustomVideoPlayer({
   src,
   speed,
@@ -1240,8 +1271,17 @@ function CustomVideoPlayer({
   const [buffering, setBuffering] = useState(true)
   const [hasStarted, setHasStarted] = useState(false)
   const [bufferedEnd, setBufferedEnd] = useState(0)
+  const [mediaError, setMediaError] = useState<string | null>(null)
   const hideTimerRef = useRef<NodeJS.Timeout | null>(null)
   const prevSrcRef = useRef(src)
+  // `playing` is what the user asked for; the element's own `paused` flag is what actually happened.
+  // The watchdog below reconciles the two, so a rejected play() can never leave the controls dead.
+  const wantPlayingRef = useRef(true)
+  const dlPct = isCompleted ? 100 : downloadProgress && downloadProgress.total > 0
+    ? Math.min(100, Math.max(0, (downloadProgress.downloaded / downloadProgress.total) * 100))
+    : 0
+  const dlPctRef = useRef(dlPct)
+  dlPctRef.current = dlPct
 
   useEffect(() => {
     if (initialDuration && initialDuration > 0 && (!duration || duration === 0)) {
@@ -1250,7 +1290,11 @@ function CustomVideoPlayer({
   }, [initialDuration, duration])
 
   const updateBuffered = () => {
-    if (videoRef.current && videoRef.current.buffered.length > 0) {
+    if (!videoRef.current || videoRef.current.buffered.length === 0) {
+      setBufferedEnd(0)
+      return
+    }
+    if (videoRef.current.buffered.length > 0) {
       const b = videoRef.current.buffered
       const cur = videoRef.current.currentTime
       let activeEnd = 0
@@ -1264,30 +1308,126 @@ function CustomVideoPlayer({
       if (activeEnd === 0 && b.length > 0) {
         activeEnd = b.end(0)
       }
-      if (activeEnd > 0) {
-        setBufferedEnd(activeEnd)
-      }
+      setBufferedEnd(activeEnd)
     }
+  }
+
+  const retryTimerRef = useRef<NodeJS.Timeout | null>(null)
+  const retryCountRef = useRef(0)
+  const retryTimeRef = useRef<number | null>(null)
+  const retryRestoreCleanupRef = useRef<(() => void) | null>(null)
+  // The first failure of a cycle is the real one: later retries report generic symptoms (load()
+  // clears MediaError, so the next play() rejects with a bare NotSupportedError) and would
+  // otherwise replace "The connection dropped" with the useless "This file can't be played".
+  const firstErrorRef = useRef<string | null>(null)
+
+  /** Only a network failure can benefit from an automatic reload. */
+  const failWith = (message: string, retryable: boolean) => {
+    if (!firstErrorRef.current) firstErrorRef.current = message
+    setMediaError(firstErrorRef.current)
+    if (retryable) scheduleRetry()
+    else {
+      if (retryTimerRef.current) clearTimeout(retryTimerRef.current)
+      retryTimerRef.current = null
+    }
+  }
+
+  /**
+   * Calls play() and keeps React state in sync with what the element actually did.
+   * Optimistically flipping `playing` before the promise settles is what previously made the
+   * controls unresponsive: a rejected play() left React showing "Pause" forever while the
+   * element sat paused, so every further click just rejected again.
+   */
+  const attemptPlay = () => {
+    const v = videoRef.current
+    if (!v) return
+    wantPlayingRef.current = true
+    v.play()
+      .then(() => {
+        // Playback is alive: cancel any queued reload, otherwise a pending retry would call
+        // load() on a video that is already running and reset it.
+        clearRetries()
+        setPlaying(true)
+        setMediaError(null)
+        if (!v.seeking && v.readyState >= 3) setBuffering(false)
+      })
+      .catch((err: unknown) => {
+        const name = (err as DOMException)?.name || 'Error'
+        // Aborted by a newer load()/src change — that attempt owns playback now.
+        if (name === 'AbortError') return
+        const mediaErr = videoRef.current?.error ?? null
+        logMediaFailure('play() rejected', videoRef.current, mediaErr, name)
+        setPlaying(false)
+        setBuffering(false)
+        if (name === 'NotAllowedError') {
+          // Autoplay refused: hand control back to the user instead of pretending.
+          wantPlayingRef.current = false
+        } else {
+          // The element's own MediaError is the real story; a rejected play() only reports that
+          // one happened, and its generic name would replace a useful message with a useless one.
+          failWith(describeMediaError(mediaErr, name), mediaErr?.code === 2)
+        }
+      })
+  }
+
+  const reloadForRetry = () => {
+    const v = videoRef.current
+    if (!v) return
+    const saved = retryTimeRef.current ?? v.currentTime
+    retryTimeRef.current = saved
+    retryRestoreCleanupRef.current?.()
+    const restore = () => {
+      if (saved > 0) v.currentTime = saved
+      retryRestoreCleanupRef.current = null
+    }
+    v.addEventListener('loadedmetadata', restore, { once: true })
+    retryRestoreCleanupRef.current = () => v.removeEventListener('loadedmetadata', restore)
+    setBuffering(true)
+    v.load()
+    attemptPlay()
+  }
+
+  const scheduleRetry = () => {
+    // error and play() rejection often report the same failure; keep one timer and count reloads.
+    if (retryTimerRef.current || retryCountRef.current >= 5 || !wantPlayingRef.current) return
+    retryTimerRef.current = setTimeout(() => {
+      retryTimerRef.current = null
+      const v = videoRef.current
+      if (!v || !wantPlayingRef.current || (v.error && v.error.code !== 2)) return
+      retryCountRef.current++
+      reloadForRetry()
+    }, 1000 * (retryCountRef.current + 1))
+  }
+
+  const clearRetries = () => {
+    retryCountRef.current = 0
+    firstErrorRef.current = null
+    if (retryTimerRef.current) clearTimeout(retryTimerRef.current)
+    retryTimerRef.current = null
+    retryTimeRef.current = null
+    retryRestoreCleanupRef.current?.()
+    retryRestoreCleanupRef.current = null
   }
 
   // Preserve playback position if source changes (e.g. transitioning from temp to finished file)
   useEffect(() => {
-    if (prevSrcRef.current !== src) {
-      prevSrcRef.current = src
-      const savedTime = currentTime
-      const wasPlaying = playing
-      if (videoRef.current) {
-        const onLoaded = () => {
-          if (videoRef.current) {
-            if (savedTime > 0) videoRef.current.currentTime = savedTime
-            if (wasPlaying) videoRef.current.play().catch(() => {})
-          }
-          videoRef.current?.removeEventListener('loadedmetadata', onLoaded)
-        }
-        videoRef.current.addEventListener('loadedmetadata', onLoaded)
+    if (prevSrcRef.current === src) return
+    prevSrcRef.current = src
+    const savedTime = currentTime
+    const v = videoRef.current
+    if (!v) return
+    const onLoaded = () => {
+      const el = videoRef.current
+      if (el) {
+        if (savedTime > 0) el.currentTime = savedTime
+        if (wantPlayingRef.current) attemptPlay()
       }
+      v.removeEventListener('loadedmetadata', onLoaded)
     }
-  }, [src, currentTime, playing])
+    v.addEventListener('loadedmetadata', onLoaded)
+    return () => v.removeEventListener('loadedmetadata', onLoaded)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [src])
 
   useEffect(() => {
     if (videoRef.current) {
@@ -1298,30 +1438,67 @@ function CustomVideoPlayer({
   // Playback attempt on mount or source change
   useEffect(() => {
     if (!src) return
+    clearRetries()
     setHasStarted(false)
     setBuffering(true)
-    if (videoRef.current) {
-      videoRef.current.play().catch(() => {})
+    setMediaError(null)
+    setBufferedEnd(0)
+    if (wantPlayingRef.current) attemptPlay()
+    return () => {
+      if (retryTimerRef.current) clearTimeout(retryTimerRef.current)
+      retryRestoreCleanupRef.current?.()
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [src])
 
-  // Reload and start playing when background download completes if playback hasn't started yet
-  useEffect(() => {
-    if (isCompleted && videoRef.current) {
-      if (!hasStarted) {
-        videoRef.current.load()
-        videoRef.current.play().catch(() => {})
-      }
-    }
-  }, [isCompleted, hasStarted])
 
   // Auto-resume playback as background download buffer expands
   useEffect(() => {
     const v = videoRef.current
-    if (v && playing && v.paused && v.readyState >= 2) {
-      v.play().catch(() => {})
-    }
-  }, [downloadProgress?.downloaded, isCompleted, playing])
+    if (v && wantPlayingRef.current && v.paused && !mediaError && v.readyState >= 2) attemptPlay()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [downloadProgress?.downloaded, isCompleted, mediaError])
+
+  // Watchdog: reconcile React state with the element. A play() that silently failed, an aborted
+  // load(), or a recovered media error would otherwise leave the UI claiming it is playing.
+  useEffect(() => {
+    const id = setInterval(() => {
+      const v = videoRef.current
+      if (!v || !wantPlayingRef.current || mediaError) return
+      if (v.paused && !v.ended) attemptPlay()
+    }, 1000)
+    return () => clearInterval(id)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mediaError])
+
+  // While buffering, record what the element itself sees. `buffering` is React state driven by
+  // media events, so it reads "stuck at 0%" for reasons that are invisible from React — bytes that
+  // never arrived, a decoder holding only metadata, or a stalled clock. One line every five
+  // seconds separates "the server has nothing to send" from "the server is sending and the decoder
+  // will not accept it", which is the whole question when playback only works once fully downloaded.
+  useEffect(() => {
+    if (!buffering || mediaError) return
+    const id = setInterval(() => {
+      const v = videoRef.current
+      if (!v) return
+      const b = v.buffered
+      const spans: string[] = []
+      for (let i = 0; i < b.length; i++) spans.push(`${b.start(i).toFixed(2)}-${b.end(i).toFixed(2)}`)
+      console.warn(
+        `[player] buffering readyState=${v.readyState} networkState=${v.networkState} paused=${v.paused} ` +
+        `t=${v.currentTime.toFixed(2)}/${Number.isFinite(v.duration) ? v.duration.toFixed(2) : '?'} ` +
+        `buffered=[${spans.join(' ')}] downloaded=${Math.round(dlPctRef.current)}%`,
+      )
+    }, 5000)
+    return () => clearInterval(id)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [buffering, mediaError])
+
+  useEffect(() => () => {
+    if (hideTimerRef.current) clearTimeout(hideTimerRef.current)
+    if (retryTimerRef.current) clearTimeout(retryTimerRef.current)
+    retryRestoreCleanupRef.current?.()
+  }, [])
 
   const resetHideTimer = () => {
     setShowControls(true)
@@ -1334,12 +1511,14 @@ function CustomVideoPlayer({
   const togglePlay = () => {
     const v = videoRef.current
     if (!v) return
-    if (v.paused) {
-      v.play().catch(() => {})
-      setPlaying(true)
+    if (v.paused || v.ended) {
+      if (v.ended) v.currentTime = 0
+      attemptPlay()
     } else {
+      wantPlayingRef.current = false
       v.pause()
       setPlaying(false)
+      setBuffering(false)
     }
     resetHideTimer()
   }
@@ -1377,21 +1556,17 @@ function CustomVideoPlayer({
     }
   }
 
-  const dlPct = downloadProgress && downloadProgress.total > 0
-    ? Math.min(100, Math.max(0, (downloadProgress.downloaded / downloadProgress.total) * 100))
-    : 0
-
   const handleSeek = (posFraction: number) => {
-    // When downloading in background, clamp seek target to decoded or downloaded boundary
-    const maxFraction = isCompleted ? 1 : Math.max(dlPct / 100, (duration > 0 ? bufferedEnd / duration : 0), 0.05)
-    const clampedFraction = Math.max(0, Math.min(maxFraction, posFraction))
+    if (duration <= 0) return // metadata unknown: a seek would silently resolve to 0
+    // Every position is seekable. Clamping to what is already downloaded turned a seek into a
+    // dead end; the media server now waits for bytes the download has not reached, so seeking past
+    // the frontier buffers under a spinner instead of failing.
+    const clampedFraction = Math.max(0, Math.min(1, posFraction))
     const newTime = Math.max(0, Math.min(duration, clampedFraction * duration))
     if (videoRef.current) {
       videoRef.current.currentTime = newTime
       setCurrentTime(newTime)
-      if (playing && videoRef.current.paused) {
-        videoRef.current.play().catch(() => {})
-      }
+      if (wantPlayingRef.current && videoRef.current.paused) attemptPlay()
     }
   }
 
@@ -1444,7 +1619,7 @@ function CustomVideoPlayer({
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [playing, duration, volume, muted, isCompleted, dlPct])
+  }, [playing, duration, volume, muted, isCompleted, dlPct, bufferedEnd, speed])
 
   const formatTime = (secs: number) => {
     if (isNaN(secs) || secs < 0) return '0:00'
@@ -1454,8 +1629,7 @@ function CustomVideoPlayer({
   }
 
   const progressPct = duration > 0 ? Math.min(100, Math.max(0, (currentTime / duration) * 100)) : 0
-  const timeBufferedPct = duration > 0 ? Math.min(100, Math.max(0, (bufferedEnd / duration) * 100)) : 0
-  const actualBufferedPct = isCompleted ? 100 : timeBufferedPct
+  const actualBufferedPct = duration > 0 ? Math.min(100, Math.max(0, (bufferedEnd / duration) * 100)) : 0
 
   return (
     <div
@@ -1495,6 +1669,7 @@ function CustomVideoPlayer({
           preload="auto"
           onClick={togglePlay}
           onProgress={updateBuffered}
+          onEmptied={updateBuffered}
           onTimeUpdate={() => {
             if (videoRef.current) {
               setCurrentTime(videoRef.current.currentTime)
@@ -1511,18 +1686,21 @@ function CustomVideoPlayer({
           onLoadStart={() => setBuffering(true)}
           onWaiting={() => setBuffering(true)}
           onSeeking={() => setBuffering(true)}
-          onSeeked={() => setBuffering(false)}
+          onSeeked={() => {
+            setBuffering(false)
+            if (wantPlayingRef.current) attemptPlay()
+          }}
           onCanPlay={() => {
             setBuffering(false)
-            if (playing && videoRef.current?.paused) {
-              videoRef.current.play().catch(() => {})
-            }
+            if (wantPlayingRef.current && videoRef.current?.paused) attemptPlay()
           }}
           onLoadedData={() => {
             setBuffering(false)
             setHasStarted(true)
           }}
           onPlaying={() => {
+            clearRetries()
+            setMediaError(null)
             setPlaying(true)
             setBuffering(false)
             setHasStarted(true)
@@ -1533,24 +1711,57 @@ function CustomVideoPlayer({
           onPause={() => {
             setPlaying(false)
           }}
-          onError={() => {
+          onEnded={() => {
+            wantPlayingRef.current = false
+            setPlaying(false)
             setBuffering(false)
+            setShowControls(true)
+          }}
+          onError={() => {
+            const err = videoRef.current?.error ?? null
+            setBuffering(false)
+            // MEDIA_ERR_ABORTED is our own load() interrupting an in-flight request — not a fault.
+            if (!err || err.code === 1) return
+            logMediaFailure('media error', videoRef.current, err)
+            setPlaying(false)
+            failWith(describeMediaError(err), err.code === 2)
           }}
           className="relative z-10 w-full h-full object-contain cursor-pointer"
         />
       )}
 
-      {/* Center buffering spinner when waiting for media */}
-      {buffering && playing && (
-        <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-20">
+      {/* Center buffering spinner when waiting for media — shown whether playing or paused, since a
+          seek into the not-yet-downloaded part waits just the same */}
+      {buffering && !mediaError && (
+        <div data-testid="player-buffering" className="absolute inset-0 flex items-center justify-center pointer-events-none z-20">
           <div className="size-16 rounded-full bg-black/60 backdrop-blur-md border border-white/20 flex items-center justify-center text-cyan shadow-2xl">
             <span className="size-7 rounded-full border-2 border-cyan/30 border-t-cyan animate-spin" />
           </div>
         </div>
       )}
 
+      {/* Playback failed: say so and offer a retry instead of showing a dead pause button */}
+      {mediaError && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/70 z-20 px-6 text-center">
+          <p className="text-[13px] font-medium text-white">{mediaError}</p>
+          <button
+            type="button"
+            onClick={() => {
+              const saved = retryTimeRef.current ?? videoRef.current?.currentTime ?? 0
+              clearRetries()
+              retryTimeRef.current = saved
+              setMediaError(null)
+              reloadForRetry()
+            }}
+            className="px-4 py-1.5 rounded-md bg-cyan text-black text-[12px] font-semibold hover:opacity-90 transition-opacity"
+          >
+            Try again
+          </button>
+        </div>
+      )}
+
       {/* Center play icon overlay when paused */}
-      {!playing && (
+      {!playing && !mediaError && (
         <div
           onClick={togglePlay}
           className="absolute inset-0 flex items-center justify-center bg-black/25 cursor-pointer z-20"
@@ -1587,9 +1798,10 @@ function CustomVideoPlayer({
             )}
             {/* Playable buffered track (actual media decoded and playable) */}
             <div
+              data-testid="player-buffered-track"
               className="absolute left-0 top-0 h-full bg-cyan/40 rounded-full transition-all duration-150"
               style={{ width: `${actualBufferedPct}%` }}
-              title={actualBufferedPct > 0 ? `Buffered: ${Math.round(actualBufferedPct)}%` : undefined}
+              title={`Buffered: ${Math.round(actualBufferedPct)}%`}
             />
             {/* Foreground playback progress track */}
             <div
@@ -1620,10 +1832,9 @@ function CustomVideoPlayer({
               {formatTime(currentTime)} / {formatTime(duration)}
             </span>
 
-            {/* Background buffered progress badge on seekbar */}
-            {!isCompleted && (
-              <span className="font-mono text-[10.5px] font-semibold text-cyan/90 bg-cyan/15 border border-cyan/30 px-2 py-0.5 rounded-full tabular-nums whitespace-nowrap select-none">
-                {dlPct > 0 ? `${Math.round(dlPct)}% buffered` : 'Buffering…'}
+            {!isCompleted && (buffering || mediaError || dlPct > 0) && (
+              <span data-testid="player-download-status" className="font-mono text-[10.5px] font-semibold text-cyan/90 bg-cyan/15 border border-cyan/30 px-2 py-0.5 rounded-full tabular-nums whitespace-nowrap select-none">
+                {mediaError ? 'Error / ' : buffering ? 'Buffering / ' : ''}Downloaded {Math.round(dlPct)}%
               </span>
             )}
 
@@ -1685,12 +1896,7 @@ function CustomVideoPlayer({
   )
 }
 
-export function MediaPreviewModal({
-  open,
-  item,
-  onClose,
-  onDownload,
-}: {
+type MediaPreviewModalProps = {
   open: boolean
   item: {
     name: string
@@ -1704,21 +1910,44 @@ export function MediaPreviewModal({
   } | null
   onClose: () => void
   onDownload?: () => void
-}) {
+}
+
+export function MediaPreviewModal(props: MediaPreviewModalProps) {
+  if (!props.open || !props.item) return null
+  const { item } = props
+  const identity = item.chatId && item.messageId
+    ? `message:${item.chatId}:${item.messageId}`
+    : `local:${item.path || item.name}`
+  return <MediaPreviewSession key={identity} {...props} />
+}
+
+function MediaPreviewSession({ open, item, onClose, onDownload }: MediaPreviewModalProps) {
   const { data: settings } = useCall<any>('settings.get', {}, ['settings'])
-  const [preparedPath, setPreparedPath] = useState<string | null>(null)
+  const ext = item?.name.split('.').pop()?.toLowerCase() || ''
+  const makeMediaUrl = (path: string, size: number, fileId?: number | null) =>
+    `mediagram://file/${encodeURIComponent(path)}?total=${size}&ext=${encodeURIComponent(ext)}` +
+    (fileId && fileId > 0 ? `&id=${fileId}` : '')
+  const [preparedPath, setPreparedPath] = useState<string | null>(item?.path || null)
+  // The TDLib file id that owns preparedPath. Carried in the media URL because a path can outlive
+  // the id that created it (TDLib reissues ids on re-login), and the protocol handler uses the id
+  // to ask TDLib which file — and how big — it is actually serving.
+  const [preparedFileId, setPreparedFileId] = useState<number | null>(null)
   const [prepProgress, setPrepProgress] = useState<{ downloaded: number, total: number } | null>(null)
   const [actualSize, setActualSize] = useState<number>(item?.size || 0)
   const [naturalDims, setNaturalDims] = useState<{ width: number, height: number } | null>(null)
-  const [isFullLoaded, setIsFullLoaded] = useState(false)
-  const [isDownloadCompleted, setIsDownloadCompleted] = useState(false)
+  const [isFullLoaded, setIsFullLoaded] = useState(Boolean(item?.path))
+  const [isDownloadCompleted, setIsDownloadCompleted] = useState(Boolean(item?.path))
   const [imgError, setImgError] = useState(false)
   const [thumbError, setThumbError] = useState(false)
   const [speed, setSpeed] = useState<number>(1)
   const [modalThumb, setModalThumb] = useState<string | null>(null)
   const audioRef = useRef<HTMLAudioElement>(null)
-
-  const ext = item?.name.split('.').pop()?.toLowerCase() || ''
+  // The keyed session owns this URL. Progress and completion can update metadata, not the decoder's
+  // source; the protocol handler follows the original temp path to its final location.
+  const [playerUrl, setPlayerUrl] = useState<string | null>(() =>
+    item?.path ? makeMediaUrl(item.path, item.size || 0) : null)
+  const onCloseRef = useRef(onClose)
+  onCloseRef.current = onClose
   const isVideo = ['mp4', 'webm', 'mkv', 'mov', 'm4v'].includes(ext) || item?.type === 'video' || item?.type === 'video_note'
   const isImage = ['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp'].includes(ext) || item?.type === 'photo' || item?.type === 'image'
   const isAudio = ['mp3', 'ogg', 'wav', 'flac', 'm4a', 'aac'].includes(ext) || item?.type === 'audio' || item?.type === 'voice'
@@ -1736,35 +1965,13 @@ export function MediaPreviewModal({
   }, [open])
 
   useEffect(() => {
-    setActualSize(item?.size || 0)
-    setNaturalDims(null)
-    setIsFullLoaded(Boolean(item?.path))
-    setIsDownloadCompleted(Boolean(item?.path))
-    setImgError(false)
-    setThumbError(false)
-    setModalThumb(null)
-  }, [item])
+    const handleKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onCloseRef.current() }
+    window.addEventListener('keydown', handleKey)
+    return () => window.removeEventListener('keydown', handleKey)
+  }, [])
 
   useEffect(() => {
-    if (!open || !item) {
-      setPreparedPath(null)
-      setPrepProgress(null)
-      setSpeed(1)
-      return
-    }
-
-    const handleKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
-    window.addEventListener('keydown', handleKey)
-
-    if (item.path) {
-      setPreparedPath(item.path)
-      setIsFullLoaded(true)
-      return () => window.removeEventListener('keydown', handleKey)
-    }
-
-    if (!item.chatId || !item.messageId) {
-      return () => window.removeEventListener('keydown', handleKey)
-    }
+    if (!item || item.path || !item.chatId || !item.messageId) return
 
     let targetFileId: number | null = null
     let active = true
@@ -1774,7 +1981,17 @@ export function MediaPreviewModal({
     let attempts = 0
     let retryTimer: NodeJS.Timeout | undefined
 
+    const acceptPath = (path: string, size: number, completed: boolean) => {
+      havePath = true
+      clearTimeout(retryTimer)
+      retryTimer = undefined
+      setPreparedPath((prev) => completed ? path : (prev || path))
+      setPlayerUrl((prev) => prev || makeMediaUrl(path, size, targetFileId))
+    }
+
     const prepare = () => {
+      retryTimer = undefined
+      if (!active || havePath) return
       attempts++
       call<{ completed: boolean, path: string | null, fileId: number, size: number, downloaded: number, thumb?: string | null }>('media.prepare', {
         chatId: item!.chatId,
@@ -1782,26 +1999,25 @@ export function MediaPreviewModal({
       })
         .then((res) => {
           if (!active) return
-          targetFileId = res.fileId
+          targetFileId = res.fileId > 0 ? res.fileId : null
+          setPreparedFileId(targetFileId)
           if (res.size && res.size > 0) {
             setActualSize(res.size)
           }
           if (res.thumb) {
             setModalThumb(res.thumb)
           }
-          if (res.path) {
-            havePath = true
-            setPreparedPath(res.path)
-          }
+          if (res.path) acceptPath(res.path, res.size || item.size || 0, res.completed)
           if (res.completed) {
             setIsDownloadCompleted(true)
+            setPrepProgress(null)
           } else if (res.size) {
             setPrepProgress({ downloaded: res.downloaded || 0, total: res.size })
           }
           if (!havePath && active && attempts < 3) retryTimer = setTimeout(prepare, 2500)
         })
         .catch(() => {
-          if (active && attempts < 3) retryTimer = setTimeout(prepare, 2500)
+          if (active && !havePath && attempts < 3) retryTimer = setTimeout(prepare, 2500)
         })
     }
     prepare()
@@ -1809,14 +2025,11 @@ export function MediaPreviewModal({
     const unsub = on((event) => {
       if (!active) return
       if (event.type === 'fileProgress') {
-        if (targetFileId && event.fileId !== targetFileId) return
+        if (targetFileId === null || event.fileId !== targetFileId) return
         if (event.total && event.total > 0) {
           setActualSize(event.total)
         }
-        if (event.path) {
-          havePath = true
-          setPreparedPath((prev) => (event.completed ? event.path! : (prev || event.path!)))
-        }
+        if (event.path) acceptPath(event.path, event.total || item.size || 0, event.completed)
         if (event.completed) {
           setIsDownloadCompleted(true)
           setPrepProgress(null)
@@ -1829,12 +2042,11 @@ export function MediaPreviewModal({
     return () => {
       active = false
       clearTimeout(retryTimer)
-      window.removeEventListener('keydown', handleKey)
       unsub()
     }
-  // Item identity (chatId+messageId) drives the effect, not the whole item object.
+  // A new item or reopened modal mounts a new session; parent callbacks and progress don't prepare again.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, item?.chatId, item?.messageId, item?.path, onClose])
+  }, [])
 
   useEffect(() => {
     if (audioRef.current) audioRef.current.playbackRate = speed
@@ -1851,11 +2063,11 @@ export function MediaPreviewModal({
     }
   }, [open])
 
-  if (!open || !item) return null
+  if (!item) return null
 
   const resolvedPath = item.path || preparedPath
   const mediaUrl = resolvedPath
-    ? `mediagram://file/${encodeURIComponent(resolvedPath)}?total=${actualSize || item.size || 0}&ext=${encodeURIComponent(ext)}`
+    ? makeMediaUrl(resolvedPath, actualSize || item.size || 0, preparedFileId)
     : null
   const effectiveThumb = item.thumb || modalThumb
   const thumbUrl = effectiveThumb ? `mediagram://thumb/${effectiveThumb}` : null
@@ -1924,9 +2136,9 @@ export function MediaPreviewModal({
       <div className="flex flex-1 items-center justify-center w-full h-full p-4 overflow-hidden">
         {isVideo ? (
           // A streamable path means playback starts now — the rest of the file keeps arriving behind it.
-          mediaUrl ? (
+          playerUrl ? (
             <CustomVideoPlayer
-              src={mediaUrl}
+              src={playerUrl}
               speed={speed}
               onSpeedChange={setSpeed}
               poster={thumbUrl}
@@ -2045,8 +2257,8 @@ export function MediaPreviewModal({
                 {item.size ? fmtBytes(item.size) : ''} {item.duration ? `• ${fmtDuration(item.duration)}` : ''}
               </div>
             </div>
-            {mediaUrl ? (
-              <audio ref={audioRef} src={mediaUrl} controls autoPlay className="w-full mt-2" />
+            {playerUrl ? (
+              <audio ref={audioRef} src={playerUrl} controls autoPlay className="w-full mt-2" />
             ) : (
               <div className="flex flex-col items-center gap-2 py-4">
                 <div className="size-10 rounded-full border-2 border-primary/30 border-t-primary animate-spin" />

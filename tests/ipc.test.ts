@@ -355,6 +355,71 @@ test('protocolFile: thumb ids, saved thumbnails, and images confined to the down
   assert.equal(await protocolFile('teleflow://other/x', f.ctx), null)
 })
 
+test('protocolFile: URL id selects the actual TDLib path, never a guessed temp basename', async () => {
+  const requests: number[] = []
+  let actualPath = '', reachable = true
+  const f = fixture({
+    invoke: (req: { _: string, file_id?: number }): Promise<any> => {
+      if (req._ !== 'getFile') return Promise.reject(fail(404, 'unknown query'))
+      requests.push(req.file_id!)
+      if (!reachable) return Promise.reject(fail(503, 'temporarily unavailable'))
+      return Promise.resolve({ _: 'file', id: req.file_id, size: 10967770, local: { is_downloading_completed: false, path: actualPath } })
+    },
+  })
+  const tempDir = path.join(f.paths.tdlib, 'files', 'temp')
+  const original = path.join(tempDir, '1036')
+  const canonical = path.join(tempDir, '1364')
+  fs.mkdirSync(tempDir, { recursive: true })
+  fs.writeFileSync(original, Buffer.alloc(1024))
+  fs.writeFileSync(canonical, Buffer.alloc(9008)) // Even an existing numeric filename is not proof of ownership.
+  const url = () => protocolFile(`teleflow://file/${encodeURIComponent(original)}?total=10967770&ext=mp4&id=1364`, f.ctx)
+  assert.equal(await url(), original)
+  assert.deepEqual(requests, [1364], 'do not re-query the unrelated path basename')
+  actualPath = path.join(tempDir, 'actual-not-created')
+  assert.equal(fs.existsSync(actualPath), false)
+  assert.equal(await url(), actualPath, 'prefer TDLib ownership before the file exists')
+  actualPath = path.join(f.paths.tdlib, 'files', 'videos', 'finished.mp4')
+  assert.equal(await url(), actualPath, 'follow a move to TDLib completed storage')
+  actualPath = path.join(temp, 'outside-cache.mp4')
+  assert.equal(await url(), original, 'a returned path is still confined to TDLib files')
+  reachable = false
+  fs.rmSync(original)
+  assert.equal(await url(), original, 'an unavailable query retains the validated missing temp path')
+  assert.ok(requests.every((id) => id === 1364))
+})
+
+test('protocolFile: prefers the cached streaming-path integration export', async () => {
+  const ids: number[] = []
+  let actualPath = ''
+  const f = fixture({
+    getStreamingFilePath: async (id: number) => { ids.push(id); return actualPath || null },
+    invoke: async () => { throw new Error('the path helper owns metadata refresh') },
+  })
+  const original = path.join(f.paths.tdlib, 'files', 'temp', '1036')
+  actualPath = path.join(f.paths.tdlib, 'files', 'temp', 'new-actual')
+  const url = () => protocolFile(`mediagram://file/${encodeURIComponent(original)}?id=1364`, f.ctx)
+  assert.equal(await url(), actualPath)
+  actualPath = ''
+  assert.equal(await url(), original)
+  assert.deepEqual(ids, [1364, 1364])
+})
+
+test('protocolFile: a retained library copy replaces a moved temp path through library authorization', async () => {
+  let actualPath = ''
+  const f = fixture({ getStreamingFilePath: async () => actualPath || null })
+  const original = path.join(f.paths.tdlib, 'files', 'temp', '1036')
+  fs.mkdirSync(f.root, { recursive: true })
+  actualPath = path.join(f.root, 'finalized.mp4')
+  fs.writeFileSync(actualPath, 'saved media')
+  const url = () => protocolFile(`mediagram://file/${encodeURIComponent(original)}?id=1364`, f.ctx)
+  assert.equal(await url(), actualPath)
+  fs.unlinkSync(actualPath)
+  assert.equal(await url(), original, 'a missing retained copy cannot authorize a library redirect')
+  actualPath = path.join(temp, 'unrecorded-outside.mp4')
+  fs.writeFileSync(actualPath, 'outside')
+  assert.equal(await url(), original, 'retained-path lookup does not bypass the library boundary')
+})
+
 // ---- Phase 3 methods ----
 
 const call = (f: ReturnType<typeof fixture>, name: string, args: unknown) => {

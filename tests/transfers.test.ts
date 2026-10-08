@@ -7,7 +7,7 @@ import { setImmediate as tick } from 'node:timers/promises'
 import { type AppEvent, type DB, downloadStates, enqueue, fail, getSettings, jobRow, type Kind, openDb, putSetting, type UploadFile } from '../core/db.ts'
 import { type AuthState, type Chat, extractMedia } from '../core/shapes.ts'
 import { openLog, resolvePaths, within } from '../core/storage.ts'
-import { createEngine, fileName, fitName, folderFor, gate, isRetryable, MAX_PATH, newGate, retryDelay, sanitize, stallDecision, uniquePath } from '../core/transfers.ts'
+import { createEngine, type EngineDeps, fileName, fitName, folderFor, gate, isRetryable, MAX_PATH, newGate, retryDelay, sanitize, stallDecision, uniquePath } from '../core/transfers.ts'
 import { groupUploads, settleUpload, uploadKind } from '../core/uploads.ts'
 
 // Timers and the clock are mocked: the engine's 500 ms tick, start spacing, flood waits, and retries run only when a
@@ -43,7 +43,7 @@ const never = () => new Promise(() => {})
 const CHAT = -100
 
 const engines: { quit(): Promise<void> }[] = []
-function rig(o: { settings?: Record<string, unknown>, ready?: boolean, prepare?: (db: DB) => void } = {}) {
+function rig(o: { settings?: Record<string, unknown>, ready?: boolean, prepare?: (db: DB) => void, savedFile?: EngineDeps['savedFile'] } = {}) {
   for (const e of engines.splice(0)) void e.quit() // the previous test's engine stops ticking
   const home = fs.mkdtempSync(path.join(temp, 'home-')), root = path.join(home, '..', `${path.basename(home)}-root`)
   const paths = resolvePaths({ env: { TELEFLOW_HOME: home }, packaged: true, appDir: path.join(temp, 'app') })
@@ -70,7 +70,7 @@ function rig(o: { settings?: Record<string, unknown>, ready?: boolean, prepare?:
     db, paths, settings: () => getSettings(db, root), auth: () => auth.value, chat,
     invoke: (async (req: Req) => { requests.push(req); return t.answer(req) }) as never,
     onUpdate: (fn) => { handlers.add(fn); return () => { handlers.delete(fn) } },
-    emit: (e) => { events.push(e) }, finished: (k, ok) => { finished.push([k, ok]) },
+    emit: (e) => { events.push(e) }, finished: (k, ok) => { finished.push([k, ok]) }, savedFile: o.savedFile,
   })
   engines.push(engine)
   if (o.ready !== false) engine.onAuth(auth.value)
@@ -283,6 +283,49 @@ test('download: finalize moves the file out of tdlib\\files under its final name
   assert.ok(t.events.some((e) => e.type === 'invalidate' && e.topics.includes('library') && e.topics.includes(`media:${CHAT}`)))
 })
 
+test('download: savedFile publishes only the finalized file after its move and before deleteFile', async () => {
+  const order: string[] = []
+  const saved: { id: number, path: string, size: number, body: string, sourceExists: boolean }[] = []
+  let src = ''
+  const t = rig({ savedFile: (id, filePath, size) => {
+    order.push('saved')
+    saved.push({ id, path: filePath, size, body: fs.readFileSync(filePath, 'utf8'), sourceExists: fs.existsSync(src) })
+  } })
+  const tg = telegramWith(t, { 52: { fileId: 52, name: 'Saved.pdf', body: 'saved' } })
+  src = tg.local(52)
+  const answer = t.answer
+  t.answer = (req) => {
+    // A refreshed download ID must not cause the hook to register its stale predecessor too.
+    if (req._ === 'downloadFile') return tdFile(53, { size: 5, downloaded: 1 })
+    if (req._ === 'deleteFile') order.push('delete')
+    return answer(req)
+  }
+  t.engine.addDownloads(CHAT, [row(52, 'Saved.pdf')])
+  const [job] = jobIds(t.db)
+  await until(() => t.calls('downloadFile').length === 1)
+  t.update({ _: 'updateFile', file: tdFile(53, { size: 5, done: true, path: src }) })
+  await until(() => t.finished.length === 1)
+  const dest = path.join(t.root, `Fixture chat ${CHAT}`, 'Saved.pdf')
+  assert.deepEqual(saved, [{ id: 53, path: await fs.promises.realpath(dest), size: 5, body: 'saved', sourceExists: false }])
+  assert.deepEqual(order, ['saved', 'delete'])
+  assert.deepEqual(t.calls('deleteFile').map((r) => r.file_id), [53])
+  assert.equal(t.status(job), 'completed')
+})
+
+test('download: failed moves never publish savedFile', async (context) => {
+  const saved: number[] = []
+  const t = rig({ savedFile: (id) => { saved.push(id) } })
+  const tg = telegramWith(t, { 54: { fileId: 54, name: 'Missing.pdf', body: 'lost' } })
+  t.engine.addDownloads(CHAT, [row(54, 'Missing.pdf', 4)])
+  const [job] = jobIds(t.db)
+  await until(() => t.calls('downloadFile').length === 1)
+  context.mock.method(fs.promises, 'rename', async () => { throw Object.assign(new Error('Move denied'), { code: 'EACCES' }) })
+  tg.done(54)
+  await until(() => t.status(job) === 'failed')
+  assert.deepEqual(saved, [])
+  assert.equal(t.calls('deleteFile').length, 0)
+})
+
 test('download: priority is 32 and survives getRemoteFile rejection', async () => {
   const t = rig()
   const tg = telegramWith(t, { 8: { fileId: 8, name: 'Doc.pdf', body: 'data' } })
@@ -324,7 +367,8 @@ test('download: stale completed path triggers deleteFile and fresh download', as
 })
 
 test('skip existing: completes without downloading and stays downloaded after Clear Completed, so a re-add is skipped', async () => {
-  const t = rig()
+  const saved: number[] = []
+  const t = rig({ savedFile: (id) => { saved.push(id) } })
   telegramWith(t, { 5: { fileId: 5, name: 'Report.pdf', body: 'hello' } })
   fs.mkdirSync(path.join(t.root, `Fixture chat ${CHAT}`), { recursive: true })
   fs.writeFileSync(path.join(t.root, `Fixture chat ${CHAT}`, 'Report.pdf'), 'HELLO') // same name and size
@@ -332,6 +376,7 @@ test('skip existing: completes without downloading and stays downloaded after Cl
   const [job] = jobIds(t.db)
   await until(() => t.status(job) === 'completed')
   assert.equal(t.calls('downloadFile').length, 0)
+  assert.deepEqual(saved, [], 'same size alone is not the successful-move completion hook')
   t.engine.action('clear-completed')
   assert.deepEqual([jobRow(t.db, job), downloadStates(t.db, CHAT, [5]).get(5)!.status], [undefined, 'downloaded'])
   assert.deepEqual(await t.engine.addItems([{ chatId: CHAT, messageId: 5 }], false), { added: 0, skipped: 1 })

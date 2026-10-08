@@ -44,6 +44,18 @@ const listeners = new Set<(u: Td.Update) => void>()
 const restarted: (() => void)[] = []
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 
+async function bounded<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('TDLib request timed out')), ms) }),
+    ])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 export const init = (d: Deps) => {
   deps = d
   if (d.hasSavedCredentials) {
@@ -97,10 +109,39 @@ const call: Td.Invoke = async (req) => {
     throw tdError(e)
   }
 }
+function guardStreamingRequest(req: { _: string, file_id?: unknown, offset?: unknown, limit?: unknown }): { _: 'getFile', file_id: number } | null {
+  const fileId = req.file_id
+  if (typeof fileId !== 'number') return null
+  if (req._ === 'cancelDownloadFile' || req._ === 'deleteFile') {
+    videoTailControls.get(fileId)?.cancel()
+    if (req._ === 'deleteFile') {
+      streamingPaths.delete(fileId)
+      readableEnds.delete(fileId)
+      readableDone.delete(fileId)
+      wmProbe.delete(fileId)
+      videoTailCache.delete(fileId)
+      videoTailFailed.delete(fileId)
+      videoHeadKinds.delete(fileId)
+      videoHeadInflight.delete(fileId)
+      videoPrefetchAttempted.delete(fileId)
+      videoPrefetchInflight.delete(fileId)
+      wmInflight.delete(fileId)
+    }
+  }
+  // Preparing or reasserting the same file must not replace the tail's offset/limit. The tail
+  // owner uses `call` for its range and its one handback; unrelated files remain concurrent.
+  if (req._ === 'downloadFile' && (req.offset || 0) === 0 && (req.limit || 0) === 0 && videoTailBusy(fileId)) {
+    return { _: 'getFile', file_id: fileId }
+  }
+  return null
+}
+
 /** TDLib calls that need a signed-in account: 503 until auth is `ready`. */
 export const invoke: Td.Invoke = (req) => {
   if (auth.step !== 'ready') return Promise.reject(fail(503, 'Telegram is not connected yet'))
-  return call(req)
+  const guarded = guardStreamingRequest(req)
+  // Both the guarded downloadFile and getFile return File; preserve Invoke's generic result type.
+  return call(guarded ? guarded as unknown as typeof req : req)
 }
 
 // ---- Credentials gate ----
@@ -169,6 +210,7 @@ async function launch(c: Creds, fresh = false) {
     throw fail(409, MISMATCH)
   }
   await close()
+  resetStreamingSession()
   creds = c
   credError = undefined
   offerFresh = false
@@ -458,18 +500,8 @@ function onTdUpdate(cl: Client, u: Td.Update) {
     }
     case 'updateFile': {
       noteReadable(u.file)
-      // Emit TDLib's intended local path immediately without blocking on fs.existsSync.
-      // The protocol handler (protocolFile) performs its own existence check before
-      // serving the file. Emitting early lets the UI set preparedPath sooner so the
-      // video element can begin its own range-request pipeline without waiting for
-      // TDLib to flush its internal write buffer to disk (which can take 4-10 seconds).
-      let localPath = u.file.local.path || null
-      if (!localPath && deps?.dir && u.file.local.downloaded_size > 0) {
-        const tempPath = path.join(deps.dir, 'files', 'temp', String(u.file.id))
-        if (fs.existsSync(tempPath)) {
-          localPath = tempPath
-        }
-      }
+      // Publish TDLib's actual path before creation; the media protocol waits for confirmed bytes.
+      const localPath = streamingPaths.get(u.file.id) ?? null
       deps.emit({
         type: 'fileProgress',
         fileId: u.file.id,
@@ -893,13 +925,21 @@ export async function prepareMedia(chatId: number, messageId: number) {
   const media = extractMedia(m)
   if (!media) throw fail(404, 'No media found in this message')
 
+  // A path recorded earlier must still hold the message's bytes. Downloads resume and the library is
+  // pruned, so a row or a name-based lookup can point at a truncated leftover — handing that back
+  // declared a partial file as complete and the player failed it before it could ever buffer.
+  const holdsMedia = (p: string): boolean => {
+    const st = fs.statSync(p, { throwIfNoEntry: false })
+    return Boolean(st && st.isFile() && (media.size <= 0 || st.size >= media.size))
+  }
+
   // Instant check: if this file was already downloaded to the library or transfers, return immediately
   if (deps?.db) {
     try {
       const jobRow = deps.db.prepare(
         "SELECT path FROM jobs WHERE chat_id = ? AND message_id = ? AND status = 'completed' AND path IS NOT NULL LIMIT 1"
       ).get(chatId, messageId) as { path: string } | undefined
-      if (jobRow?.path && fs.existsSync(jobRow.path)) {
+      if (jobRow?.path && holdsMedia(jobRow.path)) {
         return {
           path: jobRow.path,
           fileId: media.file.id,
@@ -914,7 +954,7 @@ export async function prepareMedia(chatId: number, messageId: number) {
       const histRow = deps.db.prepare(
         "SELECT path FROM history WHERE chat_id = ? AND message_id = ? AND status = 'completed' AND path IS NOT NULL ORDER BY finished_at DESC LIMIT 1"
       ).get(chatId, messageId) as { path: string } | undefined
-      if (histRow?.path && fs.existsSync(histRow.path)) {
+      if (histRow?.path && holdsMedia(histRow.path)) {
         return {
           path: histRow.path,
           fileId: media.file.id,
@@ -930,7 +970,8 @@ export async function prepareMedia(chatId: number, messageId: number) {
   }
 
   let f = await invoke({ _: 'getFile', file_id: media.file.id })
-  if (f.local.is_downloading_completed && f.local.path && fs.existsSync(f.local.path)) {
+  noteReadable(f)
+  if (f.local.is_downloading_completed && f.local.path && holdsMedia(f.local.path)) {
     return {
       path: f.local.path,
       fileId: f.id,
@@ -945,10 +986,10 @@ export async function prepareMedia(chatId: number, messageId: number) {
 
   // Check TDLib files directory directly in case TDLib already completed the file locally
   if (deps?.dir) {
-    const candidateDirs = ['photos', 'documents', 'videos', 'temp']
+    const candidateDirs = ['photos', 'documents', 'videos']
     for (const sub of candidateDirs) {
       const candidatePath = path.join(deps.dir, 'files', sub, media.name)
-      if (fs.existsSync(candidatePath)) {
+      if (holdsMedia(candidatePath)) {
         return {
           path: candidatePath,
           fileId: f.id,
@@ -965,10 +1006,7 @@ export async function prepareMedia(chatId: number, messageId: number) {
   const isImage = media.type === 'photo' || ['jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif'].includes(media.ext)
   if (isImage) {
     try {
-      f = await Promise.race([
-        invoke({ _: 'downloadFile', file_id: f.id, priority: 32, offset: 0, limit: 0, synchronous: true }),
-        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), 3500)),
-      ])
+      f = await bounded(invoke({ _: 'downloadFile', file_id: f.id, priority: 32, offset: 0, limit: 0, synchronous: true }), 3500)
     } catch {
       f = await invoke({ _: 'downloadFile', file_id: f.id, priority: 32, offset: 0, limit: 0, synchronous: false }).catch(() => f)
     }
@@ -976,21 +1014,18 @@ export async function prepareMedia(chatId: number, messageId: number) {
     // Download with priority 32 (maximum speed)
     f = await invoke({ _: 'downloadFile', file_id: f.id, priority: 32, offset: 0, limit: 0, synchronous: false })
   }
-  const localStat = f.local.path ? fs.statSync(f.local.path, { throwIfNoEntry: false }) : null
-  const localCompleted = Boolean(f.local.is_downloading_completed || (localStat && localStat.size > 0 && (!f.size || localStat.size >= f.size)))
-  const tempPath = (!isImage && deps?.dir) ? path.join(deps.dir, 'files', 'temp', String(f.id)) : null
-  const streamPath = (f.local.path && fs.existsSync(f.local.path)) ? f.local.path : tempPath
+  noteReadable(f)
+  const localCompleted = Boolean(f.local.is_downloading_completed)
+  const streamPath = streamingPaths.get(f.id) ?? await getStreamingFilePath(f.id)
   const canUsePath = isImage ? (localCompleted && f.local.path && fs.existsSync(f.local.path)) : Boolean(streamPath)
-  const isVideo = media.type === 'video' || ['mp4', 'm4v', 'mov'].includes(media.ext)
-  if (isVideo && !localCompleted && (media.size || f.size || 0) > 0) {
-    fetchVideoTail(f.id, media.size || f.size || 0).catch(() => {})
-  }
+  // Preparation starts the sequential download. The protocol probes the verified head before
+  // deciding whether a non-faststart file needs a tail prefetch.
   return {
     path: canUsePath ? (isImage ? f.local.path : streamPath) : null,
     fileId: f.id,
     completed: localCompleted,
     size: f.size || f.expected_size || media.size,
-    downloaded: localCompleted ? (f.size || media.size) : (f.local.downloaded_size || (localStat?.size ?? 0)),
+    downloaded: localCompleted ? (f.size || media.size) : (f.local.downloaded_size || 0),
     name: media.name,
     type: media.type,
     duration: media.duration,
@@ -1719,72 +1754,208 @@ export type VideoTail = {
 
 const videoTailCache = new Map<number, VideoTail>()
 const videoTailInflight = new Map<number, Promise<VideoTail | null>>()
+const videoTailFailed = new Map<number, number>()
+type HeadKind = 'faststart' | 'tail' | 'unknown'
+const videoHeadKinds = new Map<number, Exclude<HeadKind, 'unknown'>>()
+const videoHeadInflight = new Map<number, Promise<HeadKind>>()
+const videoPrefetchInflight = new Map<number, object>()
+const videoPrefetchAttempted = new Set<number>()
+const videoTailControls = new Map<number, { cancelled: boolean, cancel: () => void }>()
 
-// A tail fetched out of order leaves a hole in TDLib's temp file. TDLib documents that while a file
-// is downloading "the actual file size may be bigger, and some parts of it may contain garbage", so
-// the on-disk size is not a safe watermark — only the contiguous prefix readable from byte 0 is.
+// Disk length and aggregate downloaded bytes include holes. Only TDLib-confirmed offset-0
+// coverage (or completion) can authorize a sequential read.
 const tailSeen = new Set<number>()
 const readableEnds = new Map<number, number>()
-const readableProbe = new Map<number, { value: number, at: number }>()
 const readableDone = new Set<number>()
+const streamingPaths = new Map<number, string>()
+// Only the transfer engine's successful move can authorize a completed library copy. TDLib
+// deletion and subsequent re-downloads affect the cache state above, never this separate record.
+const retainedStreamingFiles = new Map<number, { path: string, size: number }>()
+
+function resetStreamingSession() {
+  for (const control of videoTailControls.values()) control.cancel()
+  for (const state of [videoTailCache, videoTailInflight, videoTailFailed, videoTailControls,
+    videoHeadKinds, videoHeadInflight, videoPrefetchInflight, videoPrefetchAttempted,
+    tailSeen, readableEnds, readableDone, streamingPaths, retainedStreamingFiles, wmProbe, wmInflight]) state.clear()
+}
+
+/** Records an explicitly finalized local copy, not a TDLib temp file inferred from its disk size. */
+export function retainStreamingFile(fileId: number, filePath: string, size: number): void {
+  if (!(fileId > 0) || !path.isAbsolute(filePath) || isStreamingPath(filePath) || !Number.isSafeInteger(size) || size <= 0) return
+  if (retainedStreamingFiles.size >= 400 && !retainedStreamingFiles.has(fileId)) {
+    const oldest = retainedStreamingFiles.keys().next().value
+    if (oldest !== undefined) retainedStreamingFiles.delete(oldest)
+  }
+  retainedStreamingFiles.set(fileId, { path: filePath, size })
+  retainedStreamingFile(fileId)
+}
+
+function retainedStreamingFile(fileId: number): { path: string, size: number } | null {
+  const retained = retainedStreamingFiles.get(fileId)
+  if (!retained) return null
+  try {
+    const stat = fs.statSync(retained.path, { throwIfNoEntry: false })
+    if (stat?.isFile() && stat.size === retained.size) return retained
+  } catch {}
+  retainedStreamingFiles.delete(fileId)
+  return null
+}
+
+function retainedWatermarks(fileId: number): Watermarks | null {
+  const retained = retainedStreamingFile(fileId)
+  return retained ? { prefix: retained.size, downloaded: retained.size, size: retained.size, done: true } : null
+}
+
+function isStreamingPath(filePath: string): boolean {
+  if (!deps?.dir || !path.isAbsolute(filePath)) return false
+  const relative = path.relative(path.join(deps.dir, 'files'), filePath)
+  return relative !== '' && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)
+}
+
+function rememberStreamingPath(file: Td.file) {
+  const filePath = file.local?.path
+  if (!filePath || !isStreamingPath(filePath)) return
+  if (streamingPaths.size >= 400 && !streamingPaths.has(file.id)) {
+    const oldest = streamingPaths.keys().next().value
+    if (oldest !== undefined) streamingPaths.delete(oldest)
+  }
+  streamingPaths.set(file.id, filePath)
+}
+
+/** Prefer an existing finalized copy; otherwise refresh TDLib's actual path, retaining it during transient outages. */
+export async function getStreamingFilePath(fileId: number): Promise<string | null> {
+  if (!(fileId > 0)) return null
+  const retained = retainedStreamingFile(fileId)
+  if (retained) return retained.path
+  const owner = client
+  if (auth.step === 'ready') {
+    try {
+      const file = await bounded(invoke({ _: 'getFile', file_id: fileId }), 1500)
+      if (client === owner) rememberStreamingPath(file)
+    } catch {}
+  }
+  return retainedStreamingFile(fileId)?.path ?? streamingPaths.get(fileId) ?? null
+}
+
+async function confirmedCoverage(fileId: number, offset: number): Promise<number> {
+  const result = await bounded(invoke({ _: 'getFileDownloadedPrefixSize', file_id: fileId, offset }), 1500)
+  const size = Number(result.size)
+  if (!Number.isSafeInteger(size) || size < 0) throw new Error('TDLib returned invalid downloaded prefix coverage')
+  return size
+}
 
 /** True once a tail (moov) range has been requested for this file: its temp file may hold holes. */
 export function tailWasRequested(fileId: number) {
   return tailSeen.has(fileId)
 }
 
+/** True while a tail (moov) fetch for this file is running; it hands the download back to byte 0 itself. */
+export function videoTailBusy(fileId: number) {
+  return videoTailInflight.has(fileId)
+}
+
+/** Complete means a retained finalized copy exists, or TDLib explicitly reported completion. */
+export function downloadComplete(fileId: number) {
+  return retainedStreamingFile(fileId) !== null || readableDone.has(fileId)
+}
+
+/** Cached confirmed offset-0 coverage, or the full size of an existing finalized copy. */
+export function trackedReadableEnd(fileId: number) {
+  return retainedStreamingFile(fileId)?.size ?? readableEnds.get(fileId) ?? 0
+}
+
+export type Watermarks = {
+  /** Bytes of the temp file contiguous from offset 0. Reading past this returns zeros from a hole. */
+  prefix: number
+  /** Total bytes downloaded, counting out-of-order parts as well. */
+  downloaded: number
+  /** Final size of the file; 0 when TDLib cannot say. */
+  size: number
+  /** TDLib reported completion, or a trusted finalized local copy still exists. */
+  done: boolean
+}
+
+const wmProbe = new Map<number, { value: Watermarks, at: number }>()
+const wmInflight = new Map<number, Promise<Watermarks | null>>()
+
+/** Prefer the finalized copy; otherwise obtain metadata and confirmed offset-0 coverage independently of the active range. */
+export async function getWatermarks(fileId: number, maxAgeMs = 250): Promise<Watermarks | null> {
+  if (!(fileId > 0)) return null
+  const retained = retainedWatermarks(fileId)
+  if (retained) return retained
+  const hit = wmProbe.get(fileId)
+  if (hit && Date.now() - hit.at < maxAgeMs) return hit.value
+  const inflight = wmInflight.get(fileId)
+  if (inflight) return inflight
+  if (auth.step !== 'ready') return hit?.value ?? null
+  const owner = client
+  let promise!: Promise<Watermarks | null>
+  promise = (async () => {
+    try {
+      const [f, coverage] = await Promise.all([
+        bounded(invoke({ _: 'getFile', file_id: fileId }), 1500),
+        confirmedCoverage(fileId, 0).catch(() => null),
+      ])
+      const retained = retainedWatermarks(fileId)
+      if (retained) return retained
+      if (client !== owner || wmInflight.get(fileId) !== promise) return null
+      noteReadable(f)
+      const size = Number(f.size) || Number(f.expected_size) || 0
+      const downloaded = Number(f.local.downloaded_size) || 0
+      const done = Boolean(f.local.is_downloading_completed)
+      const prefix = done && size > 0 ? size : (coverage ?? readableEnds.get(fileId) ?? 0)
+      readableEnds.set(fileId, prefix)
+      const value: Watermarks = { prefix, downloaded, size, done }
+      wmProbe.set(fileId, { value, at: Date.now() })
+      return value
+    } catch {
+      return retainedWatermarks(fileId) ?? (client === owner && wmInflight.get(fileId) === promise ? hit?.value ?? null : null)
+    } finally {
+      if (wmInflight.get(fileId) === promise) wmInflight.delete(fileId)
+    }
+  })()
+  wmInflight.set(fileId, promise)
+  return promise
+}
+
+/** Fail closed even before the first tail: a downloading file's disk length is never coverage. */
+export async function watermarkFor(fileId: number): Promise<Watermarks | null> {
+  const w = await getWatermarks(fileId)
+  const retained = retainedWatermarks(fileId)
+  if (retained) return retained
+  if (w) return w
+  if (!(fileId > 0)) return null
+  const tracked = readableEnds.get(fileId) ?? 0
+  return { prefix: tracked, downloaded: 0, size: 0, done: readableDone.has(fileId) }
+}
+
 /** Bytes of TDLib's temp file readable from offset 0; null when TDLib cannot say. */
 export async function getReadableEnd(fileId: number, maxAgeMs = 250): Promise<number | null> {
-  if (readableDone.has(fileId)) return Number.MAX_SAFE_INTEGER
-  const hit = readableProbe.get(fileId)
-  if (hit && Date.now() - hit.at < maxAgeMs) return hit.value
-  if (auth.step !== 'ready') return hit?.value ?? readableEnds.get(fileId) ?? null
-  try {
-    const f = await Promise.race([
-      invoke({ _: 'getFile', file_id: fileId }),
-      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), 1500)),
-    ]).catch(() => null)
-    if (!f) return hit?.value ?? readableEnds.get(fileId) ?? null
-    const local = f.local
-    const tracked = readableEnds.get(fileId) ?? 0
-    let value = 0
-    if (local.is_downloading_completed) {
-      value = f.size || f.expected_size || 0
-      readableDone.add(fileId)
-    } else if (tailSeen.has(fileId)) {
-      value = Math.max(local.downloaded_prefix_size || 0, tracked)
-    } else {
-      value = Math.max(local.downloaded_prefix_size || 0, local.downloaded_size || 0, tracked)
-    }
-    if (value > tracked) {
-      readableEnds.set(fileId, value)
-    }
-    readableProbe.set(fileId, { value, at: Date.now() })
-    return value
-  } catch {
-    return hit?.value ?? readableEnds.get(fileId) ?? null
-  }
+  if (downloadComplete(fileId)) return Number.MAX_SAFE_INTEGER
+  const wm = await getWatermarks(fileId, maxAgeMs)
+  if (!wm) return null
+  return wm.done ? Number.MAX_SAFE_INTEGER : wm.prefix
 }
 
 /** Keeps the readable-from-0 watermark current straight from updateFile, without a getFile round trip. */
 function noteReadable(file: Td.file) {
+  rememberStreamingPath(file)
+  wmProbe.delete(file.id)
   const tracked = readableEnds.get(file.id) ?? 0
-  let value = 0
+  let value = tracked
   if (file.local.is_downloading_completed) {
-    value = file.size || file.expected_size || 0
+    value = file.size || file.expected_size || tracked
     readableDone.add(file.id)
-  } else if (tailSeen.has(file.id)) {
-    value = Math.max(file.local.downloaded_prefix_size || 0, tracked)
   } else {
-    value = Math.max(file.local.downloaded_prefix_size || 0, file.local.downloaded_size || 0, tracked)
+    readableDone.delete(file.id)
+    // This field describes the prefix of the current download_offset, not necessarily byte 0.
+    if ((file.local.download_offset || 0) === 0) value = Math.max(tracked, file.local.downloaded_prefix_size || 0)
   }
-  if (value > tracked) {
-    if (readableEnds.size > 400) {
-      const oldest = readableEnds.keys().next().value
-      if (oldest !== undefined) readableEnds.delete(oldest)
-    }
-    readableEnds.set(file.id, value)
+  if (readableEnds.size >= 400 && !readableEnds.has(file.id)) {
+    const oldest = readableEnds.keys().next().value
+    if (oldest !== undefined) readableEnds.delete(oldest)
   }
+  readableEnds.set(file.id, value)
 }
 
 /** Re-assert priority 32 sequential download from offset 0 if background stream was waiting */
@@ -1845,77 +2016,257 @@ export async function readFileRange(fileId: number, offset: number, count: numbe
   return chunks.length > 0 ? Buffer.concat(chunks) : null
 }
 
-const TAIL_BASE = 5 * 1024 * 1024 // covers the moov of an ordinary non-faststart MP4
-const TAIL_MAX = 16 * 1024 * 1024 // ceiling when a long recording carries an unusually large moov
+const TAIL_BASE = 5 * 1024 * 1024 // maximum eligible tail window, shared with the media range policy
+const TAIL_PREFETCH = 64 * 1024
 
 /**
- * Fetches the tail (last ~5 MB) of a video from Telegram so Chromium can parse the moov atom of a
- * non-faststart MP4 immediately instead of waiting for the whole file. `fromOffset` widens the window
- * when Chromium asks for a byte earlier than the cached tail starts at. The bytes land in an in-memory
- * cache (see getVideoTail); the sequential download is always handed back to byte 0 afterwards, since
- * a new offset/limit cancels the tail request.
+ * Fetches a verified suffix through EOF, not necessarily the whole eligible 5 MiB window. Its
+ * aligned floor remains byte-identical to the range policy: requests below it stay sequential.
+ * Without a hint, warm the last 64 KiB (aligned down); an earlier eligible request downloads an
+ * expanded suffix and replaces the cache only once that entire suffix is confirmed.
+ *
+ * The bytes are read out of TDLib's own temp file — `readFilePart` cannot reach them, because TDLib
+ * only exposes the contiguous prefix of a file that is still downloading, and the tail is by
+ * definition outside that prefix — and are cached in memory (see getVideoTail) so the protocol
+ * handler can answer from them. Restore the sequential download once afterwards, unless the caller
+ * explicitly cancelled it: a new offset/limit call replaces the previous range.
  */
 export async function fetchVideoTail(fileId: number, totalSize: number, fromOffset?: number): Promise<VideoTail | null> {
-  if (auth.step !== 'ready' || totalSize <= 0) return null
-  tailSeen.add(fileId)
-  const base = Math.max(0, totalSize - Math.min(totalSize, TAIL_BASE))
-  const want = fromOffset === undefined || fromOffset >= base
-    ? base
-    : Math.max(fromOffset, totalSize - TAIL_MAX)
-  const need = fromOffset ?? base
-  const covers = (t: VideoTail, offset: number) => t.tailOffset <= offset && offset < t.tailOffset + t.buffer.length
-
+  if (auth.step !== 'ready' || !(fileId > 0) || !Number.isSafeInteger(totalSize) || totalSize <= 0) return null
+  // Eligibility is unchanged; the actual download can be a much smaller aligned suffix.
+  const eligibleFloor = Math.floor(Math.max(0, totalSize - Math.min(totalSize, TAIL_BASE)) / 4096) * 4096
+  const need = fromOffset ?? Math.max(0, totalSize - TAIL_PREFETCH)
+  if (!Number.isSafeInteger(need) || need < eligibleFloor || need >= totalSize) return null
+  const tailOffset = Math.max(eligibleFloor, Math.floor(need / 4096) * 4096)
+  const tailSize = totalSize - tailOffset
+  const covers = (t: VideoTail) => t.totalSize === totalSize && t.tailOffset <= need && t.tailOffset + t.buffer.length === totalSize
   const cached = videoTailCache.get(fileId)
-  if (cached && covers(cached, need)) return cached
-
+  if (cached && covers(cached)) return cached
   const inflight = videoTailInflight.get(fileId)
   if (inflight) {
-    const res = await inflight
-    if (res && covers(res, need)) return res
+    const result = await inflight
+    return result && covers(result) ? result : null
   }
+  const failedAt = videoTailFailed.get(fileId)
+  if (failedAt !== undefined && Date.now() - failedAt < 5000) return null
 
+  let cancel!: () => void
+  const cancelled = new Promise<void>((resolve) => { cancel = resolve })
+  const control = { cancelled: false, cancel: () => { control.cancelled = true; cancel() } }
+  const owner = client
+  videoTailControls.set(fileId, control)
+  tailSeen.add(fileId)
   const promise = (async (): Promise<VideoTail | null> => {
-    try {
-      const tailOffset = want
-      const tailSize = Math.max(1, totalSize - tailOffset)
-      const budget = 30000
-
-      // Ask TDLib for exactly this range; synchronous resolves once the range has landed (bounded).
-      let timedOut = false
-      try {
-        await Promise.race([
-          invoke({ _: 'downloadFile', file_id: fileId, priority: 32, offset: tailOffset, limit: tailSize, synchronous: true }),
-          new Promise<never>((_, reject) => setTimeout(() => { timedOut = true; reject(new Error('timeout')) }, budget)),
-        ])
-      } catch {}
-
-      // Read it back. synchronous resolving means the range is in TDLib cache.
-      let buf: Buffer | null = null
-      for (let attempt = 0, attempts = timedOut ? 15 : 1; attempt < attempts; attempt++) {
-        if (attempt > 0) await new Promise((r) => setTimeout(r, 200))
-        const next = await readFileRange(fileId, tailOffset, tailSize)
-        if (!next) continue
-        buf = next
-        if (buf.length >= tailSize) break
-      }
-
-      // Always hand sequential downloading back to byte 0, even when the read came up empty —
-      // otherwise the file would be left downloading only its tail forever.
-      invoke({ _: 'downloadFile', file_id: fileId, priority: 32, offset: 0, limit: 0, synchronous: false }).catch(() => {})
-
-      if (!buf || buf.length <= 0) return null
-      const actualTail: VideoTail = { totalSize, tailOffset, buffer: buf }
-      setVideoTail(fileId, actualTail)
-      return actualTail
-    } catch {
+    const began = Date.now()
+    let requested = false
+    let handedBack = false
+    let filePath: string | null = null
+    const failed = (reason: string): null => {
+      log('warn', `media: tail failure id ${fileId} window ${tailOffset}+${tailSize} after ${Date.now() - began}ms; reason ${reason}; path ${filePath ?? '-'}`)
+      if (!control.cancelled) videoTailFailed.set(fileId, Date.now())
       return null
+    }
+    const handBack = async () => {
+      if (!requested || handedBack) return
+      handedBack = true
+      if (control.cancelled || client !== owner || auth.step !== 'ready') {
+        log('warn', `media: tail handback id ${fileId} skipped: cancelled or client changed; path ${filePath ?? '-'}`)
+        return
+      }
+      try {
+        const file = await bounded(call({ _: 'downloadFile', file_id: fileId, priority: 32, offset: 0, limit: 0, synchronous: false }), 1500)
+        noteReadable(file)
+        log('warn', `media: tail handback id ${fileId} success; path ${streamingPaths.get(fileId) ?? filePath ?? '-'}`)
+      } catch (error) {
+        log('warn', `media: tail handback id ${fileId} failed: ${error instanceof Error ? error.message : String(error)}; path ${filePath ?? '-'}`)
+      }
+    }
+    try {
+      filePath = await getStreamingFilePath(fileId)
+      if (control.cancelled || client !== owner) return failed('cancelled before range request')
+      log('warn', `media: tail start id ${fileId} window ${tailOffset}+${tailSize}; eligible floor ${eligibleFloor}; path ${filePath ?? '-'}`)
+      requested = true
+      let downloadFailure = ''
+      let rejectionDeadline = Infinity
+      // Synchronous describes TDLib's eventual answer, not a barrier to checking range coverage.
+      // Handback cancels the outstanding request when the verified bytes are already available.
+      void call({ _: 'downloadFile', file_id: fileId, priority: 32, offset: tailOffset, limit: tailSize, synchronous: true }).then(
+        (file) => {
+          if (client === owner && videoTailControls.get(fileId) === control && !control.cancelled) rememberStreamingPath(file)
+        },
+        (error) => {
+          if (client !== owner || videoTailControls.get(fileId) !== control || control.cancelled) return
+          downloadFailure = error instanceof Error ? error.message : String(error)
+          rejectionDeadline = Date.now() + 5000
+          log('warn', `media: tail download rejected id ${fileId} window ${tailOffset}+${tailSize}: ${downloadFailure}`)
+        },
+      )
+      const absoluteDeadline = began + 5 * 60 * 1000
+      let idleDeadline = Date.now() + 30000
+      let confirmed = 0
+      let reason = 'range not confirmed'
+      do {
+        if (Date.now() >= absoluteDeadline) return failed(`absolute timeout; confirmed ${confirmed}/${tailSize}`)
+        // Neither a returned download nor bytes that resemble media prove a sparse range is ready.
+        const [coverage, actualPath] = await Promise.all([
+          confirmedCoverage(fileId, tailOffset).catch(() => null),
+          getStreamingFilePath(fileId),
+        ])
+        filePath = actualPath
+        if (control.cancelled || client !== owner) return failed('explicit cancellation or client changed')
+        if (Date.now() >= absoluteDeadline) return failed(`absolute timeout; confirmed ${confirmed}/${tailSize}`)
+        if (coverage !== null && coverage > confirmed) {
+          confirmed = coverage
+          idleDeadline = Date.now() + 30000
+        }
+        if (coverage !== null && coverage >= tailSize && filePath) {
+          const buffer = await readTailFromDisk(filePath, tailOffset, tailSize)
+          if (control.cancelled || client !== owner) return failed('explicit cancellation or client changed')
+          if (buffer?.length === tailSize) {
+            const tail: VideoTail = { totalSize, tailOffset, buffer }
+            setVideoTail(fileId, tail)
+            videoTailFailed.delete(fileId)
+            log('warn', `media: tail ready id ${fileId} window ${tailOffset}+${tailSize} in ${Date.now() - began}ms; confirmed ${coverage}; path ${filePath}`)
+            return tail
+          }
+          reason = 'confirmed range missing or short on disk'
+        } else {
+          reason = coverage === null ? 'coverage query failed' : (!filePath ? 'TDLib has no local path' : `unconfirmed range ${coverage}/${tailSize}`)
+        }
+        if (Date.now() >= rejectionDeadline) return failed(`${downloadFailure}; ${reason}`)
+        if (Date.now() >= idleDeadline) return failed(`idle timeout; ${reason}`)
+        await bounded(cancelled, 250).catch(() => {})
+      } while (!control.cancelled && client === owner)
+      return failed('explicit cancellation or client changed')
+    } catch (error) {
+      return failed(error instanceof Error ? error.message : String(error))
     } finally {
-      videoTailInflight.delete(fileId)
+      await handBack()
+      if (videoTailControls.get(fileId) === control) {
+        videoTailControls.delete(fileId)
+        videoTailInflight.delete(fileId)
+      }
     }
   })()
-
   videoTailInflight.set(fileId, promise)
   return promise
+}
+
+/** Reads `count` bytes at `offset` straight from a local file; null when it cannot be read at all. */
+async function readTailFromDisk(filePath: string, offset: number, count: number): Promise<Buffer | null> {
+  if (!filePath || count <= 0) return null
+  const handle = await fs.promises.open(filePath, 'r').catch(() => null)
+  if (!handle) return null
+  try {
+    const buf = Buffer.alloc(count)
+    let read = 0
+    while (read < count) {
+      let bytesRead = 0
+      try {
+        ({ bytesRead } = await handle.read(buf, read, count - read, offset + read))
+      } catch {
+        break
+      }
+      if (bytesRead <= 0) break
+      read += bytesRead
+    }
+    return read > 0 ? buf.subarray(0, read) : null
+  } finally {
+    await handle.close().catch(() => {})
+  }
+}
+
+/** True only after parsing a complete, verified top-level moov before the first mdat. */
+export function videoHasHeadMoov(fileId: number): boolean {
+  return videoHeadKinds.get(fileId) === 'faststart'
+}
+
+/** Partial headers/boxes remain unknown so a later prefix update can retry the probe. */
+export async function probeVideoHead(fileId: number, totalSize: number, filePath: string): Promise<HeadKind> {
+  if (!(fileId > 0) || !Number.isSafeInteger(totalSize) || totalSize <= 0) return 'unknown'
+  const known = videoHeadKinds.get(fileId)
+  if (known) return known
+  const inflight = videoHeadInflight.get(fileId)
+  if (inflight) return inflight
+  const owner = client
+  let promise!: Promise<HeadKind>
+  promise = (async () => {
+    try {
+      const [wm, actualPath] = await Promise.all([getWatermarks(fileId, 0), getStreamingFilePath(fileId)])
+      const prefix = Math.min(totalSize, wm?.prefix ?? trackedReadableEnd(fileId))
+      const source = actualPath || (isStreamingPath(filePath) ? filePath : null)
+      if (!source) return 'unknown'
+      const remember = (kind: Exclude<HeadKind, 'unknown'>): HeadKind => {
+        if (client !== owner || videoHeadInflight.get(fileId) !== promise) return 'unknown'
+        if (videoHeadKinds.size >= 400) {
+          const oldest = videoHeadKinds.keys().next().value
+          if (oldest !== undefined) videoHeadKinds.delete(oldest)
+        }
+        videoHeadKinds.set(fileId, kind)
+        log('warn', `media: head probe id ${fileId} ${kind}; prefix ${prefix}; path ${source}`)
+        return kind
+      }
+      let offset = 0
+      for (let boxes = 0; boxes < 1024 && offset < prefix; boxes++) {
+        if (prefix - offset < 8) return 'unknown'
+        let header = await readTailFromDisk(source, offset, 8)
+        if (header?.length !== 8) return 'unknown'
+        let size = header.readUInt32BE(0)
+        const type = header.toString('ascii', 4, 8)
+        let headerSize = 8
+        if (size === 1) {
+          if (prefix - offset < 16) return 'unknown'
+          header = await readTailFromDisk(source, offset, 16)
+          if (header?.length !== 16) return 'unknown'
+          const largeSize = header.readBigUInt64BE(8)
+          if (largeSize > BigInt(Number.MAX_SAFE_INTEGER)) return 'unknown'
+          size = Number(largeSize)
+          headerSize = 16
+        } else if (size === 0) {
+          size = totalSize - offset
+        }
+        if (size < headerSize || size > totalSize - offset) return 'unknown'
+        if (type === 'mdat') return remember('tail')
+        // A moov header alone is not enough: its complete box must be within the verified prefix.
+        if (size > prefix - offset) return 'unknown'
+        if (type === 'moov') return remember('faststart')
+        offset += size
+      }
+      return 'unknown'
+    } catch {
+      return 'unknown'
+    } finally {
+      if (videoHeadInflight.get(fileId) === promise) videoHeadInflight.delete(fileId)
+    }
+  })()
+  videoHeadInflight.set(fileId, promise)
+  return promise
+}
+
+/** Unknown heads can retry; automatic warming gets only one tail attempt per file/session. */
+export function prefetchVideoTail(fileId: number, totalSize: number, filePath: string) {
+  if (!(fileId > 0) || totalSize <= TAIL_BASE || videoHasHeadMoov(fileId) || videoPrefetchAttempted.has(fileId) || videoPrefetchInflight.has(fileId) || videoTailBusy(fileId)) return
+  if (downloadComplete(fileId) || videoTailCache.get(fileId)?.totalSize === totalSize) return
+  const failedAt = videoTailFailed.get(fileId)
+  if (failedAt !== undefined && Date.now() - failedAt < 5000) return
+  const owner = client, attempt = {}
+  videoPrefetchInflight.set(fileId, attempt)
+  void (async () => {
+    try {
+      const kind = await probeVideoHead(fileId, totalSize, filePath)
+      if (client !== owner || videoPrefetchInflight.get(fileId) !== attempt || kind !== 'tail') return
+      // A cached head classification can outlive completion or a transfer's move/delete cleanup.
+      // Recheck before consuming the one automatic attempt or replacing the sequential download.
+      const wm = await getWatermarks(fileId, 0)
+      if (client !== owner || videoPrefetchInflight.get(fileId) !== attempt || wm?.done || downloadComplete(fileId)) return
+      videoPrefetchAttempted.add(fileId)
+      await fetchVideoTail(fileId, totalSize)
+    } catch (error) {
+      log('warn', `media: prefetch id ${fileId} failed: ${error instanceof Error ? error.message : String(error)}`)
+    } finally {
+      if (videoPrefetchInflight.get(fileId) === attempt) videoPrefetchInflight.delete(fileId)
+    }
+  })()
 }
 
 /** Call once, before any other TDLib use. `tdjson` must point outside app.asar: the OS loader cannot read inside it. */

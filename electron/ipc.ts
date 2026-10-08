@@ -528,20 +528,27 @@ export async function protocolFile(url: string, ctx: Pick<Ctx, 'tg' | 'paths' | 
     const tdFiles = path.join(ctx.paths.tdlib, 'files')
     const resolved = path.resolve(arg)
     if (within(tdFiles, resolved) || within(ctx.paths.tdlib, resolved) || within(ctx.paths.tmp, resolved)) {
-      if (await isFile(resolved)) return resolved
-      // If it's a temp file, TDLib may still be writing or may have completed and moved it
-      if (within(path.join(tdFiles, 'temp'), resolved)) {
-        const fileId = parseInt(path.basename(resolved), 10)
-        if (!isNaN(fileId) && ctx.tg?.invoke) {
-          try {
-            const f = await ctx.tg.invoke({ _: 'getFile', file_id: fileId })
-            if (f.local.is_downloading_completed && f.local.path && await isFile(f.local.path)) {
-              return f.local.path
-            }
-          } catch {}
-        }
-        return resolved
+      const tempDir = path.join(tdFiles, 'temp')
+      // File IDs are not temp filenames. Prefer TDLib's actual path, even before it is created;
+      // an empty answer must not replace a validated URL path with a guessed basename.
+      const urlId = parseInt(u.searchParams.get('id') || '0', 10)
+      const pathId = parseInt(path.basename(resolved), 10)
+      const id = urlId > 0 ? urlId : (Number.isFinite(pathId) && pathId > 0 ? pathId : NaN)
+      if (id > 0 && (urlId > 0 || within(tempDir, resolved))) {
+        try {
+          const hasStreamingPath = typeof ctx.tg.getStreamingFilePath === 'function'
+          const localPath = hasStreamingPath
+            ? await ctx.tg.getStreamingFilePath(id)
+            : (await ctx.tg.invoke({ _: 'getFile', file_id: id })).local?.path
+          if (localPath && path.isAbsolute(localPath)) {
+            if (within(tdFiles, localPath)) return localPath
+            // The streaming helper can retain the transfer engine's finalized library copy.
+            // Apply the same realpath/recorded-download authorization as a direct library URL.
+            if (hasStreamingPath) return await libraryFile(ctx.db, ctx.settings().downloadRoot, localPath)
+          }
+        } catch {}
       }
+      if (within(tempDir, resolved) || await isFile(resolved)) return resolved
     }
 
     // 2. Playback URLs carry absolute paths, so they go through the library rule: an existing file inside the root

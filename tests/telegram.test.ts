@@ -56,7 +56,8 @@ const dropTrust = () => fs.rmSync(fingerprintFile, { force: true })
 
 const step = () => tg.authState().step
 async function until(ok: () => boolean) {
-  for (let i = 0; i < 200 && !ok(); i++) await tick()
+  // File I/O is real even when the download timers are mocked.
+  for (const end = performance.now() + 5000; !ok() && performance.now() < end;) await tick()
   assert.ok(ok(), 'the condition never became true')
 }
 const auth = (_: string) => ({ _: 'updateAuthorizationState', authorization_state: { _ } })
@@ -570,7 +571,7 @@ test('sendPhone: a Continue click while the same number is still in flight share
 test('prepareMedia: video streaming path is provided immediately during download', async () => {
   const chatId = -77
   const messageId = 2 * 2 ** 20
-  const videoFile = { _: 'file', id: 404, size: 1048576, expected_size: 1048576, local: { is_downloading_completed: false, downloaded_size: 0, path: '' } }
+  const videoFile = { _: 'file', id: 404, size: 1048576, expected_size: 1048576, local: { is_downloading_completed: false, downloaded_size: 0, path: path.join(dir, 'files', 'temp', 'stream-1036') } }
   const cl = await signIn((req) => {
     if (req._ === 'getMessage') {
       return {
@@ -588,25 +589,53 @@ test('prepareMedia: video streaming path is provided immediately during download
   const res = await tg.prepareMedia(chatId, messageId)
   assert.equal(res.fileId, 404)
   assert.equal(res.completed, false)
-  assert.equal(res.path, path.join(dir, 'files', 'temp', '404'))
+  assert.equal(res.path, videoFile.local.path, 'TDLib provides the path before it exists; the basename is not the file ID')
   const downloadCalls = () => cl.requests.filter((r) => r._ === 'downloadFile')
-  // 1: the streaming download from byte 0, right away.
-  const first = downloadCalls()[0]
-  assert.equal(first.priority, 32)
-  assert.equal(first.synchronous, false)
-  assert.equal(first.offset, 0)
-  // 2: the background tail prefetch — every size gets it, so a 1 MB non-faststart MP4 has its
-  // moov before Chromium asks, not only files over 2 MB. The file's timers are mocked, so wait
-  // on the event loop (setImmediate is real) rather than a sleep for the prefetch to land.
-  for (let i = 0; i < 500 && downloadCalls().length < 3; i++) {
-    await new Promise((r) => setImmediate(r))
-  }
+  // The streaming download from byte 0, right away — and nothing else. The tail prefetch this used
+  // to fire next downloads the last 5 MB out of order, leaving a hole of zeros before it that the
+  // decoder reads as an unsupported file; the tail is fetched only when Chromium asks for a range
+  // past the download frontier.
+  for (let i = 0; i < 50; i++) await new Promise((r) => setImmediate(r))
   const calls = downloadCalls()
-  assert.equal(calls.length, 3)
-  assert.equal(calls[1].synchronous, true)
-  // 3: the fetch hands the sequential download back to byte 0 afterwards.
-  assert.equal(calls[2].offset, 0)
-  assert.equal(calls[2].synchronous, false)
+  assert.equal(calls.length, 1, 'prepareMedia must not prefetch the moov tail out of order')
+  assert.equal(calls[0].priority, 32)
+  assert.equal(calls[0].synchronous, false)
+  assert.equal(calls[0].offset, 0)
+  assert.equal(calls[0].limit, 0)
+})
+
+test('prepareMedia: a recorded path that no longer holds the whole file is not reported complete', async () => {
+  const chatId = -78
+  const messageId = 2 * 2 ** 20 + 1
+  const videoFile = { _: 'file', id: 405, size: 1048576, expected_size: 1048576, local: { is_downloading_completed: false, downloaded_size: 0, path: '' } }
+  // A completed row left over from an earlier session: the name matches, the bytes do not. The
+  // library is pruned while this row survives, so the file it points at can be short — and handing
+  // it back as complete made the player declare a whole video and fail on the first byte past the end.
+  const stale = path.join(dir, 'files', 'videos', 'stale.mp4')
+  fs.mkdirSync(path.dirname(stale), { recursive: true })
+  fs.writeFileSync(stale, Buffer.alloc(4096))
+  db.prepare(`INSERT INTO jobs (kind, status, position, chat_id, chat_title, message_id, name, type, path, created_at)
+    VALUES ('download', 'completed', 0, ?, 'Fixture chat', ?, 'stale.mp4', 'video', ?, 0)`).run(chatId, messageId, stale)
+  await signIn((req) => {
+    if (req._ === 'getMessage') {
+      return {
+        _: 'message', id: messageId, chat_id: chatId, date: 100,
+        content: {
+          _: 'messageVideo',
+          video: { _: 'video', duration: 120, width: 1920, height: 1080, file_name: 'test.mp4', mime_type: 'video/mp4', video: videoFile },
+        },
+      }
+    }
+    if (req._ === 'getFile') return videoFile
+    if (req._ === 'downloadFile') return videoFile
+    return notFound()
+  })
+  const res = await tg.prepareMedia(chatId, messageId)
+  db.prepare('DELETE FROM jobs WHERE chat_id = ? AND message_id = ?').run(chatId, messageId)
+  fs.rmSync(stale, { force: true })
+  assert.notEqual(res.path, stale, 'a truncated leftover must not be handed back as the finished file')
+  assert.equal(res.completed, false)
+  assert.equal(res.path, null, 'an empty TDLib path must not invent a temp filename')
 })
 
 test('videoTail: caching and retrieval for fast MP4 playback', async () => {
@@ -622,33 +651,786 @@ test('videoTail: caching and retrieval for fast MP4 playback', async () => {
   assert.equal(tail.buffer.toString(), 'test-moov-atom-data')
 })
 
-test('fetchVideoTail: fetches tail atom and caches it', async () => {
-  const fileId = 888
-  const fakeData = Buffer.from('moov-sample-data')
-  const totalSize = fakeData.length
-  const expectedTailSize = fakeData.length
-  const expectedTailOffset = 0
-  const fakeDataBase64 = fakeData.toString('base64')
+const STREAM_SIZE = 10967770
+const STREAM_TAIL_OFFSET = Math.floor((STREAM_SIZE - 5 * 1024 * 1024) / 4096) * 4096
+const STREAM_TAIL_SIZE = STREAM_SIZE - STREAM_TAIL_OFFSET
+const STREAM_SUFFIX_OFFSET = Math.floor((STREAM_SIZE - 64 * 1024) / 4096) * 4096
+const PRODUCTION_SIZE = 68876944
+const PRODUCTION_FLOOR = 63631360
+const CHROMIUM_OFFSET = 68812800
+const PRODUCTION_SUFFIX_OFFSET = 68808704
+const streamingFile = (id: number, filePath: string, prefix = 4096, totalSize = STREAM_SIZE) => ({
+  _: 'file', id, size: totalSize, expected_size: totalSize,
+  local: { path: filePath, is_downloading_completed: false, is_downloading_active: true, can_be_downloaded: true,
+    download_offset: 0, downloaded_prefix_size: prefix, downloaded_size: prefix },
+})
+const videoMessage = (file: ReturnType<typeof streamingFile>) => ({
+  _: 'message', id: 2 * 2 ** 20 + file.id, chat_id: -79, date: 100,
+  content: { _: 'messageVideo', video: { _: 'video', duration: 120, width: 1920, height: 1080,
+    file_name: 'stream.mp4', mime_type: 'video/mp4', video: file } },
+})
+function sparseVideo(name: string, tail: Buffer, head = Buffer.alloc(4096, 0x41), totalSize = STREAM_SIZE, tailOffset = STREAM_TAIL_OFFSET): string {
+  const filePath = path.join(dir, 'files', 'temp', name)
+  fs.mkdirSync(path.dirname(filePath), { recursive: true })
+  const fd = fs.openSync(filePath, 'w')
+  try {
+    fs.ftruncateSync(fd, totalSize)
+    fs.writeSync(fd, head, 0, head.length, 0)
+    fs.writeSync(fd, tail, 0, tail.length, tailOffset)
+  } finally { fs.closeSync(fd) }
+  return filePath
+}
+function mp4Box(type: string, payload: Buffer = Buffer.alloc(0), size64 = false): Buffer {
+  const header = Buffer.alloc(size64 ? 16 : 8)
+  header.writeUInt32BE(size64 ? 1 : header.length + payload.length, 0)
+  header.write(type, 4, 4, 'ascii')
+  if (size64) header.writeBigUInt64BE(BigInt(header.length + payload.length), 8)
+  return Buffer.concat([header, payload])
+}
 
-  const cl = await signIn((req) => {
-    if (req._ === 'downloadFile') return { _: 'file', id: fileId, size: totalSize }
-    if (req._ === 'readFilePart') return { _: 'data', data: fakeDataBase64 }
+test('prepareMedia: a full-size sparse temp file and a name-matching temp file are not completed media', async () => {
+  const actual = sparseVideo('prepare-actual', Buffer.alloc(32))
+  const nameMatch = path.join(dir, 'files', 'temp', 'stream.mp4')
+  fs.writeFileSync(nameMatch, Buffer.alloc(STREAM_SIZE))
+  const file = streamingFile(880, actual)
+  file.local.downloaded_size = 8192
+  await signIn((req) => {
+    if (req._ === 'getMessage') return videoMessage(file)
+    if (req._ === 'getFile' || req._ === 'downloadFile') return file
     return notFound()
   })
+  const result = await tg.prepareMedia(-79, 2 * 2 ** 20 + file.id)
+  assert.equal(result.completed, false)
+  assert.equal(result.path, actual)
+  assert.equal(result.downloaded, 8192, 'disk size is not downloaded progress')
+})
 
-  const tail = await tg.fetchVideoTail(fileId, totalSize)
+test('fetchVideoTail: pending tail shields prepare/resume/invoke and awaits exactly one handback', async () => {
+  const bytes = Buffer.alloc(STREAM_TAIL_SIZE, 0x5a)
+  bytes.fill(0, 4096, 8192) // Legitimate zero bytes do not disqualify confirmed coverage.
+  const actual = sparseVideo('1036', bytes)
+  const file = streamingFile(888, actual)
+  let prefix = 4096, coverage = 0
+  let releaseTail!: () => void, releaseHandback!: () => void, startHandback!: () => void
+  const tailGate = new Promise<void>((resolve) => { releaseTail = resolve })
+  const handbackGate = new Promise<void>((resolve) => { releaseHandback = resolve })
+  const handbackStarted = new Promise<void>((resolve) => { startHandback = resolve })
+  const cl = await signIn((req) => {
+    if (req._ === 'getMessage') return videoMessage(file)
+    if (req._ === 'getFile') return file
+    if (req._ === 'getFileDownloadedPrefixSize') return { _: 'fileDownloadedPrefixSize', size: req.offset === 0 ? prefix : coverage }
+    if (req._ === 'downloadFile') {
+      if (req.file_id !== file.id) return streamingFile(req.file_id, '')
+      if (req.synchronous) return tailGate.then(() => file)
+      startHandback()
+      return handbackGate.then(() => file)
+    }
+    return notFound()
+  })
+  assert.equal((await tg.getWatermarks(file.id, 0))?.prefix, prefix)
+  let settled = false
+  const pending = tg.fetchVideoTail(file.id, STREAM_SIZE, STREAM_TAIL_OFFSET).then((tail) => { settled = true; return tail })
+  await until(() => cl.requests.some((r) => r._ === 'downloadFile' && r.synchronous))
+  const joined = tg.fetchVideoTail(file.id, STREAM_SIZE, STREAM_SIZE - 1)
+  assert.equal(tg.videoTailBusy(file.id), true)
+  assert.equal((await tg.invoke({ _: 'downloadFile', file_id: file.id, priority: 32, offset: 0, limit: 0, synchronous: false })).id, file.id)
+  assert.equal((await tg.prepareMedia(-79, 2 * 2 ** 20 + file.id)).path, actual)
+  tg.resumeStreamingDownload(file.id)
+  await tg.invoke({ _: 'downloadFile', file_id: 889, priority: 32, offset: 0, limit: 0, synchronous: false })
+  file.local.download_offset = STREAM_TAIL_OFFSET
+  file.local.downloaded_prefix_size = STREAM_TAIL_SIZE
+  file.local.downloaded_size = STREAM_SIZE // Aggregate byte count must not imply completion.
+  cl.update({ _: 'updateFile', file })
+  assert.equal(tg.trackedReadableEnd(file.id), prefix)
+  assert.deepEqual(await tg.getWatermarks(file.id, 0), { prefix, downloaded: STREAM_SIZE, size: STREAM_SIZE, done: false })
+  const downloads = () => cl.requests.filter((r) => r._ === 'downloadFile' && r.file_id === file.id)
+  assert.equal(downloads().length, 1, 'no caller resets the pending tail')
+  assert.equal(tg.getVideoTail(file.id), undefined, 'even dense on-disk bytes require confirmed coverage')
+  coverage = STREAM_TAIL_SIZE
+  mock.timers.tick(250)
+  await handbackStarted
+  releaseTail() // Coverage, not the pending synchronous answer, permitted the handback.
+  assert.equal(settled, false, 'the result waits for the handback answer')
+  assert.equal(tg.videoTailBusy(file.id), true, 'the guard covers handback too')
+  await tg.invoke({ _: 'downloadFile', file_id: file.id, priority: 32, offset: 0, limit: 0, synchronous: false })
+  releaseHandback()
+  const tail = await pending
   assert.ok(tail)
-  assert.equal(tail.totalSize, totalSize)
-  assert.equal(tail.buffer.toString(), 'moov-sample-data')
-  assert.equal(tg.getVideoTail(fileId)?.buffer.toString(), 'moov-sample-data')
+  assert.equal(await joined, tail)
+  assert.deepEqual(tail.buffer, bytes)
+  assert.equal(tail.tailOffset, 5722112)
+  assert.equal(tail.totalSize, STREAM_SIZE)
+  assert.equal(downloads()[0].limit, STREAM_TAIL_SIZE)
+  assert.equal(downloads()[0].offset % 4096, 0)
+  assert.equal(downloads()[1].offset, 0)
+  assert.equal(downloads()[1].limit, 0)
+  assert.equal(downloads()[1].synchronous, false)
+  assert.equal(tg.videoTailBusy(file.id), false)
+  assert.equal(cl.requests.some((r) => r._ === 'readFilePart'), false)
+  prefix = 8192
+  file.local.download_offset = 0
+  file.local.downloaded_prefix_size = prefix
+  cl.update({ _: 'updateFile', file })
+  assert.equal((await tg.getWatermarks(file.id, 0))?.prefix, prefix)
+  assert.equal(tg.downloadComplete(file.id), false)
+  mock.timers.tick(30000)
+  await tick()
+  assert.equal(downloads().length, 2, 'cleared timeout handles never cause another handback')
+})
 
-  const dlCalls = cl.requests.filter((r) => r._ === 'downloadFile')
-  // 1 synchronous for tail, 1 asynchronous to resume stream from 0
-  assert.equal(dlCalls.length, 2)
-  assert.equal(dlCalls[0].offset, expectedTailOffset)
-  assert.equal(dlCalls[0].synchronous, true)
-  assert.equal(dlCalls[1].offset, 0)
-  assert.equal(dlCalls[1].synchronous, false)
+test('fetchVideoTail: requires the whole range and refreshes a changing non-ID temp path', async () => {
+  const garbage = Buffer.alloc(STREAM_TAIL_SIZE, 0x58)
+  mp4Box('moov', Buffer.alloc(128)).copy(garbage, garbage.length - 136)
+  const oldPath = sparseVideo('tail-old', garbage)
+  const bytes = Buffer.alloc(STREAM_TAIL_SIZE, 0x44)
+  const newPath = sparseVideo('tail-new', bytes)
+  const file = streamingFile(890, oldPath)
+  let coverage = STREAM_TAIL_SIZE - 1
+  let probes = 0
+  const cl = await signIn((req) => {
+    if (req._ === 'getFile' || req._ === 'downloadFile') return file
+    if (req._ === 'getFileDownloadedPrefixSize') { probes++; return { _: 'fileDownloadedPrefixSize', size: coverage } }
+    return notFound()
+  })
+  const pending = tg.fetchVideoTail(file.id, STREAM_SIZE, STREAM_TAIL_OFFSET)
+  await until(() => probes > 0)
+  for (let i = 0; i < 10; i++) await tick()
+  assert.equal(tg.getVideoTail(file.id), undefined, 'dense bytes and a moov cannot prove the missing final byte')
+  file.local.path = newPath
+  coverage = STREAM_TAIL_SIZE
+  mock.timers.tick(250)
+  const tail = await pending
+  assert.ok(tail)
+  assert.deepEqual(tail.buffer, bytes)
+  assert.equal(await tg.getStreamingFilePath(file.id), newPath)
+  file.local.path = ''
+  assert.equal(await tg.getStreamingFilePath(file.id), newPath, 'empty metadata retains the actual path')
+  const signedIn = answer
+  answer = (req, client) => req._ === 'getFile' ? notFound() : signedIn(req, client)
+  assert.equal(await tg.getStreamingFilePath(file.id), newPath, 'a transient failure retains the actual path')
+  assert.equal(cl.requests.filter((r) => r._ === 'downloadFile').length, 2)
+})
+
+test('fetchVideoTail: polls coverage and the actual path while the synchronous answer is still pending', async () => {
+  const bytes = Buffer.alloc(STREAM_TAIL_SIZE, 0x46)
+  const file = streamingFile(891, '')
+  const actual = sparseVideo('pending-actual', bytes)
+  let coverage = 0, probes = 0
+  const cl = await signIn((req) => {
+    if (req._ === 'getFile') return file
+    if (req._ === 'getFileDownloadedPrefixSize') { probes++; return { _: 'fileDownloadedPrefixSize', size: coverage } }
+    if (req._ === 'downloadFile') return req.synchronous ? new Promise(() => {}) : file
+    return notFound()
+  })
+  const pending = tg.fetchVideoTail(file.id, STREAM_SIZE, STREAM_TAIL_OFFSET)
+  await until(() => probes > 0)
+  for (let i = 0; i < 10; i++) await tick()
+  file.local.path = actual
+  coverage = STREAM_TAIL_SIZE
+  mock.timers.tick(250)
+  const tail = await pending
+  assert.ok(tail)
+  assert.deepEqual(tail.buffer, bytes)
+  assert.equal(cl.requests.filter((r) => r._ === 'downloadFile').length, 2)
+  assert.equal(fs.existsSync(path.join(dir, 'files', 'temp', String(file.id))), false)
+})
+
+test('fetchVideoTail: an idle unconfirmed sparse range fails closed after 30 seconds and hands back once', async (t) => {
+  const garbage = Buffer.alloc(STREAM_TAIL_SIZE, 0x58)
+  mp4Box('moov', Buffer.alloc(128)).copy(garbage, garbage.length - 136)
+  const file = streamingFile(892, sparseVideo('unconfirmed', garbage))
+  let now = Date.now(), probes = 0
+  t.mock.method(Date, 'now', () => now)
+  const cl = await signIn((req) => {
+    if (req._ === 'getFile' || req._ === 'downloadFile') return file
+    if (req._ === 'getFileDownloadedPrefixSize') { probes++; return { _: 'fileDownloadedPrefixSize', size: 0 } }
+    return notFound()
+  })
+  const pending = tg.fetchVideoTail(file.id, STREAM_SIZE, STREAM_TAIL_OFFSET)
+  await until(() => probes > 0)
+  for (let i = 0; i < 10; i++) await tick()
+  assert.equal(tg.getVideoTail(file.id), undefined)
+  now += 29750
+  mock.timers.tick(29750)
+  await until(() => probes > 1)
+  for (let i = 0; i < 10; i++) await tick()
+  assert.equal(tg.videoTailBusy(file.id), true)
+  assert.equal(cl.requests.filter((r) => r._ === 'downloadFile').length, 1)
+  now += 250
+  mock.timers.tick(250)
+  assert.equal(await pending, null)
+  assert.equal(tg.getVideoTail(file.id), undefined)
+  assert.equal(cl.requests.filter((r) => r._ === 'downloadFile' && r.offset === 0).length, 1)
+  assert.equal(tg.videoTailBusy(file.id), false)
+})
+
+test('fetchVideoTail: joined callers share cancellation without starting a new download or handback', async () => {
+  const file = streamingFile(893, '')
+  const cl = await signIn((req) => {
+    if (req._ === 'getFile') return file
+    if (req._ === 'downloadFile') return new Promise(() => {})
+    if (req._ === 'cancelDownloadFile') return { _: 'ok' }
+    return notFound()
+  })
+  const pending = tg.fetchVideoTail(file.id, STREAM_SIZE)
+  await until(() => cl.requests.some((r) => r._ === 'downloadFile'))
+  const joined = tg.fetchVideoTail(file.id, STREAM_SIZE, STREAM_SIZE - 1)
+  const differentWindow = tg.fetchVideoTail(file.id, STREAM_SIZE + 4096)
+  await tg.invoke({ _: 'cancelDownloadFile', file_id: file.id, only_if_pending: false })
+  assert.deepEqual(await Promise.all([pending, joined, differentWindow]), [null, null, null])
+  assert.equal(cl.requests.filter((r) => r._ === 'cancelDownloadFile').length, 1)
+  assert.equal(cl.requests.filter((r) => r._ === 'downloadFile').length, 1)
+  assert.equal(tg.videoTailBusy(file.id), false)
+})
+
+test('fetchVideoTail: the production Chromium request downloads only its 64,144-byte confirmed suffix, never sparse padding', async () => {
+  const moov = mp4Box('moov', Buffer.alloc(1024, 0x53))
+  const head = Buffer.alloc(64 * 1024)
+  const ftyp = mp4Box('ftyp', Buffer.from('isom'))
+  ftyp.copy(head)
+  const mdat = mp4Box('mdat')
+  mdat.writeUInt32BE(PRODUCTION_SIZE - ftyp.length - moov.length)
+  mdat.copy(head, ftyp.length)
+  const bytes = Buffer.alloc(PRODUCTION_SIZE - CHROMIUM_OFFSET, 0x56)
+  bytes.fill(0, 4096, 8192) // Verified zeros are legitimate; unconfirmed sparse zeros are not.
+  moov.copy(bytes, bytes.length - moov.length)
+  const actual = sparseVideo('production-temp-1036', bytes, head, PRODUCTION_SIZE, CHROMIUM_OFFSET)
+  const file = streamingFile(902, actual, head.length, PRODUCTION_SIZE)
+  let coverage = 0, probes = 0, handbacks = 0
+  let releaseHandback!: () => void
+  const handbackGate = new Promise<void>((resolve) => { releaseHandback = resolve })
+  const cl = await signIn((req) => {
+    if (req._ === 'getFile') return file
+    if (req._ === 'getFileDownloadedPrefixSize') {
+      if (req.offset === 0) return { _: 'fileDownloadedPrefixSize', size: head.length }
+      assert.equal(req.offset, CHROMIUM_OFFSET)
+      probes++
+      return { _: 'fileDownloadedPrefixSize', size: coverage }
+    }
+    if (req._ === 'downloadFile') {
+      if (req.synchronous) return new Promise(() => {})
+      handbacks++
+      return handbackGate.then(() => file)
+    }
+    return notFound()
+  })
+  assert.equal(await tg.probeVideoHead(file.id, PRODUCTION_SIZE, actual), 'tail')
+  const pending = tg.fetchVideoTail(file.id, PRODUCTION_SIZE, CHROMIUM_OFFSET)
+  await until(() => probes === 1)
+  for (let i = 0; i < 10; i++) await tick()
+  const range = cl.requests.find((r) => r._ === 'downloadFile')!
+  assert.equal(range.offset, 68812800)
+  assert.equal(range.limit, 64144)
+  assert.equal(range.offset % 4096, 0)
+  assert.equal(fs.statSync(actual).size, PRODUCTION_SIZE)
+  assert.equal(tg.getVideoTail(file.id), undefined)
+  assert.equal(handbacks, 0)
+  file.local.download_offset = CHROMIUM_OFFSET
+  file.local.downloaded_prefix_size = coverage = bytes.length - 1
+  file.local.downloaded_size = PRODUCTION_SIZE
+  cl.update({ _: 'updateFile', file })
+  mock.timers.tick(250)
+  await until(() => probes === 2)
+  for (let i = 0; i < 10; i++) await tick()
+  assert.equal(tg.getVideoTail(file.id), undefined, 'one missing confirmed byte forbids the whole buffer')
+  assert.equal(handbacks, 0)
+  assert.equal((await tg.getWatermarks(file.id, 0))?.prefix, head.length, 'tail bytes never enlarge offset-0 coverage')
+  coverage = bytes.length
+  mock.timers.tick(250)
+  await until(() => handbacks === 1)
+  assert.equal(tg.videoTailBusy(file.id), true, 'confirmed bytes still await the single handback')
+  releaseHandback()
+  const tail = await pending
+  assert.ok(tail)
+  assert.deepEqual(tail, { totalSize: PRODUCTION_SIZE, tailOffset: CHROMIUM_OFFSET, buffer: bytes })
+  assert.equal(tail.buffer.length, 64144, 'no 5 MiB zero-filled padding reaches the decoder')
+  assert.equal(handbacks, 1)
+  assert.equal(cl.requests.some((r) => r._ === 'readFilePart'), false)
+})
+
+test('prefetchVideoTail: warms the aligned last 64 KiB, expanding to the unchanged eligible floor only after full confirmation', async () => {
+  const head = Buffer.concat([mp4Box('ftyp', Buffer.from('isom')), mp4Box('mdat', Buffer.alloc(16))])
+  const bytes = Buffer.alloc(PRODUCTION_SIZE - PRODUCTION_SUFFIX_OFFSET, 0x61)
+  const oldPath = sparseVideo('production-small-suffix', bytes, head, PRODUCTION_SIZE, PRODUCTION_SUFFIX_OFFSET)
+  const expandedBytes = Buffer.alloc(PRODUCTION_SIZE - PRODUCTION_FLOOR, 0x62)
+  bytes.copy(expandedBytes, PRODUCTION_SUFFIX_OFFSET - PRODUCTION_FLOOR)
+  const newPath = sparseVideo('production-expanded-suffix', expandedBytes, head, PRODUCTION_SIZE, PRODUCTION_FLOOR)
+  const file = streamingFile(903, oldPath, head.length, PRODUCTION_SIZE)
+  let expandedCoverage = 0, expandedProbes = 0
+  const cl = await signIn((req) => {
+    if (req._ === 'getFile') return file
+    if (req._ === 'downloadFile') return req.synchronous ? new Promise(() => {}) : file
+    if (req._ === 'getFileDownloadedPrefixSize') {
+      if (req.offset === 0) return { _: 'fileDownloadedPrefixSize', size: head.length }
+      if (req.offset === PRODUCTION_SUFFIX_OFFSET) return { _: 'fileDownloadedPrefixSize', size: bytes.length }
+      assert.equal(req.offset, PRODUCTION_FLOOR)
+      expandedProbes++
+      return { _: 'fileDownloadedPrefixSize', size: expandedCoverage }
+    }
+    return notFound()
+  })
+  tg.prefetchVideoTail(file.id, PRODUCTION_SIZE, oldPath)
+  await until(() => Boolean(tg.getVideoTail(file.id)) && !tg.videoTailBusy(file.id))
+  const warmed = tg.getVideoTail(file.id)!
+  assert.deepEqual(warmed, { totalSize: PRODUCTION_SIZE, tailOffset: 68808704, buffer: bytes })
+  assert.equal(warmed.buffer.length, 68240)
+  const downloads = () => cl.requests.filter((r) => r._ === 'downloadFile')
+  assert.deepEqual(downloads().map((r) => [r.offset, r.limit]), [[68808704, 68240], [0, 0]])
+  const eligibleFloor = Math.floor(Math.max(0, PRODUCTION_SIZE - Math.min(PRODUCTION_SIZE, 5 * 1024 * 1024)) / 4096) * 4096
+  assert.equal(eligibleFloor, PRODUCTION_FLOOR, 'the range policy floor is byte-identical')
+  assert.equal(await tg.fetchVideoTail(file.id, PRODUCTION_SIZE, eligibleFloor - 1), null)
+  assert.equal(await tg.fetchVideoTail(file.id, PRODUCTION_SIZE, PRODUCTION_SIZE), null)
+  assert.equal(downloads().length, 2, 'requests outside the eligible window cannot start a tail download')
+  assert.equal(await tg.fetchVideoTail(file.id, PRODUCTION_SIZE, CHROMIUM_OFFSET), warmed, 'the warm suffix covers Chromium through EOF')
+  const pending = tg.fetchVideoTail(file.id, PRODUCTION_SIZE, eligibleFloor + 123)
+  await until(() => expandedProbes === 1)
+  for (let i = 0; i < 10; i++) await tick()
+  assert.equal(downloads()[2].offset, eligibleFloor)
+  assert.equal(downloads()[2].limit, 5245584)
+  assert.equal(tg.getVideoTail(file.id), warmed, 'keep the smaller verified cache while expansion is unconfirmed')
+  expandedCoverage = expandedBytes.length - 1
+  mock.timers.tick(250)
+  await until(() => expandedProbes === 2)
+  for (let i = 0; i < 10; i++) await tick()
+  assert.equal(tg.getVideoTail(file.id), warmed)
+  assert.equal(downloads().length, 3, 'no handback before the entire expanded suffix is confirmed')
+  file.local.path = newPath
+  expandedCoverage = expandedBytes.length
+  mock.timers.tick(250)
+  const expanded = await pending
+  assert.ok(expanded)
+  assert.equal(expanded.tailOffset, eligibleFloor)
+  assert.deepEqual(expanded.buffer, expandedBytes)
+  assert.equal(tg.getVideoTail(file.id), expanded)
+  assert.equal(await tg.getStreamingFilePath(file.id), newPath)
+  assert.deepEqual(downloads().map((r) => r.offset), [PRODUCTION_SUFFIX_OFFSET, 0, PRODUCTION_FLOOR, 0])
+})
+
+test('fetchVideoTail: numeric coverage progress extends the idle budget beyond the old 25-second synchronous timeout', async (t) => {
+  const bytes = Buffer.alloc(PRODUCTION_SIZE - CHROMIUM_OFFSET, 0x71)
+  const file = streamingFile(904, sparseVideo('production-progress', bytes, undefined, PRODUCTION_SIZE, CHROMIUM_OFFSET), 4096, PRODUCTION_SIZE)
+  let now = Date.now(), coverage = 0, probes = 0, handbacks = 0
+  t.mock.method(Date, 'now', () => now)
+  const cl = await signIn((req) => {
+    if (req._ === 'getFile') return file
+    if (req._ === 'getFileDownloadedPrefixSize') { probes++; return { _: 'fileDownloadedPrefixSize', size: coverage } }
+    if (req._ === 'downloadFile') {
+      if (req.synchronous) return new Promise(() => {})
+      handbacks++
+      return file
+    }
+    return notFound()
+  })
+  const pending = tg.fetchVideoTail(file.id, PRODUCTION_SIZE, CHROMIUM_OFFSET)
+  await until(() => probes === 1)
+  for (let i = 0; i < 10; i++) await tick()
+  for (let step = 1; step <= 7; step++) {
+    coverage = step * 8192
+    file.local.downloaded_size += 8192
+    now += 20000
+    mock.timers.tick(20000)
+    await until(() => probes === step + 1)
+    for (let i = 0; i < 10; i++) await tick()
+    assert.equal(tg.videoTailBusy(file.id), true, 'numeric progress refreshes the 30-second idle deadline')
+    assert.equal(tg.getVideoTail(file.id), undefined)
+    assert.equal(handbacks, 0)
+  }
+  coverage = bytes.length
+  now += 20000
+  mock.timers.tick(20000)
+  const tail = await pending
+  assert.ok(tail)
+  assert.deepEqual(tail.buffer, bytes)
+  assert.equal(handbacks, 1)
+  assert.equal(probes, 9, 'polling is time-paced, not driven by every downloaded chunk')
+  assert.deepEqual(cl.requests.filter((r) => r._ === 'downloadFile').map((r) => r.offset), [CHROMIUM_OFFSET, 0])
+})
+
+test('fetchVideoTail: even continually progressing numeric coverage is bounded by the five-minute absolute cap', async (t) => {
+  const file = streamingFile(905, sparseVideo('production-capped', Buffer.alloc(0), undefined, PRODUCTION_SIZE, CHROMIUM_OFFSET), 4096, PRODUCTION_SIZE)
+  let now = Date.now(), coverage = 0, probes = 0, handbacks = 0
+  t.mock.method(Date, 'now', () => now)
+  const cl = await signIn((req) => {
+    if (req._ === 'getFile') return file
+    if (req._ === 'getFileDownloadedPrefixSize') { probes++; return { _: 'fileDownloadedPrefixSize', size: coverage } }
+    if (req._ === 'downloadFile') {
+      if (req.synchronous) return new Promise(() => {})
+      handbacks++
+      return file
+    }
+    return notFound()
+  })
+  const pending = tg.fetchVideoTail(file.id, PRODUCTION_SIZE, CHROMIUM_OFFSET)
+  await until(() => probes === 1)
+  for (let i = 0; i < 10; i++) await tick()
+  for (let step = 1; step < 15; step++) {
+    coverage = step * 1024
+    now += 20000
+    mock.timers.tick(20000)
+    await until(() => probes === step + 1)
+    for (let i = 0; i < 10; i++) await tick()
+    assert.equal(handbacks, 0)
+  }
+  now += 20000
+  mock.timers.tick(20000)
+  assert.equal(await pending, null)
+  assert.equal(tg.getVideoTail(file.id), undefined)
+  assert.equal(handbacks, 1)
+  assert.equal(probes, 15, 'the cap stops before issuing another metadata query')
+  assert.equal(cl.requests.filter((r) => r._ === 'downloadFile').length, 2)
+  mock.timers.tick(300000)
+  await tick()
+  assert.equal(handbacks, 1, 'cleared polling timers do not linger after failure')
+})
+
+test('fetchVideoTail: a synchronous rejection gets bounded coverage grace without retries or a busy loop', async (t) => {
+  const file = streamingFile(906, sparseVideo('production-rejected', Buffer.alloc(0), undefined, PRODUCTION_SIZE, CHROMIUM_OFFSET), 4096, PRODUCTION_SIZE)
+  let now = Date.now(), probes = 0
+  t.mock.method(Date, 'now', () => now)
+  const cl = await signIn((req) => {
+    if (req._ === 'getFile') return file
+    if (req._ === 'getFileDownloadedPrefixSize') { probes++; return { _: 'fileDownloadedPrefixSize', size: 1024 } }
+    if (req._ === 'downloadFile') {
+      if (req.synchronous) throw new tdl.TDLibError(400, 'Requested range failed')
+      return file
+    }
+    return notFound()
+  })
+  const pending = tg.fetchVideoTail(file.id, PRODUCTION_SIZE, CHROMIUM_OFFSET)
+  await until(() => probes === 1)
+  for (let i = 0; i < 10; i++) await tick()
+  now += 4750
+  mock.timers.tick(4750)
+  await until(() => probes === 2)
+  for (let i = 0; i < 10; i++) await tick()
+  assert.equal(tg.videoTailBusy(file.id), true)
+  assert.equal(cl.requests.filter((r) => r._ === 'downloadFile').length, 1)
+  now += 250
+  mock.timers.tick(250)
+  assert.equal(await pending, null)
+  assert.equal(tg.getVideoTail(file.id), undefined)
+  assert.equal(probes, 3)
+  assert.deepEqual(cl.requests.filter((r) => r._ === 'downloadFile').map((r) => r.offset), [CHROMIUM_OFFSET, 0])
+})
+
+test('watermarks: only offset-0 prefixes or explicit completion authorize reads, even without a tail', async () => {
+  const file = streamingFile(894, '')
+  file.local.downloaded_size = STREAM_SIZE
+  let reachable = false
+  const cl = await signIn((req) => {
+    if (req._ === 'getFile' && reachable) return file
+    if (req._ === 'getFileDownloadedPrefixSize' && reachable) return { _: 'fileDownloadedPrefixSize', size: 1024 }
+    return notFound()
+  })
+  assert.deepEqual(await tg.watermarkFor(file.id), { prefix: 0, downloaded: 0, size: 0, done: false })
+  cl.update({ _: 'updateFile', file })
+  assert.equal(tg.trackedReadableEnd(file.id), 4096)
+  file.local.download_offset = STREAM_TAIL_OFFSET
+  file.local.downloaded_prefix_size = STREAM_TAIL_SIZE
+  cl.update({ _: 'updateFile', file })
+  assert.equal(tg.trackedReadableEnd(file.id), 4096)
+  reachable = true
+  assert.deepEqual(await tg.getWatermarks(file.id, 0), { prefix: 1024, downloaded: STREAM_SIZE, size: STREAM_SIZE, done: false })
+  assert.equal(tg.trackedReadableEnd(file.id), 1024, 'fresh confirmed coverage may correct an older update')
+  file.local.is_downloading_completed = true
+  cl.update({ _: 'updateFile', file })
+  assert.equal(tg.downloadComplete(file.id), true)
+  assert.equal((await tg.getWatermarks(file.id, 0))?.prefix, STREAM_SIZE)
+  assert.equal((await tg.getWatermarks(file.id, 0))?.done, true)
+})
+
+test('retainStreamingFile: finalized library coverage survives deleteFile, empty updates, and re-download', async () => {
+  const id = 897
+  const bytes = Buffer.alloc(8192, 0x46)
+  const src = path.join(dir, 'files', 'temp', 'retain-source')
+  fs.mkdirSync(path.dirname(src), { recursive: true })
+  fs.writeFileSync(src, bytes)
+  const dest = path.join(temp, 'finalized-library.mp4')
+  const file = streamingFile(id, src)
+  file.size = file.expected_size = bytes.length
+  let reachable = true
+  const cl = await signIn((req) => {
+    if (req._ === 'getFile' || req._ === 'downloadFile') {
+      if (!reachable) return notFound()
+      return file
+    }
+    if (req._ === 'getFileDownloadedPrefixSize') return { _: 'fileDownloadedPrefixSize', size: file.local.downloaded_prefix_size }
+    if (req._ === 'deleteFile') {
+      file.local.path = ''
+      file.local.is_downloading_completed = false
+      file.local.downloaded_prefix_size = file.local.downloaded_size = 0
+      return { _: 'ok' }
+    }
+    return notFound()
+  })
+  assert.equal((await tg.getWatermarks(id, 0))?.prefix, 4096)
+  fs.renameSync(src, dest)
+  tg.retainStreamingFile(id, dest, bytes.length)
+  await tg.invoke({ _: 'deleteFile', file_id: id })
+  cl.update({ _: 'updateFile', file })
+  reachable = false
+  const requests = cl.requests.length
+  assert.equal(await tg.getStreamingFilePath(id), dest)
+  const complete = { prefix: bytes.length, downloaded: bytes.length, size: bytes.length, done: true }
+  assert.deepEqual(await tg.getWatermarks(id, 0), complete)
+  assert.deepEqual(await tg.watermarkFor(id), complete)
+  assert.equal(tg.trackedReadableEnd(id), bytes.length)
+  assert.equal(tg.downloadComplete(id), true)
+  assert.equal(await tg.getReadableEnd(id), Number.MAX_SAFE_INTEGER)
+  assert.equal(cl.requests.length, requests, 'the retained copy does not depend on TDLib being reachable')
+  reachable = true
+  file.local.path = src
+  file.local.downloaded_prefix_size = file.local.downloaded_size = 1024
+  fs.writeFileSync(src, bytes)
+  await tg.invoke({ _: 'downloadFile', file_id: id, priority: 32, offset: 0, limit: 0, synchronous: false })
+  cl.update({ _: 'updateFile', file })
+  assert.equal(await tg.getStreamingFilePath(id), dest, 'a re-download cannot replace the explicitly finalized identity')
+  assert.deepEqual(await tg.getWatermarks(id, 0), complete)
+  fs.unlinkSync(dest)
+  assert.equal(await tg.getStreamingFilePath(id), src, 'a missing retained copy falls back to the actual TDLib cache path')
+  assert.deepEqual(await tg.getWatermarks(id, 0), { prefix: 1024, downloaded: 1024, size: bytes.length, done: false })
+  assert.equal(tg.downloadComplete(id), false)
+  tg.retainStreamingFile(id, src, bytes.length)
+  assert.equal((await tg.getWatermarks(id, 0))?.done, false, 'a full-size TDLib temp file cannot be registered as a finalized copy')
+  fs.writeFileSync(dest, bytes)
+  assert.equal(await tg.getStreamingFilePath(id), src, 'recreating the old path does not resurrect discarded trust')
+})
+
+test('retainStreamingFile: pending metadata cannot override a concurrently finalized copy', async () => {
+  const id = 899
+  const dest = path.join(temp, 'concurrent-finalized.mp4')
+  const bytes = Buffer.alloc(64, 0x51)
+  fs.writeFileSync(dest, bytes)
+  const file = streamingFile(id, '', 0)
+  let release!: () => void
+  const gate = new Promise<void>((resolve) => { release = resolve })
+  const cl = await signIn((req) => {
+    if (req._ === 'getFile') return gate.then(() => file)
+    if (req._ === 'getFileDownloadedPrefixSize') return { _: 'fileDownloadedPrefixSize', size: 0 }
+    if (req._ === 'deleteFile') return { _: 'ok' }
+    return notFound()
+  })
+  const wm = tg.getWatermarks(id, 0)
+  const actualPath = tg.getStreamingFilePath(id)
+  await until(() => cl.requests.filter((r) => r._ === 'getFile').length === 2)
+  tg.retainStreamingFile(id, dest, bytes.length)
+  await tg.invoke({ _: 'deleteFile', file_id: id })
+  cl.update({ _: 'updateFile', file })
+  release()
+  assert.equal(await actualPath, dest)
+  assert.deepEqual(await wm, { prefix: bytes.length, downloaded: bytes.length, size: bytes.length, done: true })
+  fs.unlinkSync(dest)
+  assert.equal(await tg.getStreamingFilePath(id), null)
+  assert.deepEqual(await tg.watermarkFor(id), { prefix: 0, downloaded: 0, size: STREAM_SIZE, done: false })
+})
+
+test('retainStreamingFile: records are bounded, dropped on truncation, and cleared for a new session', async () => {
+  const dest = path.join(temp, 'bounded-finalized.mp4')
+  fs.writeFileSync(dest, Buffer.alloc(16, 0x51))
+  const backend: Answer = (req) => {
+    if (req._ === 'getFile') return streamingFile(req.file_id, '', 0)
+    if (req._ === 'getFileDownloadedPrefixSize') return { _: 'fileDownloadedPrefixSize', size: 0 }
+    return notFound()
+  }
+  await signIn(backend)
+  for (let id = 10000; id <= 10400; id++) tg.retainStreamingFile(id, dest, 16)
+  assert.equal(await tg.getStreamingFilePath(10000), null, 'the 401st entry evicts the oldest')
+  assert.equal(await tg.getStreamingFilePath(10400), dest)
+  fs.truncateSync(dest, 8)
+  assert.equal(await tg.getStreamingFilePath(10400), null, 'a truncated completed copy no longer authorizes reads')
+  fs.writeFileSync(dest, Buffer.alloc(16, 0x51))
+  tg.retainStreamingFile(10400, dest, 16)
+  await signIn(backend)
+  assert.equal(await tg.getStreamingFilePath(10400), null, 'new-session file IDs cannot inherit retained paths')
+  assert.deepEqual(await tg.getWatermarks(10400, 0), { prefix: 0, downloaded: 0, size: STREAM_SIZE, done: false })
+})
+
+test('probeVideoHead: partial size64 moov stays unknown; only verified top-level boxes establish faststart', async () => {
+  const ftyp = mp4Box('ftyp', Buffer.from('isommoov'))
+  const free = mp4Box('free', mp4Box('moov', Buffer.alloc(16)))
+  const moov = mp4Box('moov', Buffer.alloc(24), true)
+  const head = Buffer.concat([ftyp, free, moov, mp4Box('mdat', Buffer.alloc(16))])
+  const actual = sparseVideo('head-faststart', Buffer.alloc(0), head)
+  const file = streamingFile(895, actual)
+  let prefix = 5
+  const cl = await signIn((req) => {
+    if (req._ === 'getFile') return file
+    if (req._ === 'getFileDownloadedPrefixSize') return { _: 'fileDownloadedPrefixSize', size: prefix }
+    return notFound()
+  })
+  assert.equal(await tg.probeVideoHead(file.id, STREAM_SIZE, actual), 'unknown')
+  prefix = ftyp.length + free.length + 15
+  assert.equal(await tg.probeVideoHead(file.id, STREAM_SIZE, actual), 'unknown')
+  prefix++
+  assert.equal(await tg.probeVideoHead(file.id, STREAM_SIZE, actual), 'unknown', 'a verified moov header is not a complete moov')
+  assert.equal(tg.videoHasHeadMoov(file.id), false)
+  prefix = ftyp.length + free.length + moov.length
+  assert.equal(await tg.probeVideoHead(file.id, STREAM_SIZE, actual), 'faststart')
+  assert.equal(tg.videoHasHeadMoov(file.id), true)
+  tg.prefetchVideoTail(file.id, STREAM_SIZE, actual)
+  await tick()
+  assert.equal(cl.requests.some((r) => r._ === 'downloadFile'), false)
+})
+
+test('prefetchVideoTail: a short head is retryable and mdat before moov fetches the confirmed tail', async () => {
+  const ftyp = mp4Box('ftyp', Buffer.from('isommoov'))
+  const head = Buffer.concat([ftyp, mp4Box('mdat', Buffer.alloc(16), true)])
+  const bytes = Buffer.alloc(STREAM_TAIL_SIZE, 0x51)
+  const actual = sparseVideo('head-tail', bytes, head)
+  const file = streamingFile(896, actual)
+  let prefix = ftyp.length + 8
+  let startHandback!: () => void
+  const handbackStarted = new Promise<void>((resolve) => { startHandback = resolve })
+  const cl = await signIn((req) => {
+    if (req._ === 'getFile') return file
+    if (req._ === 'downloadFile') {
+      if (!req.synchronous) startHandback()
+      return file
+    }
+    if (req._ === 'getFileDownloadedPrefixSize') return { _: 'fileDownloadedPrefixSize', size: req.offset === 0 ? prefix : STREAM_SIZE - req.offset }
+    return notFound()
+  })
+  tg.prefetchVideoTail(file.id, STREAM_SIZE, actual)
+  assert.equal(await tg.probeVideoHead(file.id, STREAM_SIZE, actual), 'unknown')
+  await tick()
+  assert.equal(cl.requests.some((r) => r._ === 'downloadFile'), false)
+  assert.equal(tg.videoHasHeadMoov(file.id), false)
+  prefix = head.length
+  tg.prefetchVideoTail(file.id, STREAM_SIZE, actual)
+  await handbackStarted
+  await until(() => !tg.videoTailBusy(file.id))
+  assert.equal(await tg.probeVideoHead(file.id, STREAM_SIZE, actual), 'tail')
+  assert.deepEqual(tg.getVideoTail(file.id)?.buffer, bytes.subarray(STREAM_SUFFIX_OFFSET - STREAM_TAIL_OFFSET))
+  assert.deepEqual(cl.requests.filter((r) => r._ === 'downloadFile').map((r) => [r.offset, r.limit]), [[STREAM_SUFFIX_OFFSET, STREAM_SIZE - STREAM_SUFFIX_OFFSET], [0, 0]])
+})
+
+test('prefetchVideoTail: retained completion after delete cleanup never requests a tail or consumes an attempt', async () => {
+  const head = Buffer.concat([mp4Box('ftyp', Buffer.from('isom')), mp4Box('mdat', Buffer.alloc(16))])
+  const src = sparseVideo('prefetch-completed-source', Buffer.alloc(STREAM_TAIL_SIZE, 0x51), head)
+  const dest = path.join(temp, 'prefetch-completed-library.mp4')
+  const file = streamingFile(900, src, head.length)
+  let startHandback!: () => void
+  const handbackStarted = new Promise<void>((resolve) => { startHandback = resolve })
+  const cl = await signIn((req) => {
+    if (req._ === 'getFile') return file
+    if (req._ === 'getFileDownloadedPrefixSize') return { _: 'fileDownloadedPrefixSize', size: req.offset === 0 ? file.local.downloaded_prefix_size : STREAM_SIZE - req.offset }
+    if (req._ === 'downloadFile') {
+      if (req.offset === 0) startHandback()
+      return file
+    }
+    if (req._ === 'deleteFile') {
+      file.local.path = ''
+      file.local.downloaded_prefix_size = file.local.downloaded_size = 0
+      return { _: 'ok' }
+    }
+    return notFound()
+  })
+  assert.equal(await tg.probeVideoHead(file.id, STREAM_SIZE, src), 'tail')
+  fs.renameSync(src, dest)
+  tg.retainStreamingFile(file.id, dest, STREAM_SIZE)
+  await tg.invoke({ _: 'deleteFile', file_id: file.id })
+  cl.update({ _: 'updateFile', file })
+  assert.equal((await tg.getWatermarks(file.id, 0))?.done, true)
+  for (let i = 0; i < 3; i++) {
+    tg.prefetchVideoTail(file.id, STREAM_SIZE, src)
+    // Joining the probe and yielding drains asynchronous prefetch work too, not just the caller.
+    assert.equal(await tg.probeVideoHead(file.id, STREAM_SIZE, src), 'tail')
+    await tick()
+  }
+  assert.equal(cl.requests.some((r) => r._ === 'downloadFile'), false, 'delete cleanup must not restart tail downloading for the retained complete file')
+  assert.equal(tg.videoTailBusy(file.id), false)
+  fs.renameSync(dest, src)
+  file.local.path = src
+  file.local.downloaded_prefix_size = file.local.downloaded_size = head.length
+  cl.update({ _: 'updateFile', file })
+  tg.prefetchVideoTail(file.id, STREAM_SIZE, src)
+  await handbackStarted
+  await until(() => !tg.videoTailBusy(file.id))
+  assert.deepEqual(cl.requests.filter((r) => r._ === 'downloadFile').map((r) => r.offset), [STREAM_SUFFIX_OFFSET, 0], 'skipping a completed file does not consume its automatic attempt')
+})
+
+test('prefetchVideoTail: cached tail classification checks fresh TDLib completion before downloading', async () => {
+  const head = Buffer.concat([mp4Box('ftyp', Buffer.from('isom')), mp4Box('mdat', Buffer.alloc(16))])
+  const actual = sparseVideo('prefetch-tdlib-completed', Buffer.alloc(0), head)
+  const file = streamingFile(901, actual, head.length)
+  let checkedCompletion!: () => void
+  const completionChecked = new Promise<void>((resolve) => { checkedCompletion = resolve })
+  const cl = await signIn((req) => {
+    if (req._ === 'getFile') {
+      if (file.local.is_downloading_completed) checkedCompletion()
+      return file
+    }
+    if (req._ === 'getFileDownloadedPrefixSize') return { _: 'fileDownloadedPrefixSize', size: file.local.downloaded_prefix_size }
+    if (req._ === 'downloadFile') return file
+    return notFound()
+  })
+  assert.equal(await tg.probeVideoHead(file.id, STREAM_SIZE, actual), 'tail')
+  assert.equal(tg.downloadComplete(file.id), false)
+  file.local.is_downloading_completed = true
+  file.local.downloaded_prefix_size = file.local.downloaded_size = STREAM_SIZE
+  // No updateFile: the existing head classification and cached watermark still say incomplete.
+  tg.prefetchVideoTail(file.id, STREAM_SIZE, actual)
+  await completionChecked
+  await tick()
+  assert.equal((await tg.getWatermarks(file.id, 0))?.done, true)
+  assert.equal(cl.requests.some((r) => r._ === 'downloadFile'), false)
+  assert.equal(tg.videoTailBusy(file.id), false)
+})
+
+test('prefetchVideoTail: one failed automatic attempt leaves sequential alone; explicit retries, deletion and new sessions remain allowed', async (t) => {
+  const head = Buffer.concat([mp4Box('ftyp', Buffer.from('isom')), mp4Box('mdat', Buffer.alloc(16))])
+  const actual = sparseVideo('prefetch-once', Buffer.alloc(0), head)
+  const file = streamingFile(898, actual, head.length)
+  let now = Date.now()
+  t.mock.method(Date, 'now', () => now)
+  const backend: Answer = (req) => {
+    if (req._ === 'getFile') return file
+    if (req._ === 'getFileDownloadedPrefixSize') return { _: 'fileDownloadedPrefixSize', size: req.offset === 0 ? head.length : 0 }
+    if (req._ === 'downloadFile') {
+      if (req.synchronous) throw new tdl.TDLibError(404, 'Tail range unavailable')
+      return file
+    }
+    if (req._ === 'deleteFile' || req._ === 'cancelDownloadFile') return { _: 'ok' }
+    return notFound()
+  }
+  const cl = await signIn(backend)
+  const downloads = () => cl.requests.filter((r) => r._ === 'downloadFile')
+  const finishFailure = async (pending: Promise<tg.VideoTail | null>, previousProbes: number) => {
+    await until(() => cl.requests.filter((r) => r._ === 'getFileDownloadedPrefixSize' && r.offset === STREAM_SUFFIX_OFFSET).length > previousProbes)
+    for (let i = 0; i < 10; i++) await tick()
+    now += 5000
+    mock.timers.tick(5000)
+    assert.equal(await pending, null)
+    await tick()
+  }
+  tg.prefetchVideoTail(file.id, STREAM_SIZE, actual)
+  await until(() => downloads().some((r) => r.synchronous))
+  await finishFailure(tg.fetchVideoTail(file.id, STREAM_SIZE), 0)
+  assert.deepEqual(downloads().map((r) => r.offset), [STREAM_SUFFIX_OFFSET, 0])
+  now += 6000
+  mock.timers.tick(6000)
+  for (let i = 0; i < 5; i++) {
+    await tg.getWatermarks(file.id, 0)
+    tg.prefetchVideoTail(file.id, STREAM_SIZE, actual)
+    await tick()
+  }
+  assert.equal(downloads().length, 2, 'wm polls never restart a failed automatic prefetch after backoff')
+  const probes = cl.requests.filter((r) => r._ === 'getFileDownloadedPrefixSize' && r.offset === STREAM_SUFFIX_OFFSET).length
+  await finishFailure(tg.fetchVideoTail(file.id, STREAM_SIZE), probes)
+  assert.deepEqual(downloads().map((r) => r.offset), [STREAM_SUFFIX_OFFSET, 0, STREAM_SUFFIX_OFFSET, 0], 'an explicit handler retry is not blocked by the automatic-attempt flag')
+  await tg.invoke({ _: 'deleteFile', file_id: file.id })
+  const afterDelete = cl.requests.filter((r) => r._ === 'getFileDownloadedPrefixSize' && r.offset === STREAM_SUFFIX_OFFSET).length
+  tg.prefetchVideoTail(file.id, STREAM_SIZE, actual)
+  await until(() => downloads().filter((r) => r.synchronous).length === 3)
+  await finishFailure(tg.fetchVideoTail(file.id, STREAM_SIZE), afterDelete)
+  assert.equal(downloads().length, 6, 'cache deletion permits one new automatic attempt')
+  const next = await signIn(backend)
+  tg.prefetchVideoTail(file.id, STREAM_SIZE, actual)
+  await until(() => next.requests.some((r) => r._ === 'downloadFile' && r.synchronous))
+  const joined = tg.fetchVideoTail(file.id, STREAM_SIZE)
+  await tg.invoke({ _: 'cancelDownloadFile', file_id: file.id, only_if_pending: false })
+  assert.equal(await joined, null)
+  assert.equal(next.requests.filter((r) => r._ === 'downloadFile').length, 1, 'new sessions reset the attempt flag without resurrecting cancellation')
 })
 
 test('growing file streaming: delivers initial and appended bytes sequentially', async () => {

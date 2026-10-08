@@ -1,11 +1,12 @@
 // Phase 5.12: Playwright UI suite per UI.md - skeleton asserting structure and IPC wiring
 import { test, expect, type Page } from '@playwright/test'
+import { build } from 'esbuild'
 
 const baseUrl = `file://${process.cwd().replace(/\\/g, '/')}/out/renderer/index.html`
 
 // Mock IPC bridge with fixtures
-async function setupBridge(page: Page) {
-  await page.addInitScript(() => {
+async function setupBridge(page: Page, video?: { deferPrepare?: boolean, missingPath?: boolean }) {
+  await page.addInitScript(({ video }) => {
     const mockData: Record<string, any> = {
       'auth.get': { step: 'ready', connection: 'ready', me: { id: 1, name: 'Test User', firstName: 'Test', username: 'testuser', phone: '+•• ••• ••12 34', photo: null, premium: false, captionMax: 1024, uploadMax: 2097152000 } },
       'stats.live': { speed: { download: 1234567, upload: 123456 }, counts: { download: { queued: 2, active: 1, paused: 0, completed: 10, failed: 0 }, upload: { queued: 1, active: 0, paused: 0, completed: 5, failed: 0 } }, active: [], history: [], waitUntil: { download: null, upload: null } },
@@ -101,7 +102,133 @@ async function setupBridge(page: Page) {
       pathOf: (f: any) => f?.name ? `C:\\MockUploads\\${f.name}` : 'C:\\MockUploads\\upload.dat',
       setTheme: async (_color: string, _symbolColor?: string) => ({ ok: true }),
     }
-  })
+    if (!video) return
+
+    // These source-level regressions control media readiness, but load() still calls through so
+    // an unintended decoder reset is observable rather than hidden by a no-op.
+    const bridge = (window as any).teleflow
+    const listeners = new Set<(event: any) => void>()
+    const pending: ((response: any) => void)[] = []
+    const fixture: any = (window as any).__videoTest = {
+      loads: 0,
+      time: 0,
+      paused: true,
+      seeking: false,
+      readyState: 0,
+      error: null,
+      rejection: null,
+      ranges: [[0, 45.66]],
+      statTick: 0,
+      result: {
+        completed: false,
+        path: video.missingPath ? null : 'C:\\tdlib\\files\\temp\\1364',
+        fileId: 1364,
+        size: 10960000,
+        downloaded: 6160000,
+      },
+      emit: (event: any) => Array.from(listeners).forEach((cb) => cb(event)),
+      resolvePrepare: (data: any) => pending.shift()?.({ ok: true, data }),
+    }
+    bridge.on = (cb: (event: any) => void) => {
+      listeners.add(cb)
+      return () => listeners.delete(cb)
+    }
+    const realCall = bridge.call
+    bridge.call = (method: string, args?: any) => {
+      if (method !== 'media.prepare') return realCall(method, args)
+      bridge.calls.push({ method, args })
+      return video.deferPrepare
+        ? new Promise((resolve) => pending.push(resolve))
+        : Promise.resolve({ ok: true, data: fixture.result })
+    }
+    fixture.emitStats = async () => {
+      const { data } = await bridge.call('stats.live')
+      fixture.emit({ type: 'stats', stats: { ...data, speed: { ...data.speed, download: ++fixture.statTick } } })
+    }
+    Object.defineProperties(HTMLMediaElement.prototype, {
+      error: { configurable: true, get() { return fixture.error } },
+      paused: { configurable: true, get() { return fixture.paused } },
+      seeking: { configurable: true, get() { return fixture.seeking } },
+      readyState: { configurable: true, get() { return fixture.readyState } },
+      duration: { configurable: true, get() { return 159.2 } },
+      currentTime: {
+        configurable: true,
+        get() { return fixture.time },
+        set(value: number) {
+          fixture.time = value
+          fixture.seeking = true
+          this.dispatchEvent(new Event('seeking'))
+        },
+      },
+      buffered: {
+        configurable: true,
+        get() {
+          return {
+            length: fixture.ranges.length,
+            start: (i: number) => fixture.ranges[i][0],
+            end: (i: number) => fixture.ranges[i][1],
+          }
+        },
+      },
+    })
+    const nativeLoad = HTMLMediaElement.prototype.load
+    HTMLMediaElement.prototype.load = function () {
+      fixture.loads++
+      fixture.time = 0
+      fixture.ranges = []
+      nativeLoad.call(this)
+    }
+    HTMLMediaElement.prototype.play = function () {
+      if (fixture.rejection) return Promise.reject(new DOMException('Controlled media failure', fixture.rejection))
+      fixture.paused = false
+      this.dispatchEvent(new Event('play'))
+      return Promise.resolve()
+    }
+    HTMLMediaElement.prototype.pause = function () {
+      fixture.paused = true
+      this.dispatchEvent(new Event('pause'))
+    }
+  }, { video: video || null })
+}
+
+let videoPreviewBundle: Promise<string> | undefined
+
+async function setupVideoPreview(page: Page, options: { deferPrepare?: boolean, missingPath?: boolean } = {}) {
+  await setupBridge(page, options)
+  // Bundle the real source in memory: these tests need neither a stale out/renderer nor Electron's protocol.
+  videoPreviewBundle ||= build({
+    stdin: {
+      contents: `
+        import * as React from 'react'
+        import { createRoot } from 'react-dom/client'
+        import { MediaPreviewModal } from './web/src/ui.tsx'
+        import { useLive } from './web/src/api.ts'
+        function Parent() {
+          useLive()
+          const [state, setState] = React.useState({
+            open: true,
+            item: { name: 'preview.mp4', type: 'video', chatId: 1, messageId: 2, size: 10960000, duration: 159.2 },
+          })
+          window.__videoTest.render = patch => setState(prev => ({ ...prev, ...patch }))
+          return <MediaPreviewModal {...state} onClose={() => setState(prev => ({ ...prev, open: false }))} />
+        }
+        createRoot(document.getElementById('root')).render(<Parent />)
+      `,
+      loader: 'tsx',
+      resolveDir: process.cwd(),
+    },
+    bundle: true,
+    write: false,
+    format: 'iife',
+    platform: 'browser',
+    logLevel: 'silent',
+  }).then((result) => result.outputFiles[0].text)
+  await page.goto('about:blank')
+  await page.setContent('<style>video { width: 640px; height: 360px } #root { width: 1000px }</style><div id="root"></div>')
+  await page.addScriptTag({ content: await videoPreviewBundle })
+  await expect(page.locator('h3', { hasText: 'preview.mp4' })).toBeVisible()
+  await expect.poll(() => page.evaluate(() =>
+    (window as any).teleflow.calls.filter((c: any) => c.method === 'media.prepare').length)).toBe(1)
 }
 
 test.describe('Mediagram UI', () => {
@@ -1202,5 +1329,263 @@ test.describe('Mediagram UI', () => {
 
     // Click another chat in dialog to switch
     await page.locator('button:has-text("VIP Community")').click()
+  })
+
+  test('Video preview regression: stats rerenders do not prepare the same item again', async ({ page }) => {
+    await setupVideoPreview(page)
+    await expect(page.locator('video')).toHaveCount(1)
+    await page.clock.install()
+    for (let i = 0; i < 3; i++) {
+      await page.evaluate(() => (window as any).__videoTest.emitStats())
+      await page.clock.runFor(300)
+    }
+    await expect.poll(() => page.evaluate(() =>
+      (window as any).teleflow.calls.filter((c: any) => c.method === 'media.prepare').length)).toBe(1)
+    await page.keyboard.press('Escape')
+    await expect(page.locator('video')).toHaveCount(0)
+  })
+
+  test('Video preview regression: unrelated progress cannot supply a path or file id', async ({ page }) => {
+    await setupVideoPreview(page, { deferPrepare: true, missingPath: true })
+    await page.clock.install()
+    await page.evaluate(() => {
+      const fixture = (window as any).__videoTest
+      fixture.emit({ type: 'fileProgress', fileId: 1036, path: 'C:\\tdlib\\files\\temp\\1036', total: 10960000, downloaded: 10960000, completed: true })
+      fixture.resolvePrepare(fixture.result)
+    })
+    await page.clock.runFor(100)
+    await expect(page.locator('video')).toHaveCount(0)
+    await page.evaluate(() => (window as any).__videoTest.emit({
+      type: 'fileProgress', fileId: 1036, path: 'C:\\tdlib\\files\\temp\\1036', total: 10960000, downloaded: 10960000, completed: true,
+    }))
+    await page.clock.runFor(2600)
+    await expect.poll(() => page.evaluate(() =>
+      (window as any).teleflow.calls.filter((c: any) => c.method === 'media.prepare').length)).toBe(2)
+    await expect(page.locator('video')).toHaveCount(0)
+    await page.evaluate(() => {
+      const fixture = (window as any).__videoTest
+      fixture.resolvePrepare({ ...fixture.result, path: 'C:\\tdlib\\files\\temp\\1364' })
+    })
+    await expect(page.locator('video')).toHaveAttribute('src', /temp%5C1364\?total=10960000&ext=mp4&id=1364$/)
+    await expect(page.locator('[data-testid="player-download-status"]')).toContainText('Downloaded 56%')
+  })
+
+  test('Video preview regression: matching progress cancels a pending preparation retry', async ({ page }) => {
+    await setupVideoPreview(page, { missingPath: true })
+    await page.clock.install()
+    await page.evaluate(() => (window as any).__videoTest.emit({
+      type: 'fileProgress', fileId: 1364, path: 'C:\\tdlib\\files\\temp\\1364', total: 10960000, downloaded: 6160000, completed: false,
+    }))
+    await expect(page.locator('video')).toHaveCount(1)
+    await page.clock.runFor(3000)
+    await expect.poll(() => page.evaluate(() =>
+      (window as any).teleflow.calls.filter((c: any) => c.method === 'media.prepare').length)).toBe(1)
+    expect(await page.evaluate(() => (window as any).__videoTest.loads)).toBe(0)
+  })
+
+  test('Video preview regression: progress, completion and an unbuffered seek keep the source and decoder', async ({ page }) => {
+    const logs: string[] = []
+    page.on('console', (message) => {
+      if (message.text().startsWith('[player] buffering')) logs.push(message.text())
+    })
+    await setupVideoPreview(page)
+    const video = page.locator('video')
+    await expect(video).toHaveCount(1)
+    const src = await video.getAttribute('src')
+    await page.clock.install()
+    await video.evaluate((v) => {
+      ;(window as any).__videoTest.originalVideo = v
+      v.dispatchEvent(new Event('loadedmetadata'))
+      v.dispatchEvent(new Event('progress'))
+    })
+    const buffer = page.locator('[data-testid="player-buffered-track"]')
+    await expect(buffer).toHaveAttribute('title', 'Buffered: 29%')
+    await expect(page.locator('[data-testid="player-download-status"]')).toContainText('Downloaded 56%')
+    await page.locator('[class*="group/scrub"]').evaluate((scrub) => {
+      const rect = scrub.getBoundingClientRect()
+      scrub.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: rect.left + rect.width * 119.88 / 159.2 }))
+    })
+    const target = await video.evaluate((v: HTMLVideoElement) => v.currentTime)
+    expect(target).toBeCloseTo(119.88, 0)
+    await expect(page.locator('[data-testid="player-buffering"]')).toBeAttached()
+    await expect(page.locator('[data-testid="player-download-status"]')).toHaveText('Buffering / Downloaded 56%')
+    await page.evaluate(() => (window as any).__videoTest.emit({
+      type: 'fileProgress', fileId: 1364, total: 10960000, downloaded: 10000000, completed: false,
+    }))
+    await expect(page.locator('[data-testid="player-download-status"]')).toHaveText('Buffering / Downloaded 91%')
+    await page.clock.runFor(5000)
+    expect(logs.some((line) => line.includes('downloaded=91%'))).toBe(true)
+    await video.evaluate((v) => {
+      const fixture = (window as any).__videoTest
+      fixture.ranges = []
+      fixture.readyState = 0
+      v.dispatchEvent(new Event('progress'))
+      v.dispatchEvent(new Event('emptied'))
+    })
+    await expect(buffer).toHaveAttribute('title', 'Buffered: 0%')
+    await page.evaluate(() => (window as any).__videoTest.emit({
+      type: 'fileProgress', fileId: 1364, path: 'C:\\library\\finished.mp4', total: 12000000, downloaded: 12000000, completed: true,
+    }))
+    await expect(page.locator('[data-testid="player-download-status"]')).toHaveCount(0)
+    await expect(video).toHaveAttribute('src', src!)
+    await expect(buffer).toHaveAttribute('style', 'width: 0%;')
+    expect(await video.evaluate((v: HTMLVideoElement) => v.currentTime)).toBe(target)
+    expect(await video.evaluate((v) => v === (window as any).__videoTest.originalVideo)).toBe(true)
+    expect(await page.evaluate(() => (window as any).__videoTest.loads)).toBe(0)
+    expect(await page.evaluate(() =>
+      (window as any).teleflow.calls.filter((c: any) => c.method === 'media.prepare').length)).toBe(1)
+  })
+
+  test('Video preview regression: decode and unsupported failures never reload automatically', async ({ page }) => {
+    await setupVideoPreview(page)
+    await expect(page.locator('video')).toHaveCount(1)
+    await page.clock.install()
+    for (const code of [3, 4]) {
+      await page.evaluate((code) => {
+        const fixture = (window as any).__videoTest
+        fixture.error = { code, message: 'Controlled decoder failure' }
+        fixture.rejection = 'NotSupportedError'
+        fixture.paused = true
+        document.querySelector('video')!.dispatchEvent(new Event('error'))
+        document.querySelector<HTMLButtonElement>('button[title$="(Space)"]')!.click()
+      }, code)
+      await expect(page.getByRole('button', { name: 'Try again' })).toBeVisible()
+      await page.clock.runFor(6000)
+      expect(await page.evaluate(() => (window as any).__videoTest.loads)).toBe(0)
+    }
+  })
+
+  test('Video preview regression: a network error and play rejection queue only one reload', async ({ page }) => {
+    await setupVideoPreview(page)
+    await expect(page.locator('video')).toHaveCount(1)
+    await page.clock.install()
+    await page.evaluate(() => {
+      const fixture = (window as any).__videoTest
+      fixture.time = 119.88
+      fixture.error = { code: 2, message: 'Controlled network failure' }
+      fixture.rejection = 'NotSupportedError'
+      fixture.paused = true
+      document.querySelector('video')!.dispatchEvent(new Event('error'))
+      document.querySelector<HTMLButtonElement>('button[title$="(Space)"]')!.click()
+    })
+    await expect(page.getByText('The connection dropped while loading this file')).toBeVisible()
+    await page.clock.runFor(1000)
+    expect(await page.evaluate(() => (window as any).__videoTest.loads)).toBe(1)
+    await page.locator('video').evaluate((v) => {
+      const fixture = (window as any).__videoTest
+      fixture.error = null
+      fixture.rejection = null
+      fixture.paused = false
+      v.dispatchEvent(new Event('loadedmetadata'))
+      v.dispatchEvent(new Event('playing'))
+    })
+    expect(await page.locator('video').evaluate((v: HTMLVideoElement) => v.currentTime)).toBe(119.88)
+    await page.clock.runFor(5000)
+    expect(await page.evaluate(() => (window as any).__videoTest.loads)).toBe(1)
+  })
+
+  test('Video preview regression: reopened and replaced local items do not inherit media state', async ({ page }) => {
+    await setupVideoPreview(page)
+    await expect(page.locator('video')).toHaveAttribute('src', /&id=1364$/)
+    await page.evaluate(() => (window as any).__videoTest.render({ open: false }))
+    await expect(page.locator('video')).toHaveCount(0)
+    await page.evaluate(() => (window as any).__videoTest.render({
+      open: true, item: { name: 'local-b.mp4', type: 'video', path: 'C:\\library\\b.mp4', size: 999000 },
+    }))
+    await expect(page.locator('video')).toHaveAttribute('src', 'mediagram://file/C%3A%5Clibrary%5Cb.mp4?total=999000&ext=mp4')
+    await page.evaluate(() => {
+      const fixture = (window as any).__videoTest
+      fixture.emit({ type: 'fileProgress', fileId: 1364, path: 'C:\\library\\old.mp4', total: 10960000, downloaded: 10960000, completed: true })
+      fixture.render({ item: { name: 'local-c.mp4', type: 'video', path: 'C:\\library\\c.mp4', size: 3000000 } })
+    })
+    await expect(page.locator('video')).toHaveAttribute('src', 'mediagram://file/C%3A%5Clibrary%5Cc.mp4?total=3000000&ext=mp4')
+    await expect(page.locator('[data-testid="player-buffered-track"]')).toHaveAttribute('title', 'Buffered: 0%')
+    expect(await page.evaluate(() =>
+      (window as any).teleflow.calls.filter((c: any) => c.method === 'media.prepare').length)).toBe(1)
+  })
+
+  test('CustomVideoPlayer: play/pause drives the media element instead of a stuck optimistic flag', async ({ page }) => {
+    await setupBridge(page)
+    await page.addInitScript(() => {
+
+      const bridge = (window as any).teleflow
+      const realCall = bridge.call
+      bridge.call = async (method: string, args?: unknown) => {
+        if (method === 'media.prepare') {
+          return { ok: true, data: { completed: false, path: 'C:\\tdlib\\files\\temp\\10', fileId: 10, size: 15728640, downloaded: 420000, thumb: null } }
+        }
+        return realCall(method, args)
+      }
+    })
+    await page.goto(baseUrl + '#/downloads')
+    await page.waitForLoadState('networkidle')
+    await page.setViewportSize({ width: 1440, height: 900 })
+
+    await page.locator('button:has-text("Chat View")').click()
+    await expect(page.locator('#msg-2')).toBeVisible()
+    await page.locator('#msg-2 [class*="group/media"]').click()
+    await expect(page.locator('video')).toHaveCount(1, { timeout: 5000 })
+
+    // The source cannot resolve here, so the player must admit it is not playing. A pause button
+    // while the element sits paused is the exact regression that made the controls unresponsive.
+    const playBtn = page.locator('button[title^="Play (Space)"]')
+    const pauseBtn = page.locator('button[title^="Pause (Space)"]')
+    await expect(playBtn).toHaveCount(1, { timeout: 15000 })
+
+    // Hand the element a real, playable source so the control can be exercised end to end.
+    await page.evaluate(async () => {
+      const canvas = document.createElement('canvas')
+      canvas.width = 320
+      canvas.height = 180
+      const ctx = canvas.getContext('2d')!
+      const draw = () => {
+        ctx.fillStyle = `hsl(${Date.now() % 360},70%,50%)`
+        ctx.fillRect(0, 0, 320, 180)
+        requestAnimationFrame(draw)
+      }
+      draw()
+      const rec = new MediaRecorder(canvas.captureStream(30), { mimeType: 'video/webm' })
+      const parts: BlobPart[] = []
+      rec.ondataavailable = (e) => parts.push(e.data)
+      rec.start()
+      await new Promise((r) => setTimeout(r, 1500))
+      await new Promise<void>((r) => { rec.onstop = () => r(); rec.stop() })
+      const media = document.querySelector('video') as HTMLVideoElement
+      media.src = URL.createObjectURL(new Blob(parts, { type: 'video/webm' }))
+    })
+
+    const video = page.locator('video')
+
+    // The injected source has to be decodable, otherwise the rest of the test proves nothing.
+    await expect.poll(async () => video.evaluate((v: HTMLVideoElement) => v.duration || 0), { timeout: 10000 }).toBeGreaterThan(0.5)
+
+    // Drive the element to a known paused state through the control itself.
+    for (let i = 0; i < 5; i++) {
+      if (await pauseBtn.count()) await pauseBtn.click()
+      await page.waitForTimeout(250)
+      if (await video.evaluate((v: HTMLVideoElement) => v.paused)) break
+    }
+    await expect.poll(async () => video.evaluate((v: HTMLVideoElement) => v.paused), { timeout: 5000 }).toBe(true)
+    await expect(playBtn).toHaveCount(1)
+
+    // Play: time has to advance. A rejected play() leaves it at 0 forever.
+    await playBtn.click()
+    await expect.poll(async () => video.evaluate((v: HTMLVideoElement) => v.paused), { timeout: 5000 }).toBe(false)
+    await expect(pauseBtn).toHaveCount(1)
+    const started = await video.evaluate((v: HTMLVideoElement) => v.currentTime)
+    await expect.poll(async () => video.evaluate((v: HTMLVideoElement) => v.currentTime), { timeout: 10000 })
+      .toBeGreaterThan(started)
+
+    // Pause: the element must actually stop and the control must flip back.
+    await pauseBtn.click()
+    await expect.poll(async () => video.evaluate((v: HTMLVideoElement) => v.paused), { timeout: 5000 }).toBe(true)
+    await expect(playBtn).toHaveCount(1)
+
+    // And play again.
+    await playBtn.click()
+    await expect.poll(async () => video.evaluate((v: HTMLVideoElement) => v.paused), { timeout: 5000 }).toBe(false)
+    await expect(pauseBtn).toHaveCount(1)
+
+    await page.keyboard.press('Escape')
   })
 })

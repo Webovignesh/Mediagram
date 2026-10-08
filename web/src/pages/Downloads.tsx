@@ -93,8 +93,7 @@ function TelegramAudioPlayer({
           setLoading(false)
           setTimeout(() => {
             if (audioRef.current) {
-              audioRef.current.play()
-              setPlaying(true)
+              audioRef.current.play().catch(() => setPlaying(false))
             }
           }, 50)
           return
@@ -106,12 +105,12 @@ function TelegramAudioPlayer({
     }
 
     if (audioRef.current) {
-      if (playing) {
+      if (playing || audioRef.current.ended) {
         audioRef.current.pause()
         setPlaying(false)
       } else {
-        audioRef.current.play()
-        setPlaying(true)
+        // Only claim "playing" once the element confirms it — see onPlay/onPause below.
+        audioRef.current.play().catch(() => setPlaying(false))
       }
     }
   }
@@ -124,6 +123,8 @@ function TelegramAudioPlayer({
           src={audioUrl}
           onTimeUpdate={() => audioRef.current && setCurrentTime(audioRef.current.currentTime)}
           onLoadedMetadata={() => audioRef.current && setDuration(audioRef.current.duration || media.duration || 0)}
+          onPlay={() => setPlaying(true)}
+          onPause={() => setPlaying(false)}
           onEnded={() => setPlaying(false)}
         />
       )}

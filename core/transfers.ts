@@ -116,6 +116,8 @@ export type EngineDeps = {
   db: DB, invoke: Td.Invoke, onUpdate: (fn: (u: Td.Update) => void) => () => void, auth: () => AuthState,
   chat: (id: number) => Chat | null, emit: Emit, paths: Paths, settings: () => StoredSettings,
   finished: (kind: Kind, ok: boolean) => void, // notifications
+  /** Publishes the known completed file after its move, before TDLib's cache is deleted. */
+  savedFile?: (fileId: number, filePath: string, size: number) => void,
 }
 /** In-memory state of a job the engine is running (ARCHITECTURE > Transfer engine). */
 export type Live = {
@@ -266,7 +268,7 @@ export function createEngine(d: EngineDeps) {
       l.fileIds = [file.id]
       inFlight.set(file.id, job.id)
       if (file.local.is_downloading_completed) {
-        if (file.local.path && fs.existsSync(file.local.path)) return finalize(l, file.local.path)
+        if (file.local.path && fs.existsSync(file.local.path)) return finalize(l, file)
         await d.invoke({ _: 'deleteFile', file_id: file.id }).catch(() => {})
       }
       progress(l, file.local.downloaded_size)
@@ -290,10 +292,10 @@ export function createEngine(d: EngineDeps) {
     if (l.kind === 'upload') return uploads.progress(l, f)
     l.size = f.size || f.expected_size || l.size
     progress(l, f.local.downloaded_size)
-    if (f.local.is_downloading_completed) void finalize(l, f.local.path)
+    if (f.local.is_downloading_completed) void finalize(l, f)
   }
 
-  async function finalize(l: Live, src: string) {
+  async function finalize(l: Live, file: Td.file) {
     if (l.finalizing || !l.target) return
     l.finalizing = true
     pump() // the slot is free while the file moves: a big cross-volume copy must not hold up the next download
@@ -316,14 +318,17 @@ export function createEngine(d: EngineDeps) {
     reserved.add(dest.toLowerCase())
     try {
       await fs.promises.mkdir(dir, { recursive: true })
-      await moveFile(src, dest, part)
+      await moveFile(file.local.path, dest, part)
     } catch (e) {
       reserved.delete(dest.toLowerCase())
       return failed(l, e) // the TDLib copy stays, so a retry finalizes without downloading again
     }
+    // Publish only the file that was actually moved, not every stale ID seen by this job.
+    try { d.savedFile?.(file.id, dest, l.size) }
+    catch (e) { log('warn', `Remembering a saved download failed: ${errorText(e)}`) }
     // The file has its final name: nothing below fails the job. deleteFile keeps TDLib's database consistent
     // (FileGram lesson) and removes the source a cross-volume copy left behind.
-    await d.invoke({ _: 'deleteFile', file_id: l.fileIds[0] }).catch((e: Error) => log('warn', `deleteFile after a download failed: ${e.message}`))
+    await d.invoke({ _: 'deleteFile', file_id: file.id }).catch((e: Error) => log('warn', `deleteFile after a download failed: ${e.message}`))
     await complete(l, recorded)
     reserved.delete(dest.toLowerCase())
   }
@@ -403,7 +408,7 @@ export function createEngine(d: EngineDeps) {
       if (!isLive(l) || l.finalizing) return
       const prevDone = l.done
       if (f) onFile(f)
-      if (f?.local.is_downloading_completed) return void finalize(l, f.local.path)
+      if (f?.local.is_downloading_completed) return void finalize(l, f)
       if (l.done > prevDone) return // Progress was made: actively transferring data, not stalled
       if (f && !f.local.can_be_downloaded) return failed(l, fail(403, "Telegram doesn't allow downloading this file", { final: true }))
       if (decision === 'fail') return failed(l, fail(500, 'Download keeps stalling', { final: true }))

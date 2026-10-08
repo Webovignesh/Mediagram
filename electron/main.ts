@@ -10,6 +10,8 @@ import { isUnc, library, log, onLibraryChange, openLog, pageKey, realRoots, reso
 import * as telegram from '../core/telegram.ts'
 import { createEngine, type Engine, type LiveStats } from '../core/transfers.ts'
 import { createMethods, fromRenderer, handleCall, type License, protocolFile } from './ipc.ts'
+import { declaredSize, resolveMediaRange, TAIL_WINDOW } from './mediaRange.ts'
+import { createMediaStream } from './mediaStream.ts'
 
 declare const __LICENSES__: License[] // built by electron.vite.config.ts
 
@@ -23,6 +25,10 @@ app.commandLine.appendSwitch('enable-features', 'PlatformHEVCDecoderSupport')
 app.commandLine.appendSwitch('enable-gpu-rasterization')
 app.commandLine.appendSwitch('enable-zero-copy')
 app.commandLine.appendSwitch('ignore-gpu-blocklist')
+// Chromium's default autoplay policy rejects play() without a user gesture, and a rejected play()
+// leaves <video> paused while the UI still believes it is playing. Playback is always opened by an
+// explicit user action, so autoplay is always legitimate here.
+app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required')
 
 let win: BrowserWindow | null = null
 let tray: Tray | null = null
@@ -170,7 +176,7 @@ function startup() {
   }
   engine = createEngine({
     db, invoke: telegram.invoke, onUpdate: telegram.onUpdate, auth: telegram.authState, chat: telegram.chat,
-    emit, paths, settings, finished
+    emit, paths, settings, finished, savedFile: telegram.retainStreamingFile
   })
   engine.recover()
   const eng = engine
@@ -272,10 +278,25 @@ function startup() {
     const thumbBufferCache = new Map<string, Buffer>()
     const MAX_THUMB_CACHE = 300
 
+    // Playback failures used to be invisible: every abnormal answer was swallowed silently, so the
+    // only evidence left was a dead player in the UI. Log each one once per few seconds per URL so
+    // main.log can say whether a request 404ed, 416ed, or never got its bytes.
+    const mediaLogAt = new Map<string, number>()
+    const mediaLog = (key: string, message: string) => {
+      const now = Date.now()
+      if (now - (mediaLogAt.get(key) ?? 0) < 3000) return
+      if (mediaLogAt.size > 200) mediaLogAt.clear()
+      mediaLogAt.set(key, now)
+      log('warn', `media: ${message}`)
+    }
+
     const handleMediaProtocol = async (req: Request) => {
       try {
         const file = req.method === 'GET' ? await protocolFile(req.url, ctx) : null
-        if (!file) return new Response(null, { status: 404 })
+        if (!file) {
+          mediaLog(`404:${req.url}`, `404 ${req.method} ${req.url}`)
+          return new Response(null, { status: 404 })
+        }
         const isThumb = req.url.startsWith('mediagram://thumb/') || req.url.startsWith('teleflow://thumb/') ||
           req.url.startsWith('mediagram://saved/') || req.url.startsWith('teleflow://saved/')
         if (isThumb) {
@@ -312,17 +333,27 @@ function startup() {
         const queryExt = reqUrl.searchParams.get('ext')?.toLowerCase()
         const queryTotal = parseInt(reqUrl.searchParams.get('total') || '0', 10)
 
+        // Partial files live in TDLib's temp dir under their numeric file id; anything else on disk is
+        // complete and needs neither a tail fetch nor a TDLib watermark. Decided before the stat, because
+        // a temp file may not exist yet and that must not be read as "this URL names nothing".
+        // The renderer passes the id that owns the media; the path's name is only a fallback, because a
+        // recorded path can outlive the id that created it.
+        const tempPrefix = path.join(paths.tdlib, 'files', 'temp') + path.sep
+        const isTemp = file.toLowerCase().startsWith(tempPrefix.toLowerCase())
+        const queryId = parseInt(reqUrl.searchParams.get('id') || '0', 10)
+        const pathId = parseInt(path.basename(file), 10)
+        const fileId = queryId > 0 ? queryId : pathId
+        const knownId = Number.isFinite(fileId) && fileId > 0
+
         let stat = await fs.promises.stat(file).catch(() => null)
-        if (!stat && file.includes(path.join('files', 'temp'))) {
+        if (!stat && isTemp) {
           for (let i = 0; i < 6; i++) {
             await new Promise((r) => setTimeout(r, 100))
             stat = await fs.promises.stat(file).catch(() => null)
             if (stat) break
           }
         }
-        if (!stat) return new Response(null, { status: 404 })
-
-        if (stat.size === 0 && file.includes(path.join('files', 'temp'))) {
+        if (stat?.size === 0 && isTemp) {
           for (let i = 0; i < 8; i++) {
             await new Promise((r) => setTimeout(r, 100))
             const check = await fs.promises.stat(file).catch(() => null)
@@ -333,22 +364,73 @@ function startup() {
           }
         }
 
-        const currentSize = stat.size
-        const totalSize = (queryTotal && queryTotal > currentSize) ? queryTotal : currentSize
+        // A missing temp file is TDLib not having started yet, not a bad URL. 404 here is fatal —
+        // Chromium remembers it for the resource — so this falls through to a stream that waits for
+        // the file to appear instead of killing the player on its first request.
+        if (!stat && !isTemp) {
+          mediaLog(`missing:${req.url}`, `404 ${req.url}: no file at ${file}`)
+          return new Response(null, { status: 404 })
+        }
+
+        const currentSize = stat?.size ?? 0
         const ext = (queryExt || path.extname(file).slice(1)).toLowerCase()
         const mimeMap: Record<string, string> = {
           mp4: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime', mkv: 'video/x-matroska', m4v: 'video/mp4',
           mp3: 'audio/mpeg', ogg: 'audio/ogg', wav: 'audio/wav', m4a: 'audio/mp4', aac: 'audio/aac', flac: 'audio/flac',
-          jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', gif: 'image/gif',
+          jpg: 'image/jpeg', png: 'image/png', webp: 'image/webp', gif: 'image/gif', jpeg: 'image/jpeg',
         }
         const mime = mimeMap[ext] || 'video/mp4'
 
-        // Partial files live in TDLib's temp dir under their numeric file id; anything else on disk is
-        // complete and needs neither a tail fetch nor a TDLib watermark.
-        const tempPrefix = path.join(paths.tdlib, 'files', 'temp') + path.sep
-        const isTemp = file.toLowerCase().startsWith(tempPrefix.toLowerCase())
-        const fileId = isTemp ? parseInt(path.basename(file), 10) : NaN
-        const knownId = !isNaN(fileId) && fileId > 0
+        // Bytes readable from offset 0. A tail (moov) fetch punches a hole in TDLib's temp file: the
+        // file is extended to its final size while the region between the prefix and the tail is
+        // never written, and unwritten bytes read back as zeros. The decoder treats those as corrupt
+        // media rather than "not here yet", so nothing may be served past this watermark.
+        const wm = isTemp && knownId ? await telegram.watermarkFor(fileId).catch(() => null) : null
+        const queryTotalSize = queryTotal > 0 ? queryTotal : 0
+        const tdTotal = wm?.size ?? 0
+        // A watermark claiming the file is smaller than what is already on disk cannot be this file:
+        // it is answering for a different id. Trusting it declared a 9 KB file as the whole video,
+        // Chromium read past the declared end, and the player called the format unsupported. The
+        // message's own size and the disk are the fallback whenever TDLib's answer fits neither.
+        const tdFitsDisk = !(tdTotal > 0 && tdTotal < currentSize)
+        const wmUsable = Boolean(wm) && tdFitsDisk
+        // TDLib's temp file length is never proof of coverage, even before a tail fetch. When its
+        // metadata is unavailable, retain only bytes already confirmed readable from offset 0.
+        const readableEnd = wmUsable && wm
+          ? Math.min(wm.prefix, currentSize)
+          : (isTemp && knownId
+            ? Math.min(telegram.trackedReadableEnd(fileId), currentSize)
+            : currentSize)
+        const expectedTotal = tdFitsDisk && tdTotal > 0 ? tdTotal : Math.max(queryTotalSize, currentSize)
+        // "Finished" must mean the disk has caught up with what is about to be declared — a stale id
+        // reporting done would otherwise end the response in the middle of an unfinished download.
+        const caughtUp = currentSize >= expectedTotal && readableEnd >= expectedTotal
+        const finished = isTemp && knownId && Boolean(wmUsable && wm?.done) && caughtUp
+        const isGrowing = isTemp && !finished && !caughtUp
+        const totalSize = declaredSize({ currentSize, queryTotal: expectedTotal, isGrowing })
+
+        // The numbers a stalled player is judged by: what is on disk, what is contiguous from 0,
+        // what TDLib says the file is, what the message said, and what is about to be declared.
+        // Throttled per file, so this is one line every few seconds while a download is in flight.
+        mediaLog(`wm:${file}`,
+          `serve ${req.url}: id ${knownId ? fileId : '-'}, disk ${currentSize}, prefix ${readableEnd}, ` +
+          `tdSize ${tdTotal}, tdDownloaded ${wm?.downloaded ?? '-'}, hint ${queryTotalSize}, ` +
+          `wmUsable ${wmUsable}, growing ${isGrowing}, declared ${totalSize}, diskExists ${stat !== null}`)
+
+        // Nothing to declare: the file has no bytes yet and no one knows how big it will be. An
+        // empty 200 would stall the decoder forever, so fail the load instead of lying about it.
+        if (totalSize <= 0) {
+          mediaLog(`empty:${file}`, `404 ${req.url} has 0 bytes after ${currentSize} on disk, TDLib size ${tdTotal}, hint ${queryTotalSize}`)
+          return new Response(null, { status: 404 })
+        }
+
+        // Chromium reads the head and then asks for the tail to find a moov atom sitting at the end
+        // of a non-faststart file, and nothing plays until that answer lands. Start it now, while
+        // the head is already being served, instead of when the question arrives.
+        const isMp4 = ['mp4', 'mov', 'm4v'].includes(ext)
+        if (isMp4 && isTemp && knownId && isGrowing && readableEnd > 0) {
+          telegram.prefetchVideoTail(fileId, totalSize, file)
+        }
 
         if (req.method === 'HEAD') {
           return new Response(null, {
@@ -362,130 +444,56 @@ function startup() {
           })
         }
 
-        /**
-         * Streams a local file to Chromium, supporting growing files that are actively downloading
-         * in the background. Instead of truncating the HTTP stream at the current disk size and forcing
-         * Chromium to make repeated range requests that stall at the download frontier, this stream
-         * delivers bytes continuously as they land on disk.
-         */
-        const createGrowingFileStream = (
-          filePath: string,
-          startPos: number,
-          endPos: number,
-          isGrowing: boolean,
-          fId?: number
-        ): ReadableStream<Uint8Array> => {
-          let handle: fs.promises.FileHandle | null = null
-          let currentPos = startPos
-          let closed = false
-          let idleCount = 0
-          let seekAttempted = false
-          const CHUNK_SIZE = 128 * 1024 // 128 KB chunks
-
-          return new ReadableStream<Uint8Array>({
-            async start() {
-              try {
-                handle = await fs.promises.open(filePath, 'r')
-              } catch {
-                // Handled on first pull
+        // The read policy lives in mediaStream.ts: waiting for a download is always correct, and
+        // serving zeros out of a hole or a body shorter than Content-Length never is.
+        const streamFile = (start: number, end: number) => {
+          let liveFile = file
+          const resolvePath = async (id: number) => {
+            const actualPath = await telegram.getStreamingFilePath(id)
+            if (actualPath) liveFile = actualPath
+            return actualPath
+          }
+          let sent = 0
+          return createMediaStream({
+          filePath: file,
+          startPos: start,
+          endPos: end,
+          isGrowing,
+          fileId: knownId ? fileId : undefined,
+          requestPrefix: readableEnd,
+          deps: {
+            // Chromium opens one response and holds it for the rest of playback, so the request log
+            // shows exactly one line per file and then nothing. This is the only place that sees the
+            // watermark move while bytes are actually being served, so a stalled player shows up
+            // here as a prefix that stops growing.
+            watermarks: async (id) => {
+              const w = await telegram.watermarkFor(id)
+              let disk = await fs.promises.stat(liveFile).catch(() => null)
+              if (!disk && (w?.prefix ?? 0) > 0) {
+                await resolvePath(id)
+                disk = await fs.promises.stat(liveFile).catch(() => null)
               }
+              mediaLog(`pre:${id}:${start}`,
+                `prefix id ${id} ${w?.prefix ?? '-'}/${w?.downloaded ?? '-'} done ${w?.done ?? '-'}, ` +
+                `disk ${disk?.size ?? 0}, sent ${sent}, start ${start}, path ${liveFile}`)
+              // The first request often precedes creation of the temp file. Probe when the head
+              // actually arrives, not only when that initial request happens to see a prefix.
+              if (isMp4 && isGrowing && w && !w.done && w.prefix > 0) {
+                telegram.prefetchVideoTail(id, totalSize, liveFile)
+              }
+              return w
             },
-            async pull(controller) {
-              if (closed) return
-
-              if (currentPos > endPos) {
-                closed = true
-                if (handle) {
-                  try { await handle.close() } catch {}
-                  handle = null
-                }
-                controller.close()
-                return
-              }
-
-              if (!handle) {
-                try {
-                  handle = await fs.promises.open(filePath, 'r')
-                } catch {
-                  if (!isGrowing) {
-                    closed = true
-                    controller.close()
-                    return
-                  }
-                  await new Promise((r) => setTimeout(r, 100))
-                  return
-                }
-              }
-
-              const toRead = Math.min(CHUNK_SIZE, endPos - currentPos + 1)
-              const buf = Buffer.allocUnsafe(toRead)
-
-              while (!closed) {
-                let bytesRead = 0
-                try {
-                  const res = await handle.read(buf, 0, toRead, currentPos)
-                  bytesRead = res.bytesRead
-                } catch (err: any) {
-                  if (closed) return
-                  closed = true
-                  if (handle) {
-                    try { await handle.close() } catch {}
-                    handle = null
-                  }
-                  controller.error(err)
-                  return
-                }
-
-                if (bytesRead > 0) {
-                  idleCount = 0
-                  currentPos += bytesRead
-                  controller.enqueue(new Uint8Array(buf.subarray(0, bytesRead)))
-                  return
-                }
-
-                // bytesRead === 0: reached current EOF on disk
-                if (!isGrowing) {
-                  closed = true
-                  if (handle) {
-                    try { await handle.close() } catch {}
-                    handle = null
-                  }
-                  controller.close()
-                  return
-                }
-
-                idleCount++
-                // If started ahead of what's currently written, ask TDLib to seek to this offset once
-                if (idleCount === 10 && !seekAttempted && fId && currentPos > 1024 * 1024) {
-                  seekAttempted = true
-                  telegram.seekStreamingDownload(fId, currentPos)
-                } else if (idleCount === 80 && fId) {
-                  // Gentle nudge if stalled for ~8 seconds
-                  telegram.resumeStreamingDownload(fId)
-                }
-
-                // Timeout after 60s of complete silence
-                if (idleCount > 600) {
-                  closed = true
-                  if (handle) {
-                    try { await handle.close() } catch {}
-                    handle = null
-                  }
-                  controller.close()
-                  return
-                }
-
-                await new Promise((r) => setTimeout(r, 100))
-              }
+            resolvePath,
+            onChunk: (position, count) => {
+              sent += count
+              mediaLog(`bytes:${fileId}:${start}`,
+                `bytes id ${fileId} range ${start} sent ${sent}, next ${position + count}`)
             },
-            async cancel() {
-              closed = true
-              if (handle) {
-                try { await handle.close() } catch {}
-                handle = null
-              }
-            }
-          })
+            resume: (id) => telegram.resumeStreamingDownload(id),
+            tailBusy: (id) => telegram.videoTailBusy(id),
+            onStall: (detail) => log('warn', `media: ${detail}; failing the response`),
+          },
+        })
         }
 
         const range = req.headers.get('range')
@@ -493,9 +501,21 @@ function startup() {
           const match = range.match(/bytes=(\d+)-(\d*)/)
           if (match) {
             const start = parseInt(match[1], 10)
-            const requestedEnd = match[2] ? parseInt(match[2], 10) : totalSize - 1
+            const requestedEnd = match[2] ? parseInt(match[2], 10) : -1 // -1 = through end of file
 
-            if (start >= totalSize || start > requestedEnd) {
+            // Near-EOF seeks in a faststart file are ordinary reads, not moov probes. Fetching the
+            // tail here would needlessly cancel the sequential download for an already-open decoder.
+            const tailFloor = Math.floor((totalSize - TAIL_WINDOW) / 4096) * 4096
+            if (isMp4 && knownId && isGrowing && start > 0 && start >= tailFloor) {
+              await telegram.probeVideoHead(fileId, totalSize, file)
+            }
+            const decision = resolveMediaRange({ start, requestedEnd, totalSize, readableEnd, isGrowing, knownId,
+              needsTail: isMp4 && !telegram.videoHasHeadMoov(fileId) })
+
+            // The only 416 we are ever allowed to send: a range Chromium should not have asked for.
+            // Everything else falls through to a stream that waits for the bytes instead.
+            if (decision.kind === 'unsatisfiable') {
+              mediaLog(`416:${file}:${start}`, `416 ${req.url} range ${range} beyond declared end ${totalSize} (disk ${currentSize}, prefix ${readableEnd}, growing ${isGrowing})`)
               return new Response(null, {
                 status: 416,
                 statusText: 'Range Not Satisfiable',
@@ -506,18 +526,27 @@ function startup() {
               })
             }
 
-            // Non-faststart MP4 tail request: serve from cached or fetched tail
-            const isTailRequest = knownId && start > 0 && start >= Math.max(0, totalSize - 16 * 1024 * 1024)
-            if (isTailRequest) {
+            // Non-faststart MP4 tail (moov lives at the end) that the download has not reached yet.
+            if (decision.kind === 'tail') {
+              const covers = (t: ReturnType<typeof telegram.getVideoTail>) =>
+                !!t && t.totalSize === totalSize && start >= t.tailOffset && decision.end < t.tailOffset + t.buffer.length
               let tail = telegram.getVideoTail(fileId)
-              const covered = tail && start >= tail.tailOffset && start < tail.tailOffset + tail.buffer.length
-              if (!covered) {
+              const beganAt = Date.now()
+              // A failed fetch arms a 5 s backoff inside fetchVideoTail, and Chromium parks on this
+              // request until it is answered: one silent miss used to leave it waiting at the last
+              // megabyte of a 1.6 GB file, where nothing plays until the download reaches the very
+              // end. Retry through the backoff instead of giving up on the first miss.
+              for (let attempt = 0; attempt < 3 && !covers(tail); attempt++) {
+                if (attempt > 0) await new Promise((r) => setTimeout(r, 5500))
                 tail = (await telegram.fetchVideoTail(fileId, totalSize, start).catch(() => undefined)) || undefined
               }
-              if (tail && start >= tail.tailOffset && start < tail.tailOffset + tail.buffer.length) {
-                const end = Math.min(requestedEnd, totalSize - 1, tail.tailOffset + tail.buffer.length - 1)
+              if (covers(tail)) {
+                const t = tail!
+                const end = Math.min(decision.end, totalSize - 1, t.tailOffset + t.buffer.length - 1)
                 if (end >= start) {
-                  const chunk = tail.buffer.subarray(start - tail.tailOffset, end - tail.tailOffset + 1)
+                  const chunk = t.buffer.subarray(start - t.tailOffset, end - t.tailOffset + 1)
+                  mediaLog(`tail:${file}:${start}`,
+                    `tail ${t.tailOffset}..${t.tailOffset + t.buffer.length} answered range ${start} in ${Date.now() - beganAt}ms`)
                   return new Response(new Uint8Array(chunk), {
                     status: 206,
                     statusText: 'Partial Content',
@@ -531,19 +560,17 @@ function startup() {
                   })
                 }
               }
-              return new Response(null, {
-                status: 416,
-                statusText: 'Range Not Satisfiable',
-                headers: {
-                  ...mediaHeaders,
-                  'Content-Range': `bytes */${totalSize}`,
-                },
-              })
+              // Tail unavailable: falling through is deliberate. A 416 here permanently kills the
+              // decoder, while the growing stream simply waits for TDLib to write these bytes.
+              const floor = Math.floor((totalSize - TAIL_WINDOW) / 4096) * 4096
+              mediaLog(`tail:${file}:${start}`,
+                `tail range ${start} (window from ${floor}) still had no moov after ${Date.now() - beganAt}ms; ` +
+                `waiting for the download instead — nothing will play until it reaches the end`)
             }
 
-            const end = Math.min(requestedEnd, totalSize - 1)
+            const end = decision.end
             const contentLength = (end - start) + 1
-            const webStream = createGrowingFileStream(file, start, end, isTemp, knownId ? fileId : undefined)
+            const webStream = streamFile(start, end)
 
             return new Response(webStream, {
               status: 206,
@@ -560,7 +587,7 @@ function startup() {
         }
 
         // Plain GET (no Range header): stream progressively from offset 0 to the end of the file
-        const webStream = createGrowingFileStream(file, 0, totalSize - 1, isTemp, knownId ? fileId : undefined)
+        const webStream = streamFile(0, totalSize - 1)
         return new Response(webStream, {
           status: 200,
           headers: {
@@ -570,7 +597,11 @@ function startup() {
             'Content-Length': String(totalSize),
           },
         })
-      } catch { return new Response(null, { status: 404 }) } // not signed in, bad URL, file gone
+      } catch (err) {
+        // not signed in, bad URL, file gone — but say which, so a dead player is never a mystery
+        mediaLog(`err:${req.url}`, `failed to answer ${req.url}: ${(err as Error)?.message ?? err}`)
+        return new Response(null, { status: 404 })
+      }
     }
 
     protocol.handle('mediagram', handleMediaProtocol)
@@ -718,6 +749,15 @@ function createWindow(url: string, db: DB, hidden: boolean, closeToTray: () => b
   // Minimize to tray on close: the window hides and transfers keep running; otherwise closing quits.
   w.on('close', (e) => { if (!quitting && closeToTray()) { e.preventDefault(); w.hide() } })
   w.webContents.on('will-navigate', (e) => e.preventDefault())
+  // A packaged build has no console to look at, so the player's own diagnostics — which say exactly
+  // why a video died — would be lost. Forward them to main.log, throttled by the emitter itself.
+  // Electron 44 fires this as (event, level, message, line, sourceId): the second argument is a
+  // number, and the text lives on the event itself. Reading a `.message` off the second argument
+  // silently drops every line — which is how the player's diagnostics disappeared.
+  w.webContents.on('console-message', (event, _level, message) => {
+    const text = (event as { message?: unknown })?.message ?? message
+    if (typeof text === 'string' && text.startsWith('[player]')) log('warn', `renderer ${text}`)
+  })
   w.webContents.setWindowOpenHandler(({ url: target }) => {
     if (target.startsWith('https://')) void shell.openExternal(target)
     return { action: 'deny' }
