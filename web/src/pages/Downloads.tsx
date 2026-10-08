@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback } from 'react'
 import { Plus, RotateCcw, Download, Folder, CheckSquare, Square, FolderOpen, Send, ExternalLink, Copy, Filter, FileText, MessageSquare, ChevronDown, Play, Pause, Music, SlidersHorizontal, ArrowDown, Trash2, Film, LogOut, MoreVertical, RefreshCw, AlertCircle, Clock, LayoutGrid, List, Check, Sparkles, Image as ImageIcon, Pin, PinOff, Bell, BellOff, Archive, FolderUp, ArrowLeft } from 'lucide-react'
 import { call, useCall, useLive, useTyping, navigate } from '../api.ts'
-import { Panel, SearchInput, Chip, Select, Button, Avatar, Pill, Thumb, TypeChip, Pagination, Empty, Skeleton, ErrorState, OpenChatDialog, MediaPreviewModal, Dialog, fmtBytes, fmtAgo, fmtDate, fmtDuration, toast, triggerFlyToQueue, confirm, CheckDuplicatesModal, MediagramLogo, TelegramInviteModal, type DuplicateCheckResult } from '../ui.tsx'
+import { Panel, SearchInput, Chip, Select, Button, Avatar, Pill, Thumb, TypeChip, Pagination, Empty, ErrorState, OpenChatDialog, MediaPreviewModal, Dialog, fmtBytes, fmtAgo, fmtDate, fmtDuration, toast, triggerFlyToQueue, confirm, CheckDuplicatesModal, MediagramLogo, TelegramInviteModal, type DuplicateCheckResult } from '../ui.tsx'
 import { ChatView } from './ChatView.tsx'
 import { useNotifications, setChatMuted, setChatPinned, setChatArchived, registerMutedChats } from '../notifications.ts'
 
@@ -1892,11 +1892,7 @@ export default function Downloads() {
         <div className="flex-1 overflow-y-auto p-2 space-y-1 no-scrollbar">
           {chatsErr ? (
             <ErrorState error={chatsErr} onRetry={chatsReload} />
-          ) : !chatsData ? (
-            <div className="space-y-2 p-2">
-              {[...Array(6)].map((_, i) => <Skeleton key={i} className="h-12 w-full" />)}
-            </div>
-          ) : (
+          ) : !chatsData ? null : (
             <>
               {/* In Archive Folder header */}
               {inArchiveFolder && (
@@ -2066,7 +2062,7 @@ export default function Downloads() {
       </div>
 
       {/* Column 2: Files View / Chat View (Center flexible) */}
-      <div className={`flex flex-1 flex-col ${view === 'chat' ? 'overflow-hidden min-h-0' : 'overflow-y-auto'} p-5 space-y-4`}>
+      <div className={`flex flex-1 flex-col ${view === 'chat' ? 'overflow-hidden min-h-0' : 'overflow-y-auto [scrollbar-gutter:stable]'} p-5 space-y-4`}>
         {/* View switcher bar */}
         <div className="flex items-center gap-2">
           <Button
@@ -2418,26 +2414,7 @@ export default function Downloads() {
                 <div className="rounded-[14px] border border-border bg-panel/85 p-3 flex-1 flex flex-col justify-between">
                   {mediaErr ? (
                     <ErrorState error={mediaErr} onRetry={mediaReload} />
-                  ) : !mediaData ? (
-                    fileViewMode === 'grid' ? (
-                      <div className={gridColsClass}>
-                        {[...Array(gridSize === 'md' ? 12 : 6)].map((_, i) => (
-                          <div key={i} className="rounded-xl border border-border/60 bg-tile/50 p-2 space-y-2">
-                            <Skeleton className={`w-full ${aspectClass} rounded-lg`} />
-                            <Skeleton className="h-4 w-3/4 rounded" />
-                            <div className="flex justify-between">
-                              <Skeleton className="h-3 w-1/4 rounded" />
-                              <Skeleton className="h-3 w-1/4 rounded" />
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="space-y-3 p-4">
-                        {[...Array(7)].map((_, i) => <Skeleton key={i} className="h-10 w-full" />)}
-                      </div>
-                    )
-                  ) : mediaItems.length === 0 ? (
+                  ) : !mediaData ? null : mediaItems.length === 0 ? (
                     <div className="py-16 text-center">
                       <Empty message="No media files found matching the criteria" />
                       <Button variant="secondary" onClick={resetFilters} className="mt-2 text-[12px]">Reset filters</Button>

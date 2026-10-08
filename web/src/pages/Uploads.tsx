@@ -3,7 +3,7 @@ import React, { useState, useRef, useEffect, useCallback, type DragEvent } from 
 import { UploadCloud, X, Upload, Zap, Clock, CheckCircle2, FileText } from 'lucide-react'
 import { call, useCall, useLive, navigate } from '../api.ts'
 import type { LiveStats } from '../../../core/transfers.ts'
-import { Panel, SearchInput, Chip, Button, Avatar, TypeChip, Empty, Skeleton, ErrorState, fmtBytes, toast, triggerFlyToQueue } from '../ui.tsx'
+import { Panel, SearchInput, Chip, Button, Avatar, TypeChip, Empty, ErrorState, fmtBytes, toast, triggerFlyToQueue } from '../ui.tsx'
 
 export default function Uploads() {
   const [chatId, setChatId] = useState<number | null>(() => {
@@ -163,11 +163,7 @@ export default function Uploads() {
         <div className="flex-1 overflow-y-auto p-2 space-y-1 no-scrollbar">
           {chatsErr ? (
             <ErrorState error={chatsErr} onRetry={chatsReload} />
-          ) : !chatsData ? (
-            <div className="space-y-2 p-2">
-              {[...Array(6)].map((_, i) => <Skeleton key={i} className="h-11 w-full" />)}
-            </div>
-          ) : filteredDests.length === 0 ? (
+          ) : !chatsData ? null : filteredDests.length === 0 ? (
             <div className="py-8 text-center text-muted text-[12px]">
               <p>No chats you can post to</p>
             </div>
@@ -208,7 +204,7 @@ export default function Uploads() {
       </div>
 
       {/* Column 2: New Upload (~flexible center) */}
-      <div className="flex flex-1 flex-col overflow-y-auto p-6 space-y-4">
+      <div className="flex flex-1 flex-col overflow-y-auto [scrollbar-gutter:stable] p-6 space-y-4">
         <div className="flex items-center justify-between pr-40">
           <div>
             <h1 className="text-[26px] font-bold text-text tracking-wide">Uploads</h1>
