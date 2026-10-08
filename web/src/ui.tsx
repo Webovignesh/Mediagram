@@ -1252,12 +1252,20 @@ function CustomVideoPlayer({
   const updateBuffered = () => {
     if (videoRef.current && videoRef.current.buffered.length > 0) {
       const b = videoRef.current.buffered
-      let maxEnd = 0
+      const cur = videoRef.current.currentTime
+      let activeEnd = 0
       for (let i = 0; i < b.length; i++) {
-        if (b.end(i) > maxEnd) maxEnd = b.end(i)
+        // Track the contiguous buffer segment covering or immediately ahead of playback
+        if (b.start(i) <= cur + 1 && b.end(i) >= cur) {
+          activeEnd = b.end(i)
+          break
+        }
       }
-      if (maxEnd > 0) {
-        setBufferedEnd((prev) => Math.max(prev, maxEnd))
+      if (activeEnd === 0 && b.length > 0) {
+        activeEnd = b.end(0)
+      }
+      if (activeEnd > 0) {
+        setBufferedEnd(activeEnd)
       }
     }
   }
@@ -1268,10 +1276,10 @@ function CustomVideoPlayer({
       prevSrcRef.current = src
       const savedTime = currentTime
       const wasPlaying = playing
-      if (videoRef.current && savedTime > 0) {
+      if (videoRef.current) {
         const onLoaded = () => {
           if (videoRef.current) {
-            videoRef.current.currentTime = savedTime
+            if (savedTime > 0) videoRef.current.currentTime = savedTime
             if (wasPlaying) videoRef.current.play().catch(() => {})
           }
           videoRef.current?.removeEventListener('loadedmetadata', onLoaded)
@@ -1336,20 +1344,6 @@ function CustomVideoPlayer({
     resetHideTimer()
   }
 
-  // Spacebar plays/pauses video
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.code === 'Space' || e.key === ' ') {
-        const tag = (e.target as HTMLElement)?.tagName
-        if (['INPUT', 'TEXTAREA', 'SELECT'].includes(tag)) return
-        e.preventDefault()
-        togglePlay()
-      }
-    }
-    window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [playing])
-
   const handleVolumeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = parseFloat(e.target.value)
     setVolume(val)
@@ -1383,8 +1377,15 @@ function CustomVideoPlayer({
     }
   }
 
+  const dlPct = downloadProgress && downloadProgress.total > 0
+    ? Math.min(100, Math.max(0, (downloadProgress.downloaded / downloadProgress.total) * 100))
+    : 0
+
   const handleSeek = (posFraction: number) => {
-    const newTime = Math.max(0, Math.min(duration, posFraction * duration))
+    // When downloading in background, clamp seek target to downloaded boundary to prevent stalling on unwritten disk holes
+    const maxFraction = isCompleted ? 1 : (dlPct > 0 ? Math.min(1, (dlPct / 100) + 0.02) : 1)
+    const clampedFraction = Math.max(0, Math.min(maxFraction, posFraction))
+    const newTime = Math.max(0, Math.min(duration, clampedFraction * duration))
     if (videoRef.current) {
       videoRef.current.currentTime = newTime
       setCurrentTime(newTime)
@@ -1394,6 +1395,57 @@ function CustomVideoPlayer({
     }
   }
 
+  // Keyboard navigation: Space (play/pause), Arrows (seek / volume), M (mute), F (fullscreen)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName
+      if (['INPUT', 'TEXTAREA', 'SELECT'].includes(tag)) return
+
+      if (e.code === 'Space' || e.key === ' ') {
+        e.preventDefault()
+        togglePlay()
+      } else if (e.key === 'ArrowLeft') {
+        e.preventDefault()
+        if (videoRef.current) {
+          const t = Math.max(0, videoRef.current.currentTime - 5)
+          handleSeek(duration > 0 ? t / duration : 0)
+        }
+      } else if (e.key === 'ArrowRight') {
+        e.preventDefault()
+        if (videoRef.current) {
+          const t = Math.min(duration, videoRef.current.currentTime + 5)
+          handleSeek(duration > 0 ? t / duration : 0)
+        }
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        const newVol = Math.min(1, volume + 0.05)
+        setVolume(newVol)
+        setMuted(false)
+        if (videoRef.current) {
+          videoRef.current.volume = newVol
+          videoRef.current.muted = false
+        }
+      } else if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        const newVol = Math.max(0, volume - 0.05)
+        setVolume(newVol)
+        setMuted(newVol === 0)
+        if (videoRef.current) {
+          videoRef.current.volume = newVol
+          videoRef.current.muted = newVol === 0
+        }
+      } else if (e.key === 'm' || e.key === 'M') {
+        e.preventDefault()
+        toggleMute()
+      } else if (e.key === 'f' || e.key === 'F') {
+        e.preventDefault()
+        toggleFullscreen()
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [playing, duration, volume, muted, isCompleted, dlPct])
+
   const formatTime = (secs: number) => {
     if (isNaN(secs) || secs < 0) return '0:00'
     const m = Math.floor(secs / 60)
@@ -1402,9 +1454,6 @@ function CustomVideoPlayer({
   }
 
   const progressPct = duration > 0 ? Math.min(100, Math.max(0, (currentTime / duration) * 100)) : 0
-  const dlPct = downloadProgress && downloadProgress.total > 0
-    ? Math.min(100, Math.max(0, (downloadProgress.downloaded / downloadProgress.total) * 100))
-    : 0
   const timeBufferedPct = duration > 0 ? Math.min(100, Math.max(0, (bufferedEnd / duration) * 100)) : 0
   const actualBufferedPct = isCompleted ? 100 : timeBufferedPct
 
@@ -1491,6 +1540,15 @@ function CustomVideoPlayer({
         />
       )}
 
+      {/* Center buffering spinner when waiting for media */}
+      {buffering && playing && (
+        <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-20">
+          <div className="size-16 rounded-full bg-black/60 backdrop-blur-md border border-white/20 flex items-center justify-center text-cyan shadow-2xl">
+            <span className="size-7 rounded-full border-2 border-cyan/30 border-t-cyan animate-spin" />
+          </div>
+        </div>
+      )}
+
       {/* Center play icon overlay when paused */}
       {!playing && (
         <div
@@ -1563,9 +1621,9 @@ function CustomVideoPlayer({
             </span>
 
             {/* Background buffered progress badge on seekbar */}
-            {!isCompleted && (actualBufferedPct > 0 || dlPct > 0) && (
+            {!isCompleted && (
               <span className="font-mono text-[10.5px] font-semibold text-cyan/90 bg-cyan/15 border border-cyan/30 px-2 py-0.5 rounded-full tabular-nums whitespace-nowrap select-none">
-                {actualBufferedPct > 0 ? `${Math.round(actualBufferedPct)}% buffered` : `${Math.round(dlPct)}% downloaded`}
+                {dlPct > 0 ? `${Math.round(dlPct)}% buffered` : 'Buffering…'}
               </span>
             )}
 
