@@ -176,12 +176,26 @@ function AreaChart({
   )
 }
 
+/** These three panels answer from the in-memory index in a few milliseconds, so a skeleton painted
+ *  on mount is only ever visible as a flash — the panel goes grey and then straight back to its
+ *  content. Hold the placeholder until the answer has genuinely taken a moment, the same rule the
+ *  Library scan strip uses. */
+function useSlowPending(pending: boolean, ms = 300): boolean {
+  const [slow, setSlow] = useState(false)
+  useEffect(() => {
+    if (!pending) { setSlow(false); return }
+    const t = setTimeout(() => setSlow(true), ms)
+    return () => clearTimeout(t)
+  }, [pending, ms])
+  return slow
+}
+
 export default function Overview() {
   const [previewItem, setPreviewItem] = useState<any>(null)
   const liveState = useLive()
   const { data: live, error: liveErr } = useCall<LiveStats>('stats.live', {}, ['stats'])
   const liveStats = liveState.stats || live
-  const { data: overview, error: ovErr, loading: ovLoad, reload: ovReload } = useCall<OverviewStats>('stats.overview', {}, ['history'])
+  const { data: overview, error: ovErr, reload: ovReload } = useCall<OverviewStats>('stats.overview', {}, ['history'])
   const [actRange, setActRange] = useState('7d')
   const { data: activity, error: actErr, reload: actReload } = useCall<{ buckets: number[], download: number[], upload: number[] }>('stats.activity', { range: actRange }, ['history'])
   const [chatRange, setChatRange] = useState('7d')
@@ -190,6 +204,9 @@ export default function Overview() {
   const { data: jobs, error: jobErr, reload: jobReload } = useCall<{ items: Job[], total: number }>('jobs.list', {
     kind: jobFilter === 'all' ? undefined : jobFilter, status: 'open', pageSize: 8
   }, ['jobs'])
+  const actSlow = useSlowPending(!activity)
+  const chatSlow = useSlowPending(!chats)
+  const ovSlow = useSlowPending(!overview)
 
   const activeDownloads = liveStats?.counts.download.active ?? 0
   const activeUploads = liveStats?.counts.upload.active ?? 0
@@ -468,14 +485,21 @@ export default function Overview() {
       <div className="grid grid-cols-3 gap-4">
         <Panel title="Transfer Activity" subtitle="Downloads and uploads over time" 
           action={<Select value={actRange} options={[{ value: '24h', label: 'Last 24 hours' }, { value: '7d', label: 'Last 7 days' }, { value: '30d', label: 'Last 30 days' }]} onChange={(v) => setActRange(String(v))} />}>
-          {actErr ? <ErrorState error={actErr} onRetry={actReload} /> : !activity ? <Skeleton className="h-44" /> : (
-            <AreaChart activity={activity} range={actRange} />
-          )}
+          <div className="h-44 overflow-y-auto">
+            {actErr ? <ErrorState error={actErr} onRetry={actReload} /> : !activity ? (
+              actSlow ? <Skeleton className="h-44" /> : null
+            ) : (
+              <AreaChart activity={activity} range={actRange} />
+            )}
+          </div>
         </Panel>
 
         <Panel title="Channel Activity" subtitle="Top channels by transfer volume"
           action={<Select value={chatRange} options={[{ value: '24h', label: 'Last 24 hours' }, { value: '7d', label: 'Last 7 days' }, { value: '30d', label: 'Last 30 days' }]} onChange={(v) => setChatRange(String(v))} />}>
-          {chatErr ? <ErrorState error={chatErr} onRetry={chatReload} /> : !chats ? <Skeleton className="h-48" /> : topChats.length === 0 ? (
+          <div className="h-64 overflow-y-auto">
+          {chatErr ? <ErrorState error={chatErr} onRetry={chatReload} /> : !chats ? (
+            chatSlow ? <Skeleton className="h-48" /> : null
+          ) : topChats.length === 0 ? (
             <Empty message="No transfers yet" action={{ label: 'Open Downloads', onClick: () => navigate('/downloads') }} />
           ) : (
             <div className="space-y-3">
@@ -499,10 +523,14 @@ export default function Overview() {
               })}
             </div>
           )}
+          </div>
         </Panel>
 
         <Panel title="Recent Activity" action={<button onClick={() => navigate('/queue?tab=completed')} className="text-[13px] text-primary hover:underline">View All</button>}>
-          {ovErr ? <ErrorState error={ovErr} onRetry={ovReload} /> : ovLoad ? <Skeleton className="h-48" /> : recentList.length === 0 ? (
+          <div className="h-64 overflow-y-auto">
+          {ovErr ? <ErrorState error={ovErr} onRetry={ovReload} /> : !overview ? (
+            ovSlow ? <Skeleton className="h-48" /> : null
+          ) : recentList.length === 0 ? (
             <Empty message="Nothing transferred yet" />
           ) : (
             <div className="space-y-2">
@@ -534,12 +562,13 @@ export default function Overview() {
               ))}
             </div>
           )}
+          </div>
         </Panel>
       </div>
 
       <Panel title="Current Jobs" subtitle="Active downloads and uploads"
         action={<Select value={jobFilter} options={[{ value: 'all', label: 'All Jobs' }, { value: 'download', label: 'Downloads' }, { value: 'upload', label: 'Uploads' }]} onChange={(v) => setJobFilter(v as any)} />}>
-        {jobErr ? <ErrorState error={jobErr} onRetry={jobReload} /> : !jobs ? <Skeleton className="h-32" /> : currentJobs.length === 0 ? (
+        {jobErr ? <ErrorState error={jobErr} onRetry={jobReload} /> : !jobs ? <Skeleton className="h-40" /> : currentJobs.length === 0 ? (
           <Empty message="No active jobs" action={{ label: 'Open Downloads', onClick: () => navigate('/downloads') }} />
         ) : (
           <div className="space-y-2 overflow-x-auto">
