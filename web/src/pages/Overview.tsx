@@ -181,7 +181,7 @@ export default function Overview() {
   const liveState = useLive()
   const { data: live, error: liveErr } = useCall<LiveStats>('stats.live', {}, ['stats'])
   const liveStats = liveState.stats || live
-  const { data: overview, error: ovErr, loading: ovLoad, reload: ovReload } = useCall<OverviewStats>('stats.overview', {}, ['history'])
+  const { data: overview, error: ovErr, reload: ovReload } = useCall<OverviewStats>('stats.overview', {}, ['history'])
   const [actRange, setActRange] = useState('7d')
   const { data: activity, error: actErr, reload: actReload } = useCall<{ buckets: number[], download: number[], upload: number[] }>('stats.activity', { range: actRange }, ['history'])
   const [chatRange, setChatRange] = useState('7d')
@@ -468,14 +468,17 @@ export default function Overview() {
       <div className="grid grid-cols-3 gap-4">
         <Panel title="Transfer Activity" subtitle="Downloads and uploads over time" 
           action={<Select value={actRange} options={[{ value: '24h', label: 'Last 24 hours' }, { value: '7d', label: 'Last 7 days' }, { value: '30d', label: 'Last 30 days' }]} onChange={(v) => setActRange(String(v))} />}>
-          {actErr ? <ErrorState error={actErr} onRetry={actReload} /> : !activity ? <Skeleton className="h-44" /> : (
-            <AreaChart activity={activity} range={actRange} />
-          )}
+          <div className="h-52 overflow-hidden">
+            {actErr ? <ErrorState error={actErr} onRetry={actReload} /> : !activity ? null : (
+              <AreaChart activity={activity} range={actRange} />
+            )}
+          </div>
         </Panel>
 
         <Panel title="Channel Activity" subtitle="Top channels by transfer volume"
           action={<Select value={chatRange} options={[{ value: '24h', label: 'Last 24 hours' }, { value: '7d', label: 'Last 7 days' }, { value: '30d', label: 'Last 30 days' }]} onChange={(v) => setChatRange(String(v))} />}>
-          {chatErr ? <ErrorState error={chatErr} onRetry={chatReload} /> : !chats ? <Skeleton className="h-48" /> : topChats.length === 0 ? (
+          <div className="h-52 overflow-y-auto">
+          {chatErr ? <ErrorState error={chatErr} onRetry={chatReload} /> : !chats ? null : topChats.length === 0 ? (
             <Empty message="No transfers yet" action={{ label: 'Open Downloads', onClick: () => navigate('/downloads') }} />
           ) : (
             <div className="space-y-3">
@@ -499,10 +502,12 @@ export default function Overview() {
               })}
             </div>
           )}
+          </div>
         </Panel>
 
         <Panel title="Recent Activity" action={<button onClick={() => navigate('/queue?tab=completed')} className="text-[13px] text-primary hover:underline">View All</button>}>
-          {ovErr ? <ErrorState error={ovErr} onRetry={ovReload} /> : ovLoad ? <Skeleton className="h-48" /> : recentList.length === 0 ? (
+          <div className="h-52 overflow-y-auto">
+          {ovErr ? <ErrorState error={ovErr} onRetry={ovReload} /> : !overview ? null : recentList.length === 0 ? (
             <Empty message="Nothing transferred yet" />
           ) : (
             <div className="space-y-2">
@@ -534,6 +539,7 @@ export default function Overview() {
               ))}
             </div>
           )}
+          </div>
         </Panel>
       </div>
 

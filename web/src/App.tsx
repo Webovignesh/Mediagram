@@ -250,7 +250,7 @@ export default function App() {
           onToggleCollapse={() => setCollapsed(!collapsed)}
         />
 
-        <main className={`flex-1 min-h-0 h-full ${page === '/settings' ? 'overflow-hidden' : 'overflow-auto'}`}>
+        <main className={`flex-1 min-h-0 h-full [scrollbar-gutter:stable] ${page === '/settings' ? 'overflow-hidden' : 'overflow-auto'}`}>
           {page === '/overview' && <Overview />}
           {page === '/downloads' && <Downloads />}
           {page === '/uploads' && <Uploads />}
