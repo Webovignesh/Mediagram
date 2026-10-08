@@ -1382,8 +1382,8 @@ function CustomVideoPlayer({
     : 0
 
   const handleSeek = (posFraction: number) => {
-    // When downloading in background, clamp seek target to downloaded boundary to prevent stalling on unwritten disk holes
-    const maxFraction = isCompleted ? 1 : (dlPct > 0 ? Math.min(1, (dlPct / 100) + 0.02) : 1)
+    // When downloading in background, clamp seek target to decoded or downloaded boundary
+    const maxFraction = isCompleted ? 1 : Math.max(dlPct / 100, (duration > 0 ? bufferedEnd / duration : 0), 0.05)
     const clampedFraction = Math.max(0, Math.min(maxFraction, posFraction))
     const newTime = Math.max(0, Math.min(duration, clampedFraction * duration))
     if (videoRef.current) {

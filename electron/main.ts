@@ -1,7 +1,6 @@
 // App lifecycle (ARCHITECTURE > Desktop integration): paths, single instance, window, tray, notifications, IPC, quit.
 import fs from 'node:fs'
 import path from 'node:path'
-import { Readable } from 'node:stream'
 import { pathToFileURL } from 'node:url'
 import { app, BrowserWindow, dialog, ipcMain, Menu, MenuItem, Notification, protocol, safeStorage, screen, session, shell, Tray } from 'electron'
 import { getTdjson } from 'prebuilt-tdlib'
@@ -350,11 +349,6 @@ function startup() {
         const isTemp = file.toLowerCase().startsWith(tempPrefix.toLowerCase())
         const fileId = isTemp ? parseInt(path.basename(file), 10) : NaN
         const knownId = !isNaN(fileId) && fileId > 0
-        // Bytes readable from offset 0: everything up to currentSize written sequentially to disk.
-        const readableSize = async (size: number) => {
-          if (!knownId || size <= 0) return size
-          return size
-        }
 
         if (req.method === 'HEAD') {
           return new Response(null, {
@@ -368,6 +362,132 @@ function startup() {
           })
         }
 
+        /**
+         * Streams a local file to Chromium, supporting growing files that are actively downloading
+         * in the background. Instead of truncating the HTTP stream at the current disk size and forcing
+         * Chromium to make repeated range requests that stall at the download frontier, this stream
+         * delivers bytes continuously as they land on disk.
+         */
+        const createGrowingFileStream = (
+          filePath: string,
+          startPos: number,
+          endPos: number,
+          isGrowing: boolean,
+          fId?: number
+        ): ReadableStream<Uint8Array> => {
+          let handle: fs.promises.FileHandle | null = null
+          let currentPos = startPos
+          let closed = false
+          let idleCount = 0
+          let seekAttempted = false
+          const CHUNK_SIZE = 128 * 1024 // 128 KB chunks
+
+          return new ReadableStream<Uint8Array>({
+            async start() {
+              try {
+                handle = await fs.promises.open(filePath, 'r')
+              } catch {
+                // Handled on first pull
+              }
+            },
+            async pull(controller) {
+              if (closed) return
+
+              if (currentPos > endPos) {
+                closed = true
+                if (handle) {
+                  try { await handle.close() } catch {}
+                  handle = null
+                }
+                controller.close()
+                return
+              }
+
+              if (!handle) {
+                try {
+                  handle = await fs.promises.open(filePath, 'r')
+                } catch {
+                  if (!isGrowing) {
+                    closed = true
+                    controller.close()
+                    return
+                  }
+                  await new Promise((r) => setTimeout(r, 100))
+                  return
+                }
+              }
+
+              const toRead = Math.min(CHUNK_SIZE, endPos - currentPos + 1)
+              const buf = Buffer.allocUnsafe(toRead)
+
+              while (!closed) {
+                let bytesRead = 0
+                try {
+                  const res = await handle.read(buf, 0, toRead, currentPos)
+                  bytesRead = res.bytesRead
+                } catch (err: any) {
+                  if (closed) return
+                  closed = true
+                  if (handle) {
+                    try { await handle.close() } catch {}
+                    handle = null
+                  }
+                  controller.error(err)
+                  return
+                }
+
+                if (bytesRead > 0) {
+                  idleCount = 0
+                  currentPos += bytesRead
+                  controller.enqueue(new Uint8Array(buf.subarray(0, bytesRead)))
+                  return
+                }
+
+                // bytesRead === 0: reached current EOF on disk
+                if (!isGrowing) {
+                  closed = true
+                  if (handle) {
+                    try { await handle.close() } catch {}
+                    handle = null
+                  }
+                  controller.close()
+                  return
+                }
+
+                idleCount++
+                // If started ahead of what's currently written, ask TDLib to seek to this offset once
+                if (idleCount === 10 && !seekAttempted && fId && currentPos > 1024 * 1024) {
+                  seekAttempted = true
+                  telegram.seekStreamingDownload(fId, currentPos)
+                } else if (idleCount === 80 && fId) {
+                  // Gentle nudge if stalled for ~8 seconds
+                  telegram.resumeStreamingDownload(fId)
+                }
+
+                // Timeout after 60s of complete silence
+                if (idleCount > 600) {
+                  closed = true
+                  if (handle) {
+                    try { await handle.close() } catch {}
+                    handle = null
+                  }
+                  controller.close()
+                  return
+                }
+
+                await new Promise((r) => setTimeout(r, 100))
+              }
+            },
+            async cancel() {
+              closed = true
+              if (handle) {
+                try { await handle.close() } catch {}
+                handle = null
+              }
+            }
+          })
+        }
+
         const range = req.headers.get('range')
         if (range) {
           const match = range.match(/bytes=(\d+)-(\d*)/)
@@ -375,15 +495,19 @@ function startup() {
             const start = parseInt(match[1], 10)
             const requestedEnd = match[2] ? parseInt(match[2], 10) : totalSize - 1
 
-            // Bytes the sequential download has written from offset 0: everything at or below this streams
-            // straight from disk, so playback starts immediately whatever the file size.
-            let availableSize = await readableSize(currentSize)
+            if (start >= totalSize || start > requestedEnd) {
+              return new Response(null, {
+                status: 416,
+                statusText: 'Range Not Satisfiable',
+                headers: {
+                  ...mediaHeaders,
+                  'Content-Range': `bytes */${totalSize}`,
+                },
+              })
+            }
 
-            // Non-faststart MP4s (phone cameras, Clipchamp, Premiere) keep moov at the very end. The
-            // demuxer halts the moment it walks into mdat and asks for that tail: answering 416 kills
-            // the decoder for good, so serve it from the cached tail instead. Only a range the download
-            // cannot answer yet takes this path — a plain forward read never waits on it.
-            const isTailRequest = knownId && start > 0 && start >= availableSize && start >= Math.max(0, totalSize - 16 * 1024 * 1024)
+            // Non-faststart MP4 tail request: serve from cached or fetched tail
+            const isTailRequest = knownId && start > 0 && start >= Math.max(0, totalSize - 16 * 1024 * 1024)
             if (isTailRequest) {
               let tail = telegram.getVideoTail(fileId)
               const covered = tail && start >= tail.tailOffset && start < tail.tailOffset + tail.buffer.length
@@ -407,8 +531,6 @@ function startup() {
                   })
                 }
               }
-              // If the tail cannot be fetched, return 416 immediately rather than blocking
-              // or stalling sequential playback streams for 45 seconds.
               return new Response(null, {
                 status: 416,
                 statusText: 'Range Not Satisfiable',
@@ -419,52 +541,10 @@ function startup() {
               })
             }
 
-            // Hold the request while the sequential download catches up. Chromium treats 416 as a
-            // hard media error, so give plenty of time and keep TDLib download prioritized.
-            if (start >= availableSize && availableSize < totalSize) {
-              const deadline = Date.now() + 30000
-              let last = availableSize
-              let stalled = 0
-              while (Date.now() < deadline && availableSize <= start) {
-                await new Promise((r) => setTimeout(r, 150))
-                stalled++
-                if (stalled % 20 === 0 && knownId) {
-                  telegram.resumeStreamingDownload(fileId)
-                }
-                const refreshed = await fs.promises.stat(file).catch(() => null)
-                if (!refreshed) break
-                availableSize = await readableSize(refreshed.size)
-                if (availableSize > last) {
-                  stalled = 0
-                }
-                last = availableSize
-              }
-              if (availableSize <= start) {
-                return new Response(null, {
-                  status: 416,
-                  statusText: 'Range Not Satisfiable',
-                  headers: {
-                    ...mediaHeaders,
-                    'Content-Range': `bytes */${totalSize}`,
-                  },
-                })
-              }
-            }
+            const end = Math.min(requestedEnd, totalSize - 1)
+            const contentLength = (end - start) + 1
+            const webStream = createGrowingFileStream(file, start, end, isTemp, knownId ? fileId : undefined)
 
-            const end = Math.min(requestedEnd, availableSize - 1)
-            if (end < start) {
-              return new Response(null, {
-                status: 416,
-                statusText: 'Range Not Satisfiable',
-                headers: {
-                  ...mediaHeaders,
-                  'Content-Range': `bytes */${totalSize}`,
-                },
-              })
-            }
-            const chunksize = (end - start) + 1
-            const nodeStream = fs.createReadStream(file, { start, end })
-            const webStream = Readable.toWeb(nodeStream) as unknown as ReadableStream
             return new Response(webStream, {
               status: 206,
               statusText: 'Partial Content',
@@ -473,33 +553,21 @@ function startup() {
                 'Content-Type': mime,
                 'Content-Range': `bytes ${start}-${end}/${totalSize}`,
                 'Accept-Ranges': 'bytes',
-                'Content-Length': String(chunksize),
+                'Content-Length': String(contentLength),
               },
             })
           }
         }
 
-        // Plain GET: stream only the readable prefix, so an unwritten hole is never played as zeros.
-        const bodySize = await readableSize(currentSize)
-        if (bodySize <= 0) {
-          return new Response(null, {
-            status: 416,
-            statusText: 'Range Not Satisfiable',
-            headers: {
-              ...mediaHeaders,
-              'Content-Range': `bytes */${totalSize}`,
-            },
-          })
-        }
-        const nodeStream = fs.createReadStream(file, { start: 0, end: bodySize - 1 })
-        const webStream = Readable.toWeb(nodeStream) as unknown as ReadableStream
+        // Plain GET (no Range header): stream progressively from offset 0 to the end of the file
+        const webStream = createGrowingFileStream(file, 0, totalSize - 1, isTemp, knownId ? fileId : undefined)
         return new Response(webStream, {
           status: 200,
           headers: {
             ...mediaHeaders,
             'Content-Type': mime,
             'Accept-Ranges': 'bytes',
-            'Content-Length': String(bodySize),
+            'Content-Length': String(totalSize),
           },
         })
       } catch { return new Response(null, { status: 404 }) } // not signed in, bad URL, file gone
@@ -521,6 +589,10 @@ function startup() {
       grants.add(paths)
       return true
     })
+    const initialThemeSetting = readSetting(db, 'theme') as string | undefined
+    const initialTheme = getThemeColors(initialThemeSetting)
+    let lastOverlayColor = initialTheme.color
+    let lastSymbolColor = initialTheme.symbolColor
     ipcMain.handle('theme', (e, { color, symbolColor, id: themeId }) => {
       let sender: string | null = null
       try { sender = e.senderFrame?.url ?? null } catch { }
@@ -528,9 +600,14 @@ function startup() {
       if (themeId && typeof themeId === 'string') {
         try { putSetting(db, 'theme', themeId) } catch { }
       }
+      const symColor = symbolColor || '#94a3b8'
       if (win && !win.isDestroyed() && process.platform === 'win32') {
-        win.setTitleBarOverlay({ color, symbolColor: symbolColor || '#94a3b8', height: 36 })
-        win.setBackgroundColor(color)
+        if (color !== lastOverlayColor || symColor !== lastSymbolColor) {
+          lastOverlayColor = color
+          lastSymbolColor = symColor
+          win.setTitleBarOverlay({ color, symbolColor: symColor, height: 36 })
+          win.setBackgroundColor(color)
+        }
       }
       return true
     })
@@ -617,10 +694,10 @@ function createWindow(url: string, db: DB, hidden: boolean, closeToTray: () => b
       contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true,
     },
   })
-  if (saved?.maximized) {
-    w.maximize()
-  }
   w.once('ready-to-show', () => {
+    if (saved?.maximized) {
+      w.maximize()
+    }
     if (!hidden) {
       w.show()
     }

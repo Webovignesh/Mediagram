@@ -198,7 +198,6 @@ export default function App() {
 
   // Which of the four full-screen states is up.
   const seenScreen = useRef(false)
-  const isColdBoot = useRef(true)
   const screen: Screen = isLoggingOut || auth?.step === 'logging-out' ? 'logout'
     : loading || !auth || (!seenScreen.current && auth.step === 'starting') ? 'splash'
       : auth.step !== 'ready' ? 'login' : 'app'
@@ -212,12 +211,10 @@ export default function App() {
     if (lastScreen.current === screen) return
     const from = lastScreen.current
     lastScreen.current = screen
-    // On cold boot, if transitioning straight from initial splash to app, avoid cross-fade flash
-    if (isColdBoot.current && from === 'splash' && screen === 'app') {
-      isColdBoot.current = false
+    // On startup, transitioning from splash to app or login should be seamless and instant without flashing
+    if (from === 'splash') {
       return
     }
-    isColdBoot.current = false
     setLeaving({ screen: from, id: Date.now() })
     const timer = setTimeout(() => setLeaving(null), 280)
     return () => clearTimeout(timer)
@@ -329,7 +326,7 @@ export default function App() {
   // The screen on top plays its entrance; the one it replaced lingers above it, inert, and fades out.
   return (
     <div className="relative h-screen w-screen overflow-hidden bg-bg">
-      <div className={`absolute inset-0 ${isColdBoot.current && screen === 'app' ? '' : ENTER[screen]}`}>{view(screen)}</div>
+      <div className={`absolute inset-0 ${screen === 'app' ? '' : ENTER[screen]}`}>{view(screen)}</div>
       {leaving && (
         <div key={leaving.id} className={`pointer-events-none absolute inset-0 z-40 ${EXIT[leaving.screen]}`}>
           {view(leaving.screen)}

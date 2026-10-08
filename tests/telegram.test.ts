@@ -651,3 +651,28 @@ test('fetchVideoTail: fetches tail atom and caches it', async () => {
   assert.equal(dlCalls[1].synchronous, false)
 })
 
+test('growing file streaming: delivers initial and appended bytes sequentially', async () => {
+  const testFile = path.join(dir, 'growing_test.dat')
+  fs.writeFileSync(testFile, Buffer.from('chunk1-data-'))
+
+  let handle: fs.promises.FileHandle | null = await fs.promises.open(testFile, 'r')
+  const readChunks: string[] = []
+
+  // Read initial data
+  const buf = Buffer.alloc(12)
+  const r1 = await handle.read(buf, 0, 12, 0)
+  readChunks.push(buf.subarray(0, r1.bytesRead).toString())
+
+  // Append new data to file while handle is held
+  fs.appendFileSync(testFile, Buffer.from('chunk2-data-more'))
+
+  // Read subsequent data from offset 12
+  const buf2 = Buffer.alloc(16)
+  const r2 = await handle.read(buf2, 0, 16, 12)
+  readChunks.push(buf2.subarray(0, r2.bytesRead).toString())
+
+  await handle.close()
+  assert.deepEqual(readChunks, ['chunk1-data-', 'chunk2-data-more'])
+})
+
+
