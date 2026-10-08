@@ -590,15 +590,28 @@ export function Avatar({ src, name, size = 36 }: { src: string | null, name: str
 
 export function Thumb({ src, name }: { src: string | null, name: string }) {
   const [loaded, setLoaded] = useState(false)
+  const [attempt, setAttempt] = useState(0)
   const [failed, setFailed] = useState(false)
   const ext = (name.split('.').pop() || 'FILE').toUpperCase()
+  const giveUp = attempt >= 3
+
+  // A thumbnail 404s whenever TDLib takes a few seconds longer than the caller is willing to wait.
+  // It used to stay failed for as long as the row stayed mounted, which is why a channel page
+  // showed file-type badges instead of pictures. Retry with backoff; the backend caps how often
+  // the same id may actually be re-fetched.
+  useEffect(() => {
+    if (!failed || giveUp) return
+    const t = setTimeout(() => { setFailed(false); setLoaded(false); setAttempt((a) => a + 1) }, 1200 * (attempt + 1))
+    return () => clearTimeout(t)
+  }, [failed, giveUp, attempt])
 
   // Compute URL unconditionally before any conditional returns (hooks rule).
-  const url = (src && !failed)
+  const raw = (src && !giveUp)
     ? (src.startsWith('mediagram://') || src.startsWith('teleflow://') || src.startsWith('data:') || src.startsWith('blob:') || src.startsWith('http')
         ? src
         : `mediagram://thumb/${src}`)
     : null
+  const url = raw ? (attempt > 0 ? `${raw}${raw.includes('?') ? '&' : '?'}r=${attempt}` : raw) : null
 
   if (!url) {
     return (
@@ -642,16 +655,26 @@ export function ChatMediaThumb({
   maxHeight?: string
 }) {
   const [loaded, setLoaded] = useState(false)
+  const [attempt, setAttempt] = useState(0)
   const [failed, setFailed] = useState(false)
+  const giveUp = attempt >= 3
+
+  // Same backoff retry as Thumb: a preview that404s once must not stay a grey placeholder forever.
+  useEffect(() => {
+    if (!failed || giveUp) return
+    const t = setTimeout(() => { setFailed(false); setLoaded(false); setAttempt((a) => a + 1) }, 1200 * (attempt + 1))
+    return () => clearTimeout(t)
+  }, [failed, giveUp, attempt])
 
   // Compute URL unconditionally (hook rules require this before any conditional return).
   // useMemo avoids rebuilding the string on every render during scroll.
   // eslint-disable-next-line react-hooks/rules-of-hooks
-  const url = (src && !failed)
+  const raw = (src && !giveUp)
     ? (src.startsWith('mediagram://') || src.startsWith('teleflow://') || src.startsWith('data:') || src.startsWith('blob:') || src.startsWith('http')
         ? src
         : `mediagram://thumb/${src}`)
     : null
+  const url = raw ? (attempt > 0 ? `${raw}${raw.includes('?') ? '&' : '?'}r=${attempt}` : raw) : null
 
   if (!url) {
     return (
@@ -1787,19 +1810,21 @@ function CustomVideoPlayer({
             handleSeek((e.clientX - rect.left) / rect.width)
           }}
         >
-          <div className="w-full h-1.5 group-hover/scrub:h-2 bg-white/20 rounded-full overflow-hidden transition-all relative">
-            {/* Background downloaded track (file bytes downloaded from Telegram) */}
+          <div
+            className="w-full h-1.5 group-hover/scrub:h-2 bg-white/10 rounded-full overflow-hidden transition-all relative"
+            title={isCompleted ? 'Fully downloaded' : `Buffering ${Math.round(dlPct)}%`}
+          >
+            {/* Bytes on disk: neutral, deliberately not cyan, so the bar reads as one buffered fill */}
             {!isCompleted && dlPct > 0 && (
               <div
-                className="absolute left-0 top-0 h-full bg-cyan/15 rounded-full transition-all duration-150"
+                className="absolute left-0 top-0 h-full bg-white/30 rounded-full transition-all duration-150"
                 style={{ width: `${dlPct}%` }}
-                title={`Downloaded: ${Math.round(dlPct)}%`}
               />
             )}
-            {/* Playable buffered track (actual media decoded and playable) */}
+            {/* Playable buffered track — the single bright fill */}
             <div
               data-testid="player-buffered-track"
-              className="absolute left-0 top-0 h-full bg-cyan/40 rounded-full transition-all duration-150"
+              className="absolute left-0 top-0 h-full bg-cyan/45 rounded-full transition-all duration-150"
               style={{ width: `${actualBufferedPct}%` }}
               title={`Buffered: ${Math.round(actualBufferedPct)}%`}
             />
@@ -1834,7 +1859,7 @@ function CustomVideoPlayer({
 
             {!isCompleted && (buffering || mediaError || dlPct > 0) && (
               <span data-testid="player-download-status" className="font-mono text-[10.5px] font-semibold text-cyan/90 bg-cyan/15 border border-cyan/30 px-2 py-0.5 rounded-full tabular-nums whitespace-nowrap select-none">
-                {mediaError ? 'Error / ' : buffering ? 'Buffering / ' : ''}Downloaded {Math.round(dlPct)}%
+                {mediaError ? 'Error' : `Buffering ${Math.round(dlPct)}%`}
               </span>
             )}
 
@@ -1978,8 +2003,13 @@ function MediaPreviewSession({ open, item, onClose, onDownload }: MediaPreviewMo
     // A path can be missing for a beat (TDLib has not created its temp file yet). Ask again instead of
     // having nothing to play — this ensures immediate playback as soon as the file is allocated.
     let havePath = false
-    let attempts = 0
     let retryTimer: NodeJS.Timeout | undefined
+    // Three attempts 2.5 s apart used to be the whole budget: on a busy channel page prepareMedia
+    // needs longer than 7.5 s, and after that the modal showed a static thumbnail forever with no
+    // player and no indication anything was still happening. Keep asking while the modal is open.
+    const startedAt = Date.now()
+    const RETRY_MS = 2000
+    const MAX_WAIT_MS = 45_000
 
     const acceptPath = (path: string, size: number, completed: boolean) => {
       havePath = true
@@ -1989,10 +2019,15 @@ function MediaPreviewSession({ open, item, onClose, onDownload }: MediaPreviewMo
       setPlayerUrl((prev) => prev || makeMediaUrl(path, size, targetFileId))
     }
 
+    const scheduleRetry = () => {
+      retryTimer = undefined
+      if (!active || havePath || Date.now() - startedAt > MAX_WAIT_MS) return
+      retryTimer = setTimeout(prepare, RETRY_MS)
+    }
+
     const prepare = () => {
       retryTimer = undefined
       if (!active || havePath) return
-      attempts++
       call<{ completed: boolean, path: string | null, fileId: number, size: number, downloaded: number, thumb?: string | null }>('media.prepare', {
         chatId: item!.chatId,
         messageId: item!.messageId,
@@ -2014,10 +2049,10 @@ function MediaPreviewSession({ open, item, onClose, onDownload }: MediaPreviewMo
           } else if (res.size) {
             setPrepProgress({ downloaded: res.downloaded || 0, total: res.size })
           }
-          if (!havePath && active && attempts < 3) retryTimer = setTimeout(prepare, 2500)
+          if (!havePath && active) scheduleRetry()
         })
         .catch(() => {
-          if (active && !havePath && attempts < 3) retryTimer = setTimeout(prepare, 2500)
+          if (active && !havePath) scheduleRetry()
         })
     }
     prepare()
@@ -2163,6 +2198,15 @@ function MediaPreviewSession({ open, item, onClose, onDownload }: MediaPreviewMo
                   <Film size={36} className="text-muted" />
                 </div>
               )}
+              {/* A static poster with no player looks like nothing is happening. Say what is going on. */}
+              <div className="absolute inset-0 flex items-center justify-center gap-2.5 bg-black/45">
+                <span className="size-4 rounded-full border-2 border-white/25 border-t-white animate-spin" />
+                <span className="text-[13px] font-medium text-white/90">
+                  {prepProgress && prepProgress.total > 0
+                    ? `Preparing video… ${Math.round((prepProgress.downloaded / prepProgress.total) * 100)}%`
+                    : 'Preparing video…'}
+                </span>
+              </div>
             </div>
           )
         ) : isImage ? (

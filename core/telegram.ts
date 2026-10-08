@@ -1617,6 +1617,36 @@ function upkeep(m: Td.message) {
 const thumbPathCache = new Map<string, string>()
 /** Deduplicates concurrent requests for the same thumbnail remote ID. */
 const thumbInflight = new Map<string, Promise<string | null>>()
+/** remoteIds that could not be fetched, and when. The renderer re-issues the <img> on every
+ *  re-render, so without this an id that cannot be fetched becomes an unbounded getRemoteFile
+ *  stream that starves everything else in TDLib's queue. */
+const thumbFailed = new Map<string, number>()
+/** How long thumbFile waits for TDLib to finish a thumbnail before answering the request. */
+const THUMB_WAIT_MS = 15_000
+/** How long a failed thumb is left alone before it may be tried again. */
+const THUMB_RETRY_MS = 20_000
+/** A single channel page queues ~100 thumbnails. Letting them all into TDLib at once is what made
+ *  every other request — including the video the user was trying to open — wait behind them. */
+let thumbPrefetchSlots = 0
+const THUMB_PREFETCH_MAX = 6
+const thumbPrefetchWaiters: (() => void)[] = []
+async function withThumbSlot<T>(fn: () => Promise<T>): Promise<T> {
+  if (thumbPrefetchSlots >= THUMB_PREFETCH_MAX) {
+    await new Promise<void>((r) => thumbPrefetchWaiters.push(r))
+  }
+  thumbPrefetchSlots++
+  try {
+    return await fn()
+  } finally {
+    thumbPrefetchSlots--
+    thumbPrefetchWaiters.shift()?.()
+  }
+}
+function rememberThumb(remoteId: string | null | undefined, filePath: string) {
+  if (!remoteId) return
+  thumbPathCache.set(remoteId, filePath)
+  thumbFailed.delete(remoteId)
+}
 
 /** Prefetch recent full photo files in background with low priority so opening image view is instantaneous */
 export function prefetchPhotos(fileIds: (number | null | undefined)[]) {
@@ -1641,6 +1671,7 @@ export function prefetchThumbs(items: (ThumbPrefetchItem | null | undefined)[]) 
     const fileId = typeof item === 'object' ? item.fileId : null
 
     if (remoteId && thumbPathCache.has(remoteId)) continue
+    if (remoteId && thumbFailed.has(remoteId)) continue
 
     const query = (fileId && typeof fileId === 'number')
       ? invoke({ _: 'getFile', file_id: fileId })
@@ -1650,94 +1681,106 @@ export function prefetchThumbs(items: (ThumbPrefetchItem | null | undefined)[]) 
 
     if (!query) continue
 
-    void query.then((f) => {
+    void withThumbSlot(() => query.then((f) => {
       const cacheKey = remoteId || f.remote?.id
       // Same 2 MB ceiling as thumbFile: an id whose file is not a thumbnail is left alone (ARCHITECTURE > teleflow://
       // protocol), so a poisoned index cannot pull an arbitrary file down in the background.
       if ((f.expected_size || f.size) > 2 * 2 ** 20) return
-      if (!f.local.is_downloading_completed) {
-        // Populate the cache once the background download completes so subsequent
-        // thumbFile() calls get an immediate cache hit instead of re-hitting TDLib.
-        return invoke({ _: 'downloadFile', file_id: f.id, priority: 16, offset: 0, limit: 0, synchronous: false })
-          .then((done) => {
-            if (done.local.path && fs.existsSync(done.local.path)) {
-              if (cacheKey) thumbPathCache.set(cacheKey, done.local.path)
-            }
-          }).catch(() => {})
-      } else if (f.local.path && fs.existsSync(f.local.path)) {
-        if (cacheKey) thumbPathCache.set(cacheKey, f.local.path)
+      if (f.local.is_downloading_completed) {
+        if (f.local.path && fs.existsSync(f.local.path)) rememberThumb(cacheKey, f.local.path)
+        return
       }
-    }).catch(() => {})
+      // Already under way: re-issuing downloadFile only resets the priority of the download that is
+      // running, and on a page of 100 messages this happened again on every re-render.
+      if (f.local.is_downloading_active) return
+      return invoke({ _: 'downloadFile', file_id: f.id, priority: 16, offset: 0, limit: 0, synchronous: false })
+        .then((done) => {
+          if (done.local.is_downloading_completed && done.local.path && fs.existsSync(done.local.path)) {
+            rememberThumb(cacheKey, done.local.path)
+          }
+        }).catch(() => {})
+    })).catch(() => {})
   }
 }
 
 /** Local path of a thumbnail or avatar for teleflow://thumb; the size is checked before anything downloads.
- *  Concurrent requests for the same remoteId share a single in-flight Promise to avoid duplicate TDLib calls. */
+ *  Concurrent requests for the same remoteId share a single in-flight Promise to avoid duplicate TDLib calls.
+ *  It waits for TDLib to actually finish the file: an earlier version gave up the moment its 3 s
+ *  synchronous call timed out, so any thumbnail that needed more than three seconds answered 404
+ *  forever while the download kept running for nobody. */
 export function thumbFile(remoteId: string): Promise<string | null> {
   // Fast path: already resolved and still on disk
   const cached = thumbPathCache.get(remoteId)
   if (cached && fs.existsSync(cached)) return Promise.resolve(cached)
+
+  // A thumb that just failed is not retried immediately — see thumbFailed.
+  if (thumbFailed.has(remoteId) && Date.now() - (thumbFailed.get(remoteId) || 0) < THUMB_RETRY_MS) {
+    return Promise.resolve(null)
+  }
 
   // Dedup: if another request is already downloading this thumbnail, share its promise
   const inflight = thumbInflight.get(remoteId)
   if (inflight) return inflight
 
   const promise = (async (): Promise<string | null> => {
+    let remoteIdFailed = false
     try {
       let f = await invoke({ _: 'getRemoteFile', remote_file_id: remoteId })
       if ((f.expected_size || f.size) > 2 * 2 ** 20) throw fail(413, 'Thumbnail too large')
       if (f.local.is_downloading_completed && f.local.path && fs.existsSync(f.local.path)) {
-        thumbPathCache.set(remoteId, f.local.path)
+        rememberThumb(remoteId, f.local.path)
         return f.local.path
       }
 
-      // Register listener BEFORE calling downloadFile so we never miss the updateFile event
-      let unsub: () => void = () => {}
-      const updatePromise = new Promise<typeof f>((resolve) => {
-        const timer = setTimeout(() => { unsub(); resolve(f) }, 8000)
-        unsub = onUpdate((u) => {
-          if (u._ !== 'updateFile' || u.file.id !== f.id) return
-          if (u.file.local.is_downloading_completed && u.file.local.path) {
-            clearTimeout(timer)
-            unsub()
-            resolve(u.file)
-          }
-        })
+      // Watch both the updateFile stream and a getFile poll. The event stream alone is not enough —
+      // a burst of updates during a busy page can be missed — and the poll is what turns "the
+      // download finished a second later" from a 404 into a picture.
+      const wait = (budgetMs: number) => new Promise<string | null>((resolve) => {
+        let settled = false
+        let unsub: () => void = () => {}
+        let poll: ReturnType<typeof setInterval> | null = null
+        const stop = (p: string | null) => {
+          if (settled) return
+          settled = true
+          unsub()
+          if (poll) clearInterval(poll)
+          clearTimeout(timer)
+          resolve(p)
+        }
+        const accept = (file: typeof f) => {
+          if (file.local.is_downloading_completed && file.local.path && fs.existsSync(file.local.path)) stop(file.local.path)
+        }
+        const timer = setTimeout(() => stop(null), budgetMs)
+        unsub = onUpdate((u) => { if (u._ === 'updateFile' && u.file.id === f.id) accept(u.file) })
+        poll = setInterval(() => {
+          void invoke({ _: 'getFile', file_id: f.id }).then((g) => { if (g) accept(g) }).catch(() => {})
+        }, 600)
+        accept(f)
       })
 
-      // Try synchronous download first for instant resolution of tiny thumbnails (< 200 KB)
-      let dl: any = null
-      try {
-        dl = await Promise.race([
-          invoke({ _: 'downloadFile', file_id: f.id, priority: 32, offset: 0, limit: 0, synchronous: true }),
-          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), 3000)),
-        ])
-      } catch {
-        invoke({ _: 'downloadFile', file_id: f.id, priority: 32, offset: 0, limit: 0, synchronous: false }).catch(() => null)
-        f = await updatePromise
-      }
-      if (dl && dl.local?.is_downloading_completed && dl.local?.path && fs.existsSync(dl.local.path)) {
-        unsub()
-        f = dl
+      // Fast path: a thumbnail under ~200 KB usually lands synchronously in well under a second.
+      const sync: any = await Promise.race([
+        invoke({ _: 'downloadFile', file_id: f.id, priority: 32, offset: 0, limit: 0, synchronous: true }),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), 1500)),
+      ]).catch(() => null)
+      if (sync?.local?.is_downloading_completed && sync.local.path && fs.existsSync(sync.local.path)) {
+        rememberThumb(remoteId, sync.local.path)
+        return sync.local.path
       }
 
-      // If still not completed according to f, check getFile one more time
-      if (!f.local.path || !fs.existsSync(f.local.path)) {
-        const check = await invoke({ _: 'getFile', file_id: f.id }).catch(() => null)
-        if (check && check.local.is_downloading_completed && check.local.path && fs.existsSync(check.local.path)) {
-          f = check
-        }
-      }
-
-      if (f.local.path && fs.existsSync(f.local.path)) {
-        thumbPathCache.set(remoteId, f.local.path)
-        return f.local.path
-      }
-      return null
+      // Not there yet: start (or resume) the download and watch for it instead of giving up.
+      void invoke({ _: 'downloadFile', file_id: f.id, priority: 32, offset: 0, limit: 0, synchronous: false }).catch(() => null)
+      const p = await wait(THUMB_WAIT_MS)
+      if (p) rememberThumb(remoteId, p)
+      else { remoteIdFailed = true; thumbFailed.set(remoteId, Date.now()) }
+      return p
     } catch (e) {
       if ((e as { status?: number })?.status === 413) throw e
+      remoteIdFailed = true
+      thumbFailed.set(remoteId, Date.now())
       return null
     } finally {
+      if (!remoteIdFailed) thumbFailed.delete(remoteId)
       thumbInflight.delete(remoteId)
     }
   })()
@@ -1759,7 +1802,10 @@ type HeadKind = 'faststart' | 'tail' | 'unknown'
 const videoHeadKinds = new Map<number, Exclude<HeadKind, 'unknown'>>()
 const videoHeadInflight = new Map<number, Promise<HeadKind>>()
 const videoPrefetchInflight = new Map<number, object>()
-const videoPrefetchAttempted = new Set<number>()
+/** Automatic tail warming used to be one attempt per file for the whole session, so a single
+ *  failed prefetch meant no tail until the user opened the video. Attempts are now rate limited
+ *  and capped instead of forbidden. */
+const videoPrefetchAttempted = new Map<number, { at: number, n: number }>()
 const videoTailControls = new Map<number, { cancelled: boolean, cancel: () => void }>()
 
 // Disk length and aggregate downloaded bytes include holes. Only TDLib-confirmed offset-0
@@ -2243,10 +2289,17 @@ export async function probeVideoHead(fileId: number, totalSize: number, filePath
   return promise
 }
 
-/** Unknown heads can retry; automatic warming gets only one tail attempt per file/session. */
+const TAIL_PREFETCH_RETRY_MS = 20_000
+const TAIL_PREFETCH_MAX_ATTEMPTS = 6
+
+/** Warming the tail repeatedly, at a distance, instead of exactly once: an attempt that found
+ *  nothing (TDLib could not serve that range yet) must not be the last word for the session. */
 export function prefetchVideoTail(fileId: number, totalSize: number, filePath: string) {
-  if (!(fileId > 0) || totalSize <= TAIL_BASE || videoHasHeadMoov(fileId) || videoPrefetchAttempted.has(fileId) || videoPrefetchInflight.has(fileId) || videoTailBusy(fileId)) return
+  if (!(fileId > 0) || totalSize <= TAIL_BASE || videoHasHeadMoov(fileId) || videoPrefetchInflight.has(fileId) || videoTailBusy(fileId)) return
   if (downloadComplete(fileId) || videoTailCache.get(fileId)?.totalSize === totalSize) return
+  const prior = videoPrefetchAttempted.get(fileId)
+  if (prior && prior.n >= TAIL_PREFETCH_MAX_ATTEMPTS) return
+  if (prior && Date.now() - prior.at < TAIL_PREFETCH_RETRY_MS) return
   const failedAt = videoTailFailed.get(fileId)
   if (failedAt !== undefined && Date.now() - failedAt < 5000) return
   const owner = client, attempt = {}
@@ -2256,10 +2309,12 @@ export function prefetchVideoTail(fileId: number, totalSize: number, filePath: s
       const kind = await probeVideoHead(fileId, totalSize, filePath)
       if (client !== owner || videoPrefetchInflight.get(fileId) !== attempt || kind !== 'tail') return
       // A cached head classification can outlive completion or a transfer's move/delete cleanup.
-      // Recheck before consuming the one automatic attempt or replacing the sequential download.
+      // Recheck before consuming the attempt or replacing the sequential download.
       const wm = await getWatermarks(fileId, 0)
       if (client !== owner || videoPrefetchInflight.get(fileId) !== attempt || wm?.done || downloadComplete(fileId)) return
-      videoPrefetchAttempted.add(fileId)
+      // Recorded here rather than on entry: a probe that finds nothing to fetch has not spent an
+      // attempt, and a caller that learns the head is retryable must still be able to ask again.
+      videoPrefetchAttempted.set(fileId, { at: Date.now(), n: (prior?.n ?? 0) + 1 })
       await fetchVideoTail(fileId, totalSize)
     } catch (error) {
       log('warn', `media: prefetch id ${fileId} failed: ${error instanceof Error ? error.message : String(error)}`)

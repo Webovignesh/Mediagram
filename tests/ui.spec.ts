@@ -1367,7 +1367,7 @@ test.describe('Mediagram UI', () => {
       fixture.resolvePrepare({ ...fixture.result, path: 'C:\\tdlib\\files\\temp\\1364' })
     })
     await expect(page.locator('video')).toHaveAttribute('src', /temp%5C1364\?total=10960000&ext=mp4&id=1364$/)
-    await expect(page.locator('[data-testid="player-download-status"]')).toContainText('Downloaded 56%')
+    await expect(page.locator('[data-testid="player-download-status"]')).toContainText('Buffering 56%')
   })
 
   test('Video preview regression: matching progress cancels a pending preparation retry', async ({ page }) => {
@@ -1400,7 +1400,7 @@ test.describe('Mediagram UI', () => {
     })
     const buffer = page.locator('[data-testid="player-buffered-track"]')
     await expect(buffer).toHaveAttribute('title', 'Buffered: 29%')
-    await expect(page.locator('[data-testid="player-download-status"]')).toContainText('Downloaded 56%')
+    await expect(page.locator('[data-testid="player-download-status"]')).toContainText('Buffering 56%')
     await page.locator('[class*="group/scrub"]').evaluate((scrub) => {
       const rect = scrub.getBoundingClientRect()
       scrub.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: rect.left + rect.width * 119.88 / 159.2 }))
@@ -1408,11 +1408,11 @@ test.describe('Mediagram UI', () => {
     const target = await video.evaluate((v: HTMLVideoElement) => v.currentTime)
     expect(target).toBeCloseTo(119.88, 0)
     await expect(page.locator('[data-testid="player-buffering"]')).toBeAttached()
-    await expect(page.locator('[data-testid="player-download-status"]')).toHaveText('Buffering / Downloaded 56%')
+    await expect(page.locator('[data-testid="player-download-status"]')).toHaveText('Buffering 56%')
     await page.evaluate(() => (window as any).__videoTest.emit({
       type: 'fileProgress', fileId: 1364, total: 10960000, downloaded: 10000000, completed: false,
     }))
-    await expect(page.locator('[data-testid="player-download-status"]')).toHaveText('Buffering / Downloaded 91%')
+    await expect(page.locator('[data-testid="player-download-status"]')).toHaveText('Buffering 91%')
     await page.clock.runFor(5000)
     expect(logs.some((line) => line.includes('downloaded=91%'))).toBe(true)
     await video.evaluate((v) => {
