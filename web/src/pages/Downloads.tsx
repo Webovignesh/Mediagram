@@ -295,7 +295,7 @@ function MediaGridThumb({
       {url ? (
         <>
           {!loaded && (
-            <div className="absolute inset-0 bg-panel/90 animate-pulse flex flex-col items-center justify-center gap-1.5 z-10">
+            <div className="absolute inset-0 bg-panel/90 flex flex-col items-center justify-center gap-1.5 z-10">
               <div className="size-10 rounded-xl bg-tile border border-border/60 flex items-center justify-center">
                 {getMediaIcon()}
               </div>
@@ -309,9 +309,7 @@ function MediaGridThumb({
             decoding="async"
             onLoad={() => setLoaded(true)}
             onError={() => setFailed(true)}
-            className={`w-full h-full object-cover transition-all duration-300 group-hover:scale-105 ${
-              loaded ? 'opacity-100 scale-100' : 'opacity-0 scale-[1.02]'
-            }`}
+            className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
           />
         </>
       ) : (
@@ -2211,16 +2209,24 @@ export default function Downloads() {
         {view === 'files' ? (
           <div className="space-y-3 flex-1 flex flex-col">
             {/* Active Channel header in Files View with aligned Search bar */}
-            {activeChat && (
+            {(activeChat || (!chatsData && !chatsErr)) && (
               <div className="flex items-center justify-between pb-3 border-b border-border/40 gap-4">
                 <div className="flex items-center gap-3 min-w-0 flex-1">
-                  <Avatar src={activeChat.photo} name={activeChat.title} size={34} />
+                  {activeChat ? (
+                    <Avatar src={activeChat.photo} name={activeChat.title} size={34} />
+                  ) : (
+                    <div className="size-[34px] shrink-0 rounded-full bg-tile" />
+                  )}
                   <div className="min-w-0">
                     <div className="text-[14px] font-bold text-text truncate leading-tight tracking-wide">
-                      {activeChat.title}
+                      {activeChat ? activeChat.title : <span className="inline-block h-4 w-44 rounded bg-tile" />}
                     </div>
                     <div className="text-[11.5px] text-muted truncate leading-tight mt-0.5">
-                      {activeChat.username ? `@${activeChat.username}` : activeChat.kind || 'Channel'} • {mediaData?.total ?? 0} files
+                      {activeChat ? (
+                        <>{activeChat.username ? `@${activeChat.username}` : activeChat.kind || 'Channel'} • {mediaData?.total ?? 0} files</>
+                      ) : (
+                        <span className="inline-block h-3 w-64 rounded bg-tile" />
+                      )}
                     </div>
                   </div>
                 </div>
