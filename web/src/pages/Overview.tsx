@@ -3,7 +3,7 @@ import { useState, useRef, useEffect } from 'react'
 import { Activity, CheckCircle2, FileStack, AlertTriangle, MoreVertical, Play, Pause, ArrowDown, ArrowUp, XCircle, Bell, CheckCheck, X, MessageSquare, Check, Sparkles, Trash2 } from 'lucide-react'
 import { call, useCall, useLive, navigate } from '../api.ts'
 import type { LiveStats } from '../../../core/transfers.ts'
-import { Panel, Stat, Select, Avatar, Pill, Progress, IconButton, Menu, Empty, ErrorState, Skeleton, MediaPreviewModal, fmtBytes, fmtAgo, fmtEta, fmtSpeed, typeLabel, toast } from '../ui.tsx'
+import { Panel, Stat, Select, Avatar, Pill, Progress, IconButton, Menu, Empty, ErrorState, MediaPreviewModal, fmtBytes, fmtAgo, fmtEta, fmtSpeed, typeLabel, toast } from '../ui.tsx'
 import { useNotifications } from '../notifications.ts'
 
 type KindCount = { download: number, upload: number }
@@ -545,7 +545,7 @@ export default function Overview() {
 
       <Panel title="Current Jobs" subtitle="Active downloads and uploads"
         action={<Select value={jobFilter} options={[{ value: 'all', label: 'All Jobs' }, { value: 'download', label: 'Downloads' }, { value: 'upload', label: 'Uploads' }]} onChange={(v) => setJobFilter(v as any)} />}>
-        {jobErr ? <ErrorState error={jobErr} onRetry={jobReload} /> : !jobs ? <Skeleton className="h-32" /> : currentJobs.length === 0 ? (
+        {jobErr ? <ErrorState error={jobErr} onRetry={jobReload} /> : !jobs ? <div className="h-32" /> : currentJobs.length === 0 ? (
           <Empty message="No active jobs" action={{ label: 'Open Downloads', onClick: () => navigate('/downloads') }} />
         ) : (
           <div className="space-y-2 overflow-x-auto">

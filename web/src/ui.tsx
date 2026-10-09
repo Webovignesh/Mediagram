@@ -539,11 +539,14 @@ export function Avatar({ src, name, size = 36 }: { src: string | null, name: str
   const color = colors[((initial.codePointAt(0) || 0)) % colors.length]
 
   // Compute URL unconditionally before any conditional returns (hooks rule).
-  const url = (src && !failed)
+  const raw = (src && !failed)
     ? (src.startsWith('mediagram://') || src.startsWith('teleflow://') || src.startsWith('data:') || src.startsWith('blob:') || src.startsWith('http')
         ? src
         : `mediagram://thumb/${src}`)
     : null
+  // A retry has to actually re-request, and it must not remount the element: swapping the src keeps
+  // the old frame in place while the new one decodes, so a slow avatar lands instead of flashing.
+  const url = raw ? (retries > 0 ? `${raw}${raw.includes('?') ? '&' : '?'}r=${retries}` : raw) : null
 
   if (isSaved && !url) {
     return (
@@ -570,9 +573,8 @@ export function Avatar({ src, name, size = 36 }: { src: string | null, name: str
 
   return (
     <div className="relative shrink-0 rounded-lg overflow-hidden" style={{ width: size, height: size }}>
-      {!loaded && <div className="absolute inset-0 bg-white/10 animate-pulse rounded-lg" />}
+      {!loaded && <div className="absolute inset-0 bg-white/10 rounded-lg" />}
       <img
-        key={`${url}-${retries}`}
         src={url}
         alt={name}
         loading="lazy"
@@ -585,7 +587,7 @@ export function Avatar({ src, name, size = 36 }: { src: string | null, name: str
             setFailed(true)
           }
         }}
-        className={`rounded-lg object-cover transition-opacity duration-200 ${loaded ? 'opacity-100' : 'opacity-0'}`}
+        className={`rounded-lg object-cover ${loaded ? 'opacity-100' : 'opacity-0'}`}
         style={{ width: size, height: size }}
       />
     </div>
@@ -628,7 +630,7 @@ export function Thumb({ src, name }: { src: string | null, name: string }) {
   return (
     <div className="relative h-7 w-10 shrink-0 rounded overflow-hidden border border-border/40 bg-tile/60">
       {!loaded && (
-        <div className="absolute inset-0 bg-white/10 animate-pulse flex items-center justify-center">
+        <div className="absolute inset-0 bg-white/10 flex items-center justify-center">
           <span className="text-[8px] font-bold text-muted/60">{ext.slice(0, 2)}</span>
         </div>
       )}
@@ -639,7 +641,7 @@ export function Thumb({ src, name }: { src: string | null, name: string }) {
         decoding="async"
         onLoad={() => setLoaded(true)}
         onError={() => setFailed(true)}
-        className={`h-full w-full object-cover transition-opacity duration-200 ${loaded ? 'opacity-100' : 'opacity-0'}`}
+        className={`h-full w-full object-cover ${loaded ? 'opacity-100' : 'opacity-0'}`}
       />
     </div>
   )
@@ -698,11 +700,11 @@ export function ChatMediaThumb({
     <div className="relative w-full overflow-hidden bg-panel/40" style={{ minHeight: loaded ? undefined : minHeight }}>
       {!loaded && (
         <div
-          className="absolute inset-0 flex flex-col items-center justify-center bg-panel/90 animate-pulse z-10"
+          className="absolute inset-0 flex flex-col items-center justify-center bg-panel/90 z-10"
           style={{ minHeight }}
         >
           <div className="size-10 rounded-xl bg-tile border border-border flex items-center justify-center text-primary/70">
-            <Film size={20} className="animate-pulse" />
+            <Film size={20} />
           </div>
           <span className="mt-2 text-[10px] font-semibold tracking-wider text-muted/70 uppercase">Loading preview…</span>
         </div>
@@ -714,7 +716,7 @@ export function ChatMediaThumb({
         decoding="async"
         onLoad={() => setLoaded(true)}
         onError={() => setFailed(true)}
-        className={`w-full max-h-[480px] h-auto object-cover block transition-all duration-300 ${loaded ? 'opacity-100 scale-100' : 'opacity-0 scale-[1.01]'} ${className}`}
+        className={`w-full max-h-[480px] h-auto object-cover block ${loaded ? 'opacity-100' : 'opacity-0'} ${className}`}
         style={{ minHeight: loaded ? undefined : minHeight, maxHeight }}
       />
     </div>
