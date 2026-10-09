@@ -23,13 +23,29 @@ export async function call<T>(method: string, args?: unknown): Promise<T> {
   return res.data as T
 }
 
+// Responses are kept across mounts. Navigating away and back used to start from undefined, so the page
+// painted a blank column and then swapped the whole sidebar, header and table in together a moment
+// later - that swap is the flash. Seeding the last known answer makes the revisit a repaint, not a
+// reflow. Bounded so a long session cannot grow it without limit.
+const callCache = new Map<string, unknown>()
+const CACHE_LIMIT = 256
+const UNCACHED = new Set(['auth.get'])
+const cacheKey = (method: string, args: unknown) => method + ' ' + JSON.stringify(args ?? null)
+
+export function clearCallCache() {
+  callCache.clear()
+}
+
 /** Hook that calls a method once on mount and refetches when the specified topics are invalidated. */
 export function useCall<T>(
   method: string,
   args?: unknown,
   topics: string[] = []
 ): { data: T | undefined, error: string, loading: boolean, reload: () => void } {
-  const [data, setData] = useState<T>()
+  const key = cacheKey(method, args)
+  const [data, setData] = useState<T | undefined>(() =>
+    (args === null || UNCACHED.has(method)) ? undefined : (callCache.get(key) as T | undefined)
+  )
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
   const [tick, setTick] = useState(0)
@@ -51,12 +67,20 @@ export function useCall<T>(
       setLoading(false)
       return
     }
+    // Switching to a different key (another chat, another page) must not keep showing the old answer
+    // while the new one is in flight.
+    if (!UNCACHED.has(method) && callCache.has(key)) setData(callCache.get(key) as T)
     setLoading(true)
     let active = true
     pendingSince.current = Date.now()
     call<T>(method, args)
       .then((d) => {
         if (active) {
+          if (!UNCACHED.has(method)) {
+            callCache.delete(key)
+            callCache.set(key, d)
+            if (callCache.size > CACHE_LIMIT) callCache.delete(callCache.keys().next().value as string)
+          }
           setData(d)
           setLoading(false)
         }
@@ -68,7 +92,7 @@ export function useCall<T>(
         }
       })
     return () => { active = false }
-  }, [method, JSON.stringify(args), tick])
+  }, [method, key, tick])
 
   // An outage can fail a call or leave it queued behind TDLib's dead sockets; both come back when the OS reports the
   // network again or TDLib re-enters ready, so a failed or hanging call (over 2 s) fetches once now and once more
@@ -133,6 +157,8 @@ function initEventListener() {
     const e = event as AppEvent
     let changed = false
     if (e.type === 'auth') {
+      // Leaving a session (or never having one) must not leave the previous account's pages on screen.
+      if (e.auth?.step !== 'ready') clearCallCache()
       if (liveSnapshot.auth !== e.auth) {
         liveSnapshot = { ...liveSnapshot, auth: e.auth }
         changed = true
