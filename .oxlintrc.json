@@ -1,0 +1,42 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["typescript", "react", "unicorn", "oxc"],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "warn",
+    "perf": "warn",
+    "pedantic": "off",
+    "style": "off"
+  },
+  "env": { "browser": true, "node": true, "es2022": true },
+  "ignorePatterns": [
+    "out",
+    "release",
+    "node_modules",
+    "assets",
+    "docs",
+    "tests/screenshots",
+    "test-results",
+    "**/*.d.ts"
+  ],
+  "rules": {
+    "eslint/no-unused-vars": [
+      "error",
+      {
+        "varsIgnorePattern": "^_",
+        "argsIgnorePattern": "^_",
+        "caughtErrorsIgnorePattern": "^_",
+        "ignoreRestSiblings": true
+      }
+    ],
+    "eslint/no-control-regex": "off",
+    "eslint/no-misleading-character-class": "off",
+    "unicorn/no-new-array": "off",
+    "unicorn/no-useless-spread": "off",
+    "react/set-state-in-effect": "warn",
+    "react-hooks/exhaustive-deps": "warn",
+    "react/refs": "warn",
+    "react/preserve-manual-memoization": "off",
+    "react/react-in-jsx-scope": "off"
+  }
+}

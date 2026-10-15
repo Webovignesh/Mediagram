@@ -1,0 +1,31 @@
+# Dependencies
+node_modules/
+# Build output
+out/
+release/
+dist/
+build/
+# Machine-local secrets
+.env
+.env.*
+!.env.example
+# Logs / test output
+*.log
+npm-debug.log*
+coverage/
+test-results/
+playwright-report/
+tests/screenshots/
+
+# Editor/OS files
+.cache/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.vscode/
+.idea/
+.kiro/
+.archify/*
+!.archify/mediagram_architecture.html
+

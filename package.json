@@ -1,0 +1,95 @@
+{
+  "name": "mediagram",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Fast desktop Telegram media downloader with instant video streaming, powered by TDLib.",
+  "type": "module",
+  "main": "out/main/index.js",
+  "author": "Webovignesh",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Webovignesh/Mediagram.git"
+  },
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "typecheck": "tsc --noEmit",
+    "lint": "oxlint",
+    "test": "node --test tests/*.test.ts",
+    "dist": "electron-vite build && electron-builder --win nsis"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.9",
+    "prebuilt-tdlib": "0.1008066.0",
+    "tdl": "8.1.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "4.3.3",
+    "@types/node": "24.19.0",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "5.2.0",
+    "electron": "44.5.1",
+    "electron-builder": "26.15.3",
+    "electron-vite": "5.0.0",
+    "esbuild": "0.25.12",
+    "lucide-react": "1.49.0",
+    "oxlint": "^1.87.0",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "tailwindcss": "4.3.3",
+    "typescript": "7.0.2",
+    "vite": "7.3.6"
+  },
+  "build": {
+    "appId": "com.mediagram.app",
+    "productName": "Mediagram",
+    "electronDownload": {
+      "isVerifyChecksum": false
+    },
+    "asar": true,
+    "electronFuses": {
+      "runAsNode": false,
+      "enableCookieEncryption": true,
+      "enableNodeOptionsEnvironmentVariable": false,
+      "enableNodeCliInspectArguments": true,
+      "enableEmbeddedAsarIntegrityValidation": true,
+      "onlyLoadAppFromAsar": true
+    },
+    "directories": {
+      "output": "release",
+      "buildResources": "assets"
+    },
+    "files": [
+      "out/**",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "node_modules/tdl/**",
+      "node_modules/prebuilt-tdlib/**",
+      "node_modules/@prebuilt-tdlib/**"
+    ],
+    "npmRebuild": false,
+    "win": {
+      "target": "nsis",
+      "icon": "assets/icon.ico"
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "Webovignesh",
+      "repo": "Mediagram"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "deleteAppDataOnUninstall": false,
+      "include": "assets/installer.nsh",
+      "installerSidebar": "assets/installerSidebar.bmp",
+      "uninstallerSidebar": "assets/installerSidebar.bmp",
+      "artifactName": "Mediagram-Setup-${version}.${ext}"
+    }
+  }
+}

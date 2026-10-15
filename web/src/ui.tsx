@@ -1,0 +1,3951 @@
+// Phase 5: Complete UI primitives per UI.md
+import { type ReactNode, useState, useEffect, useId, useRef } from 'react'
+import { Loader2, ChevronDown, X, Search, Check, Pause, Play, Download, CheckCircle2, AlertCircle, AlertTriangle, Info, Music, FolderOpen, Gauge, Film, Volume2, VolumeX, Maximize2, Minimize2, RotateCcw, Folder, Bookmark, ImageOff, Image as ImageIcon, Megaphone, Users, Shield, Copy, Settings, Trash2, Globe, Lock, Sliders, Camera } from 'lucide-react'
+import { call, on, uploadPaths } from './api.ts'
+import type { ChatSettings } from '../../core/shapes.ts'
+import { getActiveTheme } from './theme.ts'
+import { fmtBytes, fmtDuration } from './format.ts'
+
+export type Tone = 'primary' | 'info' | 'success' | 'warning' | 'danger' | 'neutral'
+type Status = 'queued' | 'active' | 'paused' | 'completed' | 'failed'
+type Kind = 'download' | 'upload'
+
+// Formatters per UI.md
+export { fmtBytes, fmtDuration }
+export const fmtSpeed = (n: number) => `${fmtBytes(n)}/s`
+export const fmtEta = (s: number | null) => {
+  if (s === null || s <= 0) return null
+  if (s < 60) return `${Math.round(s)}s`
+  if (s < 3600) return `${Math.floor(s / 60)}m ${Math.round(s % 60)}s`
+  return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`
+}
+const rtf = new Intl.RelativeTimeFormat('en', { numeric: 'auto', style: 'short' })
+export const fmtAgo = (unix: number) => {
+  if (!unix || unix === 0) return 'Never'
+  const ms = unix > 1e11 ? unix : unix * 1000
+  const s = (Date.now() - ms) / 1000
+  if (s < 5 && s > -5) return 'just now'
+  if (s < 0) return 'just now'
+  if (s < 60) return rtf.format(-Math.max(1, Math.floor(s)), 'second')
+  if (s < 3600) return rtf.format(-Math.floor(s / 60), 'minute')
+  if (s < 86400) return rtf.format(-Math.floor(s / 3600), 'hour')
+  if (s < 2592000) return rtf.format(-Math.floor(s / 86400), 'day')
+  return rtf.format(-Math.floor(s / 2592000), 'month')
+}
+export const fmtCount = (n: number) => n.toLocaleString('en')
+
+/** True when the keyboard is talking to the focused control itself rather than to a page-level
+ *  shortcut. A window-level handler must never answer for a focused button, link, menu item or
+ *  anything that takes text, or Space both activates the control and toggles the player, arrow keys
+ *  walk away from a listbox the user is navigating, and M/F fire while typing in a field.
+ *  `contenteditable` is included because it is a text surface that does not use the input elements. */
+export function typingTarget(e: { target: EventTarget | null }): boolean {
+  const el = e.target as HTMLElement | null
+  if (!el || typeof el.closest !== 'function') return false
+  return Boolean(el.closest('input, textarea, select, button, a[href], [contenteditable]:not([contenteditable="false"]), [role="button"], [role="menuitem"], [role="option"]'))
+}
+const dateFormat = new Intl.DateTimeFormat('en', { month: 'short', day: 'numeric', year: 'numeric' })
+export const fmtDate = (time: number | null | undefined) => {
+  if (!time || isNaN(time)) return '–'
+  let ms = time > 1e11 ? time : time * 1000
+  if (new Date(ms).getFullYear() > 3000) {
+    ms = time / 1000
+  }
+  return dateFormat.format(new Date(ms))
+}
+export const typeLabel: Record<string, string> = {
+  video_note: 'video message', voice: 'voice message', animation: 'GIF', album: 'album',
+  video: 'video', photo: 'photo', document: 'document', audio: 'audio',
+}
+
+// Components
+export function Button({ 
+  children, variant = 'primary', tone, busy, disabled, type = 'button', onClick, className, style, title,
+}: { 
+  children: ReactNode, variant?: 'primary' | 'secondary' | 'tint' | 'danger', tone?: Tone, busy?: boolean
+  disabled?: boolean, type?: 'button' | 'submit', onClick?: () => void, className?: string, style?: React.CSSProperties
+  title?: string
+}) {
+  const base = 'inline-flex items-center justify-center gap-2 whitespace-nowrap shrink-0 rounded-md px-3.5 py-1.5 text-[13px] font-medium transition-all duration-150 active:scale-[0.98] cursor-pointer disabled:pointer-events-none disabled:opacity-60'
+  const variants = {
+    primary: 'bg-primary text-white hover:bg-primary-hover shadow-sm',
+    secondary: 'border border-border bg-tile text-text hover:border-primary',
+    tint: tone === 'danger' ? 'bg-danger/15 border border-danger text-danger hover:bg-danger/25'
+      : tone === 'success' ? 'bg-success/15 border border-success text-success hover:bg-success/25'
+      : 'bg-primary/15 border border-primary text-primary hover:bg-primary/25',
+    danger: 'bg-danger text-white hover:bg-danger/90 shadow-sm',
+  }
+  return (
+    <button 
+      type={type} disabled={disabled || busy} aria-busy={busy} onClick={onClick} title={title}
+      style={style}
+      className={`${base} ${variants[variant]} ${className || ''}`}
+    >
+      {busy ? <Loader2 size={16} className="inline animate-spin" /> : children}
+    </button>
+  )
+}
+
+export function IconButton({ 
+  icon, label, onClick, variant = 'secondary', tone, disabled, className,
+}: {
+  icon: ReactNode, label: string, onClick: () => void, variant?: 'primary' | 'secondary' | 'tint'
+  tone?: Tone, disabled?: boolean, className?: string
+}) {
+  return (
+    <button
+      onClick={onClick} disabled={disabled} aria-label={label} title={label}
+      className={`rounded-md p-2 transition-all duration-150 active:scale-95 cursor-pointer disabled:pointer-events-none ${variant === 'primary' ? 'bg-primary text-white hover:bg-primary-hover'
+        : variant === 'tint' && tone === 'danger' ? 'bg-danger/15 hover:bg-danger/25' : 'bg-tile text-text hover:bg-tile/80 border border-border'} ${className || ''}`}
+    >
+      {icon}
+    </button>
+  )
+}
+
+export function Input({ 
+  label, value, onChange, type = 'text', placeholder, required, autoComplete, inputMode, spellCheck,
+}: {
+  label?: string, value: string, onChange: (value: string) => void, type?: 'text' | 'password' | 'tel'
+  placeholder?: string, required?: boolean, autoComplete?: string
+  inputMode?: 'text' | 'numeric' | 'tel', spellCheck?: boolean
+}) {
+  const input = 'mt-1 block w-full rounded-md border border-border bg-tile px-3 py-2 text-[13px] text-text placeholder:text-muted focus:border-primary'
+  const field = (
+    <input
+      type={type} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder}
+      required={required} autoComplete={autoComplete} inputMode={inputMode} spellCheck={spellCheck}
+      className={input}
+    />
+  )
+  return label ? <label className="block text-[12px] text-text-2">{label}{field}</label> : field
+}
+
+export function Panel({ title, icon, subtitle, action, children }: { 
+  title?: string, icon?: ReactNode, subtitle?: string, action?: ReactNode, children: ReactNode 
+}) {
+  return (
+    <div className="rounded-lg border border-border bg-panel/85 p-4 backdrop-blur">
+      {title && (
+        <div className="mb-4 flex items-start justify-between">
+          <div className="flex items-center gap-3">
+            {icon && <div className="text-primary">{icon}</div>}
+            <div>
+              <h3 className="text-[15px] font-semibold">{title}</h3>
+              {subtitle && <p className="text-[13px] text-text-2">{subtitle}</p>}
+            </div>
+          </div>
+          {action}
+        </div>
+      )}
+      {children}
+    </div>
+  )
+}
+
+export function IconTile({ icon, tone = 'primary' }: { icon: ReactNode, tone?: Tone }) {
+  const tones: Record<Tone, string> = {
+    primary: 'bg-primary/15 border-primary/30', info: 'bg-cyan/15 border-cyan/30', success: 'bg-success/15 border-success/30',
+    warning: 'bg-warning/15 border-warning/30', danger: 'bg-danger/15 border-danger/30',
+    neutral: 'bg-tile border-border',
+  }
+  return <div className={`flex h-10 w-10 items-center justify-center rounded-xl border ${tones[tone]}`}>{icon}</div>
+}
+
+export function Stat({ icon, tone, label, value, split }: { 
+  icon: ReactNode, tone?: Tone, label: string, value: number | string | undefined, split?: string 
+}) {
+  const row = 'flex items-center'
+  return (
+    <div className="flex gap-3">
+      <IconTile icon={icon} tone={tone} />
+      <div className="min-w-0">
+        <div className={`${row} h-[18px] text-[12px] leading-none text-muted`}>{label}</div>
+        <div className={`${row} h-[30px]`}>
+          {value === undefined
+            ? <div className="h-5 w-12 animate-pulse rounded bg-tile" />
+            : <span className="text-[22px] font-bold leading-none tabular-nums">{typeof value === 'number' ? fmtCount(value) : value}</span>}
+        </div>
+        <div className={`${row} h-4 text-[11px] leading-none text-text-2`}>{split}</div>
+      </div>
+    </div>
+  )
+}
+
+export function Pill({
+  kind,
+  status,
+  finalizing,
+  label,
+}: {
+  kind?: Kind
+  status?: Status | 'none' | 'downloaded' | string
+  finalizing?: boolean
+  label?: string
+}) {
+  if (label) {
+    return <span className="inline-flex h-6 items-center justify-center rounded-xl border border-border bg-tile px-3 text-[11px] font-medium text-text-2 whitespace-nowrap shrink-0">{label}</span>
+  }
+  if (finalizing) {
+    return (
+      <span className="inline-flex h-6 items-center justify-center gap-1.5 rounded-xl border border-warning/40 bg-warning/15 px-3 text-[11px] font-semibold text-warning whitespace-nowrap shrink-0">
+        <span className="size-1.5 rounded-full bg-warning animate-pulse" />
+        Finalizing
+      </span>
+    )
+  }
+  if (status === 'downloading' || (status === 'active' && kind !== 'upload')) {
+    return (
+      <span className="inline-flex h-6 items-center justify-center gap-1.5 rounded-xl border border-cyan/40 bg-cyan/15 px-3 text-[11px] font-semibold text-cyan whitespace-nowrap shrink-0">
+        <span className="size-1.5 rounded-full bg-cyan animate-pulse" />
+        Downloading
+      </span>
+    )
+  }
+  if (status === 'uploading' || (status === 'active' && kind === 'upload')) {
+    return (
+      <span className="inline-flex h-6 items-center justify-center gap-1.5 rounded-xl border border-upload/40 bg-upload/15 px-3 text-[11px] font-semibold text-upload whitespace-nowrap shrink-0">
+        <span className="size-1.5 rounded-full bg-upload animate-pulse" />
+        Uploading
+      </span>
+    )
+  }
+  if (status === 'uploaded' || (status === 'completed' && kind === 'upload')) {
+    return (
+      <span className="inline-flex h-6 items-center justify-center gap-1.5 rounded-xl border border-success/40 bg-success/15 px-3 text-[11px] font-semibold text-success whitespace-nowrap shrink-0">
+        <span className="size-1.5 rounded-full bg-success" />
+        Uploaded
+      </span>
+    )
+  }
+  if (status === 'downloaded' || (status === 'completed' && kind !== 'upload')) {
+    return (
+      <span className="inline-flex h-6 items-center justify-center gap-1.5 rounded-xl border border-success/40 bg-success/15 px-3 text-[11px] font-semibold text-success whitespace-nowrap shrink-0">
+        <span className="size-1.5 rounded-full bg-success" />
+        Downloaded
+      </span>
+    )
+  }
+  if (status === 'queued') {
+    return (
+      <span className="inline-flex h-6 items-center justify-center gap-1.5 rounded-xl border border-border bg-tile px-3 text-[11px] font-semibold text-text-2 whitespace-nowrap shrink-0">
+        <span className="size-1.5 rounded-full bg-muted" />
+        Queued
+      </span>
+    )
+  }
+  if (status === 'paused') {
+    return (
+      <span className="inline-flex h-6 items-center justify-center gap-1.5 rounded-xl border border-warning/40 bg-warning/15 px-3 text-[11px] font-semibold text-warning whitespace-nowrap shrink-0">
+        <span className="size-1.5 rounded-full bg-warning" />
+        Paused
+      </span>
+    )
+  }
+  if (status === 'failed') {
+    return (
+      <span className="inline-flex h-6 items-center justify-center gap-1.5 rounded-xl border border-danger/40 bg-danger/15 px-3 text-[11px] font-semibold text-danger whitespace-nowrap shrink-0">
+        <span className="size-1.5 rounded-full bg-danger" />
+        Failed
+      </span>
+    )
+  }
+  return <span className="inline-flex h-6 items-center justify-center rounded-xl border border-border bg-tile px-3 text-[11px] font-medium text-muted whitespace-nowrap shrink-0">Not downloaded</span>
+}
+
+export function Progress({ done, size, tone = 'primary', showValues = true }: { done: number, size: number, tone?: Tone, showValues?: boolean }) {
+  const percent = size > 0 ? (done / size) * 100 : 0
+  const tones: Record<Tone, string> = {
+    primary: 'bg-cyan',
+    info: 'bg-cyan',
+    success: 'bg-success',
+    warning: 'bg-upload',
+    danger: 'bg-danger',
+    neutral: 'bg-muted',
+  }
+  return (
+    <div className="w-full">
+      <div className="flex items-center justify-between text-[11px] mb-1.5 font-medium leading-none">
+        <span className="tabular-nums font-semibold text-text">{Math.round(percent)}%</span>
+        {showValues && <span className="text-muted tabular-nums">{fmtBytes(done)} / {fmtBytes(size)}</span>}
+      </div>
+      <div className="h-2 w-full overflow-hidden rounded-full bg-tile border border-border/80 shadow-inner">
+        <div
+          className={`h-full rounded-full transition-all duration-300 ${tones[tone]}`}
+          style={{ width: `${Math.min(100, Math.max(percent > 0 ? 1 : 0, percent))}%` }}
+        />
+      </div>
+    </div>
+  )
+}
+
+export function Chip({ label, active, count, tone, onClick }: { 
+  label: string, active: boolean, count?: number, tone?: Tone, onClick: () => void 
+}) {
+  const dot = tone ? <span className={`mr-1.5 h-2 w-2 rounded-full ${tone === 'success' ? 'bg-success' : tone === 'warning' ? 'bg-warning' : tone === 'danger' ? 'bg-danger' : 'bg-muted'}`} /> : null
+  return (
+    <button
+      onClick={onClick}
+      className={`inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-[12px] font-medium transition cursor-pointer ${
+        active ? 'bg-primary text-white shadow-sm' : 'border border-border bg-tile text-text-2 hover:border-primary hover:text-text'
+      }`}
+    >
+      {dot}{label}{count !== undefined && <span className="text-[11px] opacity-75">({count})</span>}
+    </button>
+  )
+}
+
+export function Badge({ count }: { count: number }) {
+  if (count === 0) return null
+  return <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-primary px-1.5 text-[11px] font-semibold">{count}</span>
+}
+
+export function Select({
+  label,
+  value,
+  options,
+  onChange,
+  className,
+  disabled,
+}: {
+  label?: string
+  value: string | number
+  options: { value: string | number; label: string; icon?: ReactNode }[]
+  onChange: (value: string | number) => void
+  className?: string
+  disabled?: boolean
+}) {
+  const [open, setOpen] = useState(false)
+  const [menuAlign, setMenuAlign] = useState<'left' | 'right'>('left')
+  const containerRef = useRef<HTMLDivElement>(null)
+
+  const selectedOption = options.find((o) => o.value === value) || options[0]
+
+  useEffect(() => {
+    if (!open) return
+    if (containerRef.current) {
+      const rect = containerRef.current.getBoundingClientRect()
+      if (rect.right + 140 > window.innerWidth) {
+        setMenuAlign('right')
+      } else {
+        setMenuAlign('left')
+      }
+    }
+    const handleClickOutside = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setOpen(false)
+      }
+    }
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside)
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [open])
+
+  const sel = (
+    <div ref={containerRef} className="relative inline-block text-left">
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={() => setOpen((prev) => !prev)}
+        className={`group inline-flex items-center justify-between gap-2 rounded-lg border border-border bg-tile py-1.5 pl-3 pr-2.5 text-[12.5px] text-text font-normal hover:border-primary focus:outline-none transition-all cursor-pointer select-none ${
+          open ? 'border-primary ring-1 ring-primary/40' : ''
+        } ${disabled ? 'opacity-50 cursor-not-allowed' : ''} ${className || ''}`}
+      >
+        <span className="truncate pr-1">
+          {selectedOption?.label ?? String(value)}
+        </span>
+        <ChevronDown
+          size={14}
+          className={`shrink-0 text-muted transition-transform duration-200 group-hover:text-text ${
+            open ? 'rotate-180 text-primary' : ''
+          }`}
+        />
+      </button>
+
+      {open && (
+        <div
+          role="listbox"
+          className={`absolute ${menuAlign === 'right' ? 'right-0' : 'left-0'} top-full mt-1.5 min-w-full w-max max-w-[300px] max-h-64 overflow-y-auto rounded-xl border border-border bg-panel/95 backdrop-blur-md shadow-2xl p-1 z-50 text-[12.5px] animate-in fade-in zoom-in-95 slide-in-from-top-1 duration-100 origin-top`}
+        >
+          {options.map((opt) => {
+            const isSelected = opt.value === value
+            return (
+              <button
+                key={String(opt.value)}
+                type="button"
+                role="option"
+                aria-selected={isSelected}
+                onClick={() => {
+                  onChange(opt.value)
+                  setOpen(false)
+                }}
+                className={`flex w-full items-center justify-between gap-2.5 px-3 py-1.5 rounded-lg text-left transition-colors cursor-pointer ${
+                  isSelected
+                    ? 'bg-primary/20 text-primary font-medium'
+                    : 'text-text-2 hover:bg-tile hover:text-text'
+                }`}
+              >
+                <span className="truncate">{opt.label}</span>
+                {isSelected && <Check size={13} className="shrink-0 text-primary ml-auto" />}
+              </button>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+
+  return label ? (
+    <label className="block text-[12px] text-muted">
+      {label}
+      <div className="mt-1">{sel}</div>
+    </label>
+  ) : (
+    sel
+  )
+}
+
+export function Segmented({ options, value, onChange }: { 
+  options: { value: string, label: string, icon: ReactNode }[], value: string, onChange: (v: string) => void 
+}) {
+  return (
+    <div role="radiogroup" className="inline-flex gap-1 rounded-md bg-tile p-1">
+      {options.map((o) => (
+        <button
+          key={o.value} role="radio" aria-checked={value === o.value} onClick={() => onChange(o.value)}
+          className={`flex items-center gap-2 rounded-md px-3 py-1.5 text-[12.5px] font-medium transition cursor-pointer ${
+            value === o.value ? 'bg-primary text-white shadow-sm' : 'text-text-2 hover:text-text hover:bg-tile/60'
+          }`}
+        >
+          {o.icon}{o.label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+export function Toggle({
+  label,
+  checked,
+  onChange,
+  disabled,
+}: {
+  label?: string
+  checked: boolean
+  onChange: (v: boolean) => void
+  disabled?: boolean
+}) {
+  return (
+    <label
+      onClick={(e) => {
+        e.preventDefault()
+        if (!disabled) onChange(!checked)
+      }}
+      className={`inline-flex items-center gap-3 select-none ${disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+    >
+      <input
+        type="checkbox"
+        role="switch"
+        aria-checked={checked}
+        checked={checked}
+        onChange={() => {}}
+        className="sr-only"
+        disabled={disabled}
+      />
+      <div
+        className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full border-2 transition-all duration-200 ease-in-out ${
+          checked
+            ? 'bg-primary border-primary shadow-sm'
+            : 'border-slate-400/80 bg-slate-200/90 hover:border-slate-500 shadow-inner'
+        }`}
+        style={!checked ? {
+          backgroundColor: 'color-mix(in srgb, var(--color-muted) 28%, var(--color-tile))',
+          borderColor: 'color-mix(in srgb, var(--color-muted) 60%, transparent)',
+        } : undefined}
+      >
+        <span
+          className={`pointer-events-none inline-block size-4 rounded-full bg-white shadow-md ring-1 ring-black/15 transition-transform duration-200 ease-in-out ${
+            checked ? 'translate-x-5' : 'translate-x-0.5'
+          }`}
+        />
+      </div>
+      {label && <span className="text-[13px] text-text font-medium">{label}</span>}
+    </label>
+  )
+}
+
+export function SearchInput({ value, onChange, placeholder, className }: { 
+  value: string, onChange: (v: string) => void, placeholder: string, className?: string 
+}) {
+  return (
+    <div className={`relative ${className || ''}`}>
+      <Search size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+      <input
+        type="search" value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder}
+        className="w-full rounded-lg border border-border bg-tile py-1.5 pl-9 pr-3 text-[12.5px] placeholder:text-muted focus:border-primary outline-none"
+      />
+      {value && (
+        <button onClick={() => onChange('')} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted hover:text-text">
+          <X size={14} />
+        </button>
+      )}
+    </div>
+  )
+}
+
+export function Pagination({ page, pageSize, total, onPage }: { 
+  page: number, pageSize: number, total: number, onPage: (p: number) => void 
+}) {
+  const pages = Math.max(1, Math.ceil(total / pageSize))
+  const from = Math.min(total, (page - 1) * pageSize + 1)
+  const to = Math.min(total, page * pageSize)
+  return (
+    <div className="flex items-center justify-between text-[13px]">
+      <div className="text-muted">Showing {from}–{to} of {fmtCount(total)} items</div>
+      <div className="flex gap-1">
+        <Button variant="secondary" disabled={page === 1} onClick={() => onPage(page - 1)}>‹ Previous</Button>
+        {page > 2 && <Button variant="secondary" onClick={() => onPage(1)}>1</Button>}
+        {page > 3 && <span className="px-2 py-2">...</span>}
+        {page > 1 && <Button variant="secondary" onClick={() => onPage(page - 1)}>{page - 1}</Button>}
+        <Button variant="primary">{page}</Button>
+        {page < pages && <Button variant="secondary" onClick={() => onPage(page + 1)}>{page + 1}</Button>}
+        {page < pages - 2 && <span className="px-2 py-2">...</span>}
+        {page < pages - 1 && <Button variant="secondary" onClick={() => onPage(pages)}>{pages}</Button>}
+        <Button variant="secondary" disabled={page === pages} onClick={() => onPage(page + 1)}>Next ›</Button>
+      </div>
+    </div>
+  )
+}
+
+export function getAvatarInitial(name: string): string {
+  if (!name) return '?'
+  const clean = name.trim()
+  const letter = clean.match(/[\p{L}\p{N}]/u)
+  if (letter) return letter[0].toUpperCase()
+  const first = Array.from(clean)[0]
+  return first ? first.toUpperCase() : '?'
+}
+
+export function Avatar({ src, name, size = 36 }: { src: string | null, name: string, size?: number }) {
+  const [loaded, setLoaded] = useState(false)
+  const [failed, setFailed] = useState(false)
+  const [retries, setRetries] = useState(0)
+  const isSaved = name?.toLowerCase().includes('saved')
+  const initial = getAvatarInitial(name)
+  const colors = ['#f43f5e', '#a855f7', '#6366f1', '#0ea5e9', '#14b8a6', '#22c55e', '#f97316', '#eab308']
+  const color = colors[((initial.codePointAt(0) || 0)) % colors.length]
+
+  // Compute URL unconditionally before any conditional returns (hooks rule).
+  const raw = (src && !failed)
+    ? (src.startsWith('mediagram://') || src.startsWith('teleflow://') || src.startsWith('data:') || src.startsWith('blob:') || src.startsWith('http')
+        ? src
+        : `mediagram://thumb/${src}`)
+    : null
+  // A retry has to actually re-request, and it must not remount the element: swapping the src keeps
+  // the old frame in place while the new one decodes, so a slow avatar lands instead of flashing.
+  const url = raw ? (retries > 0 ? `${raw}${raw.includes('?') ? '&' : '?'}r=${retries}` : raw) : null
+
+  if (isSaved && !url) {
+    return (
+      <div
+        className="flex items-center justify-center rounded-lg select-none bg-primary/20 text-primary border border-primary/30 shadow-sm shrink-0"
+        style={{ width: size, height: size }}
+        title="Saved Messages"
+      >
+        <Bookmark size={Math.round(size * 0.52)} className="fill-current" />
+      </div>
+    )
+  }
+
+  if (!url) {
+    return (
+      <div
+        className="flex items-center justify-center rounded-lg font-semibold select-none text-white shadow-sm shrink-0 text-[13px]"
+        style={{ width: size, height: size, backgroundColor: color }}
+      >
+        {initial}
+      </div>
+    )
+  }
+
+  return (
+    <div className="relative shrink-0 rounded-lg overflow-hidden" style={{ width: size, height: size }}>
+      {!loaded && <div className="absolute inset-0 bg-white/10 rounded-lg" />}
+      <img
+        src={url}
+        alt={name}
+        loading="lazy"
+        decoding="async"
+        onLoad={() => setLoaded(true)}
+        onError={() => {
+          if (retries < 2) {
+            setTimeout(() => setRetries((r) => r + 1), 1200)
+          } else {
+            setFailed(true)
+          }
+        }}
+        className={`rounded-lg object-cover ${loaded ? 'opacity-100' : 'opacity-0'}`}
+        style={{ width: size, height: size }}
+      />
+    </div>
+  )
+}
+
+export function Thumb({ src, name }: { src: string | null, name: string }) {
+  const [loaded, setLoaded] = useState(false)
+  const [attempt, setAttempt] = useState(0)
+  const [failed, setFailed] = useState(false)
+  const ext = (name.split('.').pop() || 'FILE').toUpperCase()
+  const giveUp = attempt >= 3
+
+  // A thumbnail 404s whenever TDLib takes a few seconds longer than the caller is willing to wait.
+  // It used to stay failed for as long as the row stayed mounted, which is why a channel page
+  // showed file-type badges instead of pictures. Retry with backoff; the backend caps how often
+  // the same id may actually be re-fetched.
+  useEffect(() => {
+    if (!failed || giveUp) return
+    const t = setTimeout(() => { setFailed(false); setLoaded(false); setAttempt((a) => a + 1) }, 1200 * (attempt + 1))
+    return () => clearTimeout(t)
+  }, [failed, giveUp, attempt])
+
+  // Compute URL unconditionally before any conditional returns (hooks rule).
+  const raw = (src && !giveUp)
+    ? (src.startsWith('mediagram://') || src.startsWith('teleflow://') || src.startsWith('data:') || src.startsWith('blob:') || src.startsWith('http')
+        ? src
+        : `mediagram://thumb/${src}`)
+    : null
+  const url = raw ? (attempt > 0 ? `${raw}${raw.includes('?') ? '&' : '?'}r=${attempt}` : raw) : null
+
+  if (!url) {
+    return (
+      <div className="flex h-7 w-10 shrink-0 items-center justify-center rounded bg-tile text-[9px] font-bold uppercase text-muted border border-border/40 select-none">
+        {ext.slice(0, 3)}
+      </div>
+    )
+  }
+
+  return (
+    <div className="relative h-7 w-10 shrink-0 rounded overflow-hidden border border-border/40 bg-tile/60">
+      {!loaded && (
+        <div className="absolute inset-0 bg-white/10 flex items-center justify-center">
+          <span className="text-[8px] font-bold text-muted/60">{ext.slice(0, 2)}</span>
+        </div>
+      )}
+      <img
+        src={url}
+        alt={name}
+        draggable={false}
+        loading="lazy"
+        decoding="async"
+        onLoad={() => setLoaded(true)}
+        onError={() => setFailed(true)}
+        className={`h-full w-full object-cover pointer-events-none ${loaded ? 'opacity-100' : 'opacity-0'}`}
+      />
+    </div>
+  )
+}
+
+export function ChatMediaThumb({
+  src,
+  alt,
+  className = '',
+  minHeight = '180px',
+  maxHeight = '460px',
+}: {
+  src: string | null
+  alt: string
+  className?: string
+  minHeight?: string
+  maxHeight?: string
+}) {
+  const [loaded, setLoaded] = useState(false)
+  const [attempt, setAttempt] = useState(0)
+  const [failed, setFailed] = useState(false)
+  const giveUp = attempt >= 3
+
+  // Same backoff retry as Thumb: a preview that404s once must not stay a grey placeholder forever.
+  useEffect(() => {
+    if (!failed || giveUp) return
+    const t = setTimeout(() => { setFailed(false); setLoaded(false); setAttempt((a) => a + 1) }, 1200 * (attempt + 1))
+    return () => clearTimeout(t)
+  }, [failed, giveUp, attempt])
+
+  // Compute URL unconditionally (hook rules require this before any conditional return).
+  // useMemo avoids rebuilding the string on every render during scroll.
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  const raw = (src && !giveUp)
+    ? (src.startsWith('mediagram://') || src.startsWith('teleflow://') || src.startsWith('data:') || src.startsWith('blob:') || src.startsWith('http')
+        ? src
+        : `mediagram://thumb/${src}`)
+    : null
+  const url = raw ? (attempt > 0 ? `${raw}${raw.includes('?') ? '&' : '?'}r=${attempt}` : raw) : null
+
+  if (!url) {
+    return (
+      <div
+        className={`flex w-full flex-col items-center justify-center gap-2 bg-panel/80 text-muted ${className}`}
+        style={{ minHeight }}
+      >
+        <div className="size-12 rounded-2xl bg-tile border border-border flex items-center justify-center text-primary shadow-inner">
+          <Film size={26} />
+        </div>
+        <span className="text-[11px] text-muted tracking-wide font-medium">Video Preview</span>
+      </div>
+    )
+  }
+
+  return (
+    <div className="relative w-full overflow-hidden bg-panel/40" style={{ minHeight: loaded ? undefined : minHeight }}>
+      {!loaded && (
+        <div
+          className="absolute inset-0 flex flex-col items-center justify-center bg-panel/90 z-10"
+          style={{ minHeight }}
+        >
+          <div className="size-10 rounded-xl bg-tile border border-border flex items-center justify-center text-primary/70">
+            <Film size={20} />
+          </div>
+          <span className="mt-2 text-[10px] font-semibold tracking-wider text-muted/70 uppercase">Loading preview…</span>
+        </div>
+      )}
+      <img
+        src={url}
+        alt={alt}
+        loading="lazy"
+        decoding="async"
+        onLoad={() => setLoaded(true)}
+        onError={() => setFailed(true)}
+        className={`w-full max-h-[480px] h-auto object-cover block ${loaded ? 'opacity-100' : 'opacity-0'} ${className}`}
+        style={{ minHeight: loaded ? undefined : minHeight, maxHeight }}
+      />
+    </div>
+  )
+}
+
+export function TypeChip({ ext }: { ext: string }) {
+  return <span className="rounded border border-border px-1.5 py-0.5 text-[10px] font-bold uppercase text-muted">{ext}</span>
+}
+
+type MenuProps = { trigger: ReactNode, items: { label: string, onClick: () => void, danger?: boolean }[] }
+export function Menu({ trigger, items }: MenuProps) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!open) return
+    const close = (e: MouseEvent) => { if (!ref.current?.contains(e.target as Node)) setOpen(false) }
+    document.addEventListener('click', close)
+    return () => document.removeEventListener('click', close)
+  }, [open])
+  return (
+    <div ref={ref} className="relative">
+      <div onClick={() => setOpen(!open)}>{trigger}</div>
+      {open && (
+        <div className="absolute right-0 z-50 mt-1 min-w-[160px] rounded-lg border border-border bg-panel shadow-lg animate-in fade-in zoom-in-95 slide-in-from-top-1 duration-100 origin-top-right">
+          {items.map((item, i) => (
+            <button
+              key={i} onClick={() => { item.onClick(); setOpen(false) }}
+              className={`block w-full px-3 py-2 text-left text-[13px] hover:bg-tile ${item.danger ? 'text-danger' : ''}`}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** Everything a dialog may hold focus in: no disabled or hidden controls, and the panel itself counts so
+ *  focus cannot fall off the end while the body is empty. */
+const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+
+export function Dialog({ open, onClose, title, children, actions }: { 
+  open: boolean, onClose: () => void, title: string, children: ReactNode, actions?: ReactNode 
+}) {
+  const panelRef = useRef<HTMLDivElement>(null)
+  const titleId = useId()
+
+  useEffect(() => {
+    if (!open) return
+    // Focus goes into the dialog when it opens, and back to whatever opened it when it closes: without
+    // that, Tab keeps walking the page behind the overlay and a keyboard user is stuck outside.
+    const opener = document.activeElement as HTMLElement | null
+    panelRef.current?.focus()
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { onClose(); return }
+      if (e.key !== 'Tab') return
+      const panel = panelRef.current
+      if (!panel) return
+      const items = [...panel.querySelectorAll<HTMLElement>(FOCUSABLE)]
+        .filter((el) => el.offsetWidth > 0 || el.offsetHeight > 0 || el === document.activeElement)
+      if (!items.length) { e.preventDefault(); panel.focus(); return }
+      const first = items[0], last = items[items.length - 1], here = document.activeElement
+      if (e.shiftKey && (here === first || here === panel)) { e.preventDefault(); last.focus() }
+      else if (!e.shiftKey && here === last) { e.preventDefault(); first.focus() }
+    }
+    window.addEventListener('keydown', handleKey)
+    return () => {
+      window.removeEventListener('keydown', handleKey)
+      if (opener?.isConnected && opener !== document.body) opener.focus()
+    }
+  }, [open, onClose])
+
+  if (!open) return null
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm select-none animate-in fade-in duration-150"
+      onClick={onClose}
+    >
+      <div
+        ref={panelRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
+        className="relative w-full max-w-md rounded-xl border border-border bg-panel p-6 shadow-2xl outline-none animate-in fade-in zoom-in-95 duration-150"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h2 id={titleId} className="mb-3 text-[17px] font-bold text-text">{title}</h2>
+        <div className="mb-4 text-text">{children}</div>
+        {actions && <div className="flex justify-end gap-2">{actions}</div>}
+      </div>
+    </div>
+  )
+}
+
+type ConfirmOpts = {
+  title: string
+  message: string
+  confirm: string
+  danger?: boolean
+  typed?: string
+  checkbox?: string
+  /** Seconds the confirm button stays off with a visible countdown (the Clear app data delete timer). */
+  wait?: number
+}
+
+type ConfirmState = {
+  opts: ConfirmOpts
+  resolve: (value: boolean) => void
+}
+
+let confirmDispatcher: ((s: ConfirmState | null) => void) | null = null
+
+export function confirm(opts: ConfirmOpts): Promise<boolean> {
+  if (!confirmDispatcher) {
+    return Promise.resolve(window.confirm(`${opts.title}\n\n${opts.message}`))
+  }
+  return new Promise<boolean>((resolve) => {
+    confirmDispatcher!({ opts, resolve })
+  })
+}
+
+export function ConfirmHost({ children }: { children: ReactNode }) {
+  const [state, setState] = useState<ConfirmState | null>(null)
+  const [typed, setTyped] = useState('')
+  const [checked, setChecked] = useState(false)
+  const [left, setLeft] = useState(0)
+
+  useEffect(() => {
+    confirmDispatcher = (s) => {
+      setTyped('')
+      setChecked(false)
+      setState(s)
+    }
+    return () => { confirmDispatcher = null }
+  }, [])
+
+  // The delete timer: count down while the dialog is open, then let the button through.
+  useEffect(() => {
+    const wait = state?.opts.wait
+    if (!wait) { setLeft(0); return }
+    setLeft(wait)
+    let n = wait
+    const t = setInterval(() => {
+      n -= 1
+      setLeft(Math.max(n, 0))
+      if (n <= 0) clearInterval(t)
+    }, 1000)
+    return () => clearInterval(t)
+  }, [state])
+
+  const close = (result: boolean) => {
+    state?.resolve(result)
+    setState(null)
+    setTyped('')
+    setChecked(false)
+  }
+
+  return (
+    <>
+      {children}
+      {state && (
+        <Dialog open title={state.opts.title} onClose={() => close(false)}>
+          <p className="text-[13px] text-text-2">{state.opts.message}</p>
+          {state.opts.typed && (
+            <input
+              value={typed}
+              onChange={(e) => setTyped(e.target.value)}
+              placeholder={`Type ${state.opts.typed} to confirm`}
+              className="mt-3 w-full rounded-[10px] border border-border bg-tile px-3 py-2 text-[13px] text-text focus:border-primary outline-none"
+              autoFocus
+            />
+          )}
+          {state.opts.checkbox && (
+            <label className="mt-3 flex items-center gap-2 text-[13px] text-text cursor-pointer select-none">
+              <input type="checkbox" checked={checked} onChange={(e) => setChecked(e.target.checked)} />
+              <span>{state.opts.checkbox}</span>
+            </label>
+          )}
+          <div className="mt-5 flex justify-end gap-2">
+            <Button variant="secondary" onClick={() => close(false)}>Cancel</Button>
+            <Button
+              variant={state.opts.danger ? 'danger' : 'primary'}
+              disabled={left > 0 || Boolean(state.opts.typed && typed.trim().toUpperCase() !== state.opts.typed.trim().toUpperCase())}
+              onClick={() => close(true)}
+            >
+              {left > 0 ? `${state.opts.confirm} (${left}s)` : state.opts.confirm}
+            </Button>
+          </div>
+        </Dialog>
+      )}
+    </>
+  )
+}
+
+export type ToastOptions = {
+  tone?: Tone
+  title?: string
+  description?: string
+  duration?: number
+  action?: {
+    label: string
+    onClick: () => void
+  }
+}
+
+export type ToastItem = {
+  id: number
+  message: string
+  title?: string
+  description?: string
+  tone: Tone
+  duration: number
+  action?: { label: string, onClick: () => void }
+  createdAt: number
+}
+
+const toasts: ToastItem[] = []
+const toastListeners = new Set<() => void>()
+let toastId = 0
+
+export function dismissToast(id: number) {
+  const i = toasts.findIndex((t) => t.id === id)
+  if (i >= 0) {
+    toasts.splice(i, 1)
+    toastListeners.forEach((l) => l())
+  }
+}
+
+export function toast(message: string, optionsOrTone?: ToastOptions | Tone) {
+  const opts: ToastOptions = typeof optionsOrTone === 'string'
+    ? { tone: optionsOrTone }
+    : (optionsOrTone || {})
+  const tone = opts.tone || 'neutral'
+  const duration = opts.duration ?? (tone === 'danger' ? 8000 : 4500)
+  const id = toastId++
+  const item: ToastItem = {
+    id,
+    message,
+    title: opts.title,
+    description: opts.description,
+    tone,
+    duration,
+    action: opts.action,
+    createdAt: Date.now(),
+  }
+  toasts.push(item)
+  toastListeners.forEach((l) => l())
+  if (duration > 0) {
+    setTimeout(() => {
+      dismissToast(id)
+    }, duration)
+  }
+  return id
+}
+
+toast.dismiss = dismissToast
+toast.success = (message: string, opts?: Omit<ToastOptions, 'tone'>) => toast(message, { ...opts, tone: 'success' })
+toast.error = (message: string, opts?: Omit<ToastOptions, 'tone'>) => toast(message, { ...opts, tone: 'danger' })
+toast.danger = (message: string, opts?: Omit<ToastOptions, 'tone'>) => toast(message, { ...opts, tone: 'danger' })
+toast.warning = (message: string, opts?: Omit<ToastOptions, 'tone'>) => toast(message, { ...opts, tone: 'warning' })
+toast.info = (message: string, opts?: Omit<ToastOptions, 'tone'>) => toast(message, { ...opts, tone: 'primary' })
+
+export function Toaster() {
+  const [, setTick] = useState(0)
+  useEffect(() => {
+    const cb = () => setTick((t) => t + 1)
+    toastListeners.add(cb)
+    return () => { toastListeners.delete(cb) }
+  }, [])
+
+  if (!toasts.length) return null
+
+  return (
+    <div className="fixed top-12 right-6 z-[9999] flex flex-col gap-2.5 max-w-[380px] w-full pointer-events-none select-none">
+      {toasts.map((t) => {
+        const isDanger = t.tone === 'danger'
+        const isSuccess = t.tone === 'success'
+        const isWarning = t.tone === 'warning'
+        const isPrimary = t.tone === 'primary'
+
+        const borderClass = isDanger
+          ? 'border-rose-500/40 shadow-[0_8px_30px_rgba(244,63,94,0.25)]'
+          : isSuccess
+          ? 'border-emerald-500/40 shadow-[0_8px_30px_rgba(16,185,129,0.25)]'
+          : isWarning
+          ? 'border-amber-500/40 shadow-[0_8px_30px_rgba(245,158,11,0.25)]'
+          : isPrimary
+          ? 'border-cyan/40 shadow-[0_8px_30px_rgba(6,182,212,0.25)]'
+          : 'border-white/15 shadow-[0_8px_30px_rgba(0,0,0,0.5)]'
+
+        const iconBg = isDanger
+          ? 'bg-rose-500/20 text-rose-400 border border-rose-500/30'
+          : isSuccess
+          ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+          : isWarning
+          ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
+          : 'bg-primary/20 text-primary border border-primary/30'
+
+        return (
+          <div
+            key={t.id}
+            role={isDanger ? 'alert' : 'status'}
+            className={`pointer-events-auto relative overflow-hidden rounded-2xl border ${borderClass} bg-panel/95 backdrop-blur-2xl p-3.5 shadow-2xl transition-all animate-in slide-in-from-top-3 fade-in duration-200`}
+          >
+            <div className="flex items-start gap-3">
+              <div className={`size-8 rounded-xl shrink-0 flex items-center justify-center ${iconBg}`}>
+                {isSuccess && <CheckCircle2 size={16} strokeWidth={2.5} />}
+                {isDanger && <AlertCircle size={16} strokeWidth={2.5} />}
+                {isWarning && <AlertTriangle size={16} strokeWidth={2.5} />}
+                {(isPrimary || (!isSuccess && !isDanger && !isWarning)) && <Info size={16} strokeWidth={2.5} />}
+              </div>
+
+              <div className="flex-1 min-w-0 pr-1 pt-0.5">
+                {t.title && <div className="text-[13px] font-semibold text-text tracking-wide leading-tight mb-0.5">{t.title}</div>}
+                <div className={`text-[12.5px] leading-relaxed break-words font-medium ${isDanger ? 'text-danger' : isSuccess ? 'text-success' : isWarning ? 'text-warning' : 'text-text-2'}`}>
+                  {t.message}
+                </div>
+                {t.description && <div className="text-[11.5px] text-muted leading-relaxed mt-1">{t.description}</div>}
+                {t.action && (
+                  <div className="mt-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        t.action?.onClick()
+                        dismissToast(t.id)
+                      }}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-white/20 bg-white/10 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-white/20 transition-all cursor-pointer"
+                    >
+                      {t.action.label}
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              <button
+                type="button"
+                onClick={() => dismissToast(t.id)}
+                className="shrink-0 size-6 rounded-lg text-slate-400 hover:text-white hover:bg-white/10 transition-colors flex items-center justify-center cursor-pointer mt-0.5"
+                title="Dismiss"
+              >
+                <X size={14} />
+              </button>
+            </div>
+
+            {t.duration > 0 && (
+              <div
+                className={`absolute bottom-0 left-0 h-[2px] w-full origin-left opacity-70 ${
+                  isDanger ? 'bg-rose-500' : isSuccess ? 'bg-emerald-500' : isWarning ? 'bg-amber-500' : 'bg-cyan'
+                }`}
+                style={{
+                  animation: `shrinkWidth ${t.duration}ms linear forwards`,
+                }}
+              />
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+export function Empty({ message, action }: { message: string, action?: { label: string, onClick: () => void } }) {
+  return (
+    <div className="flex flex-col items-center justify-center gap-3 py-12 text-center text-muted">
+      <p className="text-[13px]">{message}</p>
+      {action && <Button variant="secondary" onClick={action.onClick}>{action.label}</Button>}
+    </div>
+  )
+}
+
+export function Skeleton({ className }: { className?: string }) {
+  return <div className={`animate-pulse rounded bg-tile ${className || 'h-4 w-20'}`} />
+}
+
+export function ErrorState({ error, onRetry }: { error: string, onRetry: () => void }) {
+  return (
+    <div role="alert" className="flex flex-col items-center justify-center gap-3 py-12 text-center">
+      <p className="text-[13px] text-danger">{error}</p>
+      <Button variant="secondary" onClick={onRetry}>Retry</Button>
+    </div>
+  )
+}
+
+export function OpenChatDialog({
+  open,
+  onClose,
+  onSuccess,
+}: {
+  open: boolean
+  onClose: () => void
+  onSuccess?: (chatId: number) => void
+}) {
+  const [link, setLink] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const [invite, setInvite] = useState<{ title: string, members: number, photo: string | null } | null>(null)
+
+  const handleOpen = async (join = false) => {
+    if (!link.trim()) return
+    setBusy(true)
+    setError('')
+    try {
+      const res = await call<any>('chats.open', { link: link.trim(), join })
+      if (res.invite && !join) {
+        setInvite(res.invite)
+      } else if (res.chat) {
+        onSuccess?.(res.chat.id)
+        onClose()
+        setLink('')
+        setInvite(null)
+      }
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const resetAndClose = () => {
+    setLink('')
+    setError('')
+    setInvite(null)
+    onClose()
+  }
+
+  return (
+    <Dialog open={open} onClose={resetAndClose} title={invite ? 'Join Channel?' : 'Connect Channel or Chat'}>
+      {invite ? (
+        <div>
+          <p className="text-[13px] text-text-2">
+            Do you want to join <strong className="text-text">{invite.title}</strong> ({invite.members} members)?
+          </p>
+          {error && <p role="alert" className="mt-3 text-[13px] text-danger">{error}</p>}
+          <div className="mt-4 flex justify-end gap-2">
+            <Button variant="secondary" onClick={() => setInvite(null)} disabled={busy}>Back</Button>
+            <Button variant="primary" busy={busy} onClick={() => handleOpen(true)}>Join & Open</Button>
+          </div>
+        </div>
+      ) : (
+        <div>
+          <p className="text-[13px] text-text-2 mb-3">
+            Enter a public channel username (@channel), t.me link, or private invite link.
+          </p>
+          <input
+            type="text"
+            placeholder="@username, t.me/channel, or https://t.me/+..."
+            value={link}
+            onChange={(e) => setLink(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') handleOpen(false) }}
+            className="w-full rounded-[10px] border border-border bg-tile px-3 py-2 text-[13px] text-text placeholder:text-muted focus:border-primary outline-none"
+          />
+          {error && <p role="alert" className="mt-3 text-[13px] text-danger">{error}</p>}
+          <div className="mt-4 flex justify-end gap-2">
+            <Button variant="secondary" onClick={resetAndClose} disabled={busy}>Cancel</Button>
+            <Button variant="primary" busy={busy} disabled={!link.trim()} onClick={() => handleOpen(false)}>Open</Button>
+          </div>
+        </div>
+      )}
+    </Dialog>
+  )
+}
+
+export function TransferCard({
+  job,
+  onPause,
+  onResume,
+  onCancel,
+}: {
+  job: any
+  onPause?: (id: number) => void
+  onResume?: (id: number) => void
+  onCancel?: (id: number) => void
+}) {
+  return (
+    <div className="rounded-xl border border-border bg-panel p-3 shadow-sm hover:border-border/80 transition-colors">
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex items-center gap-2.5 overflow-hidden min-w-0 flex-1">
+          <Thumb src={job.thumb} name={job.name} />
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-[13px] font-medium text-text" title={job.name}>{job.name}</div>
+            {job.chatTitle && <div className="text-[11px] text-muted truncate">{job.chatTitle}</div>}
+          </div>
+        </div>
+        <Pill kind={job.kind} status={job.status} finalizing={job.finalizing} />
+      </div>
+      <div className="mt-2.5">
+        <Progress done={job.done || 0} size={job.size || 0} tone={job.kind === 'upload' ? 'warning' : 'primary'} />
+      </div>
+      <div className="mt-2 flex items-center justify-between text-[11px] text-text-2">
+        <div className="flex items-center gap-2">
+          {job.speed > 0 && <span className="text-cyan font-semibold tabular-nums">{fmtSpeed(job.speed)}</span>}
+          <span>{job.status === 'active' && job.eta ? `${fmtEta(job.eta)} left` : fmtBytes(job.size || 0)}</span>
+        </div>
+        <div className="flex items-center gap-1">
+          {job.status === 'active' && onPause && (
+            <button
+              onClick={() => onPause(job.id)}
+              className="rounded p-1 hover:bg-white/10 text-muted hover:text-text transition-colors"
+              title="Pause"
+            >
+              <Pause size={13} />
+            </button>
+          )}
+          {job.status === 'paused' && onResume && (
+            <button
+              onClick={() => onResume(job.id)}
+              className="rounded p-1 hover:bg-white/10 text-muted hover:text-text transition-colors"
+              title="Resume"
+            >
+              <Play size={13} />
+            </button>
+          )}
+          {onCancel && (
+            <button
+              onClick={() => onCancel(job.id)}
+              className="rounded p-1 hover:bg-danger/20 text-muted hover:text-danger transition-colors"
+              title="Cancel"
+            >
+              <X size={13} />
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+export function MediagramLogo({ size = 20, className = '' }: { size?: number, className?: string }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 256 256"
+      className={`shrink-0 overflow-hidden ${className}`}
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <defs>
+        <linearGradient id="mediagram-logo-grad" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stopColor="var(--color-primary)" />
+          <stop offset="100%" stopColor="var(--color-primary-hover, var(--color-primary))" />
+        </linearGradient>
+      </defs>
+      <rect width="256" height="256" rx="56" fill="url(#mediagram-logo-grad)" />
+      <path d="M199 58 47 120q-10 5 0 9l47 16 18 52q4 10 12 3l25-23 39 29q9 6 12-4l16-130q1-17-17-14Z" fill="#fff" />
+      <path d="m94 145 92-62-74 74-1 40Z" fill="rgba(255, 255, 255, 0.45)" />
+    </svg>
+  )
+}
+
+/**
+ * The one place a media failure becomes a sentence. Prefer the element's own MediaError: a
+ * rejected play() usually fires *after* one and reporting its generic name instead would replace
+ * "The connection dropped" with the useless "Playback is unavailable".
+ */
+function describeMediaError(err: MediaError | null, rejection?: string): string {
+  if (err && err.code > 1) {
+    if (err.code === 2) return 'The connection dropped while loading this file'
+    if (err.code === 4) return "This file's format isn't supported"
+    return 'Playback failed'
+  }
+  return rejection === 'NotSupportedError' ? "This file can't be played" : 'Playback is unavailable'
+}
+
+/** Everything worth knowing when a player dies, so console and main.log agree on why. */
+function logMediaFailure(where: string, v: HTMLVideoElement | null, err: MediaError | null, rejection?: string) {
+  const detail = {
+    mediaError: err ? { code: err.code, message: err.message } : null,
+    rejection: rejection ?? null,
+    networkState: v?.networkState,
+    readyState: v?.readyState,
+    currentSrc: v?.currentSrc,
+    duration: v?.duration,
+    seekable: v && v.seekable.length ? `${v.seekable.start(0)}..${v.seekable.end(v.seekable.length - 1)}` : 'none',
+    buffered: v && v.buffered.length ? `${v.buffered.start(0)}..${v.buffered.end(v.buffered.length - 1)}` : 'none',
+  }
+  // One string, not a string plus an object: the packaged build forwards only the message text to
+  // main.log, and an object argument there prints as "[object Object]" — losing the reason entirely.
+  console.warn(`[player] ${where}: ${JSON.stringify(detail)}`)
+}
+
+function CustomVideoPlayer({
+  src,
+  speed,
+  onSpeedChange,
+  poster,
+  initialDuration,
+  downloadProgress,
+  isCompleted,
+}: {
+  src: string
+  speed: number
+  onSpeedChange: (speed: number) => void
+  poster?: string | null
+  initialDuration?: number
+  downloadProgress?: { downloaded: number, total: number } | null
+  isCompleted?: boolean
+}) {
+  const videoRef = useRef<HTMLVideoElement>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
+  const [playing, setPlaying] = useState(true)
+  const [currentTime, setCurrentTime] = useState(0)
+  const [duration, setDuration] = useState(initialDuration || 0)
+  const [volume, setVolume] = useState(1)
+  const [muted, setMuted] = useState(false)
+  const [fullscreen, setFullscreen] = useState(false)
+  const [showControls, setShowControls] = useState(true)
+  const [buffering, setBuffering] = useState(true)
+  const [hasStarted, setHasStarted] = useState(false)
+  const [bufferedEnd, setBufferedEnd] = useState(0)
+  const [mediaError, setMediaError] = useState<string | null>(null)
+  const hideTimerRef = useRef<NodeJS.Timeout | null>(null)
+  const prevSrcRef = useRef(src)
+  // `playing` is what the user asked for; the element's own `paused` flag is what actually happened.
+  // The watchdog below reconciles the two, so a rejected play() can never leave the controls dead.
+  const wantPlayingRef = useRef(true)
+  const dlPct = isCompleted ? 100 : downloadProgress && downloadProgress.total > 0
+    ? Math.min(100, Math.max(0, (downloadProgress.downloaded / downloadProgress.total) * 100))
+    : 0
+  const dlPctRef = useRef(dlPct)
+  dlPctRef.current = dlPct
+
+  useEffect(() => {
+    if (initialDuration && initialDuration > 0 && (!duration || duration === 0)) {
+      setDuration(initialDuration)
+    }
+  }, [initialDuration, duration])
+
+  const updateBuffered = () => {
+    if (!videoRef.current || videoRef.current.buffered.length === 0) {
+      setBufferedEnd(0)
+      return
+    }
+    if (videoRef.current.buffered.length > 0) {
+      const b = videoRef.current.buffered
+      const cur = videoRef.current.currentTime
+      let activeEnd = 0
+      for (let i = 0; i < b.length; i++) {
+        // Track the contiguous buffer segment covering or immediately ahead of playback
+        if (b.start(i) <= cur + 1 && b.end(i) >= cur) {
+          activeEnd = b.end(i)
+          break
+        }
+      }
+      if (activeEnd === 0 && b.length > 0) {
+        activeEnd = b.end(0)
+      }
+      setBufferedEnd(activeEnd)
+    }
+  }
+
+  const retryTimerRef = useRef<NodeJS.Timeout | null>(null)
+  const retryCountRef = useRef(0)
+  const retryTimeRef = useRef<number | null>(null)
+  const retryRestoreCleanupRef = useRef<(() => void) | null>(null)
+  // The first failure of a cycle is the real one: later retries report generic symptoms (load()
+  // clears MediaError, so the next play() rejects with a bare NotSupportedError) and would
+  // otherwise replace "The connection dropped" with the useless "This file can't be played".
+  const firstErrorRef = useRef<string | null>(null)
+
+  /** Only a network failure can benefit from an automatic reload. */
+  const failWith = (message: string, retryable: boolean) => {
+    if (!firstErrorRef.current) firstErrorRef.current = message
+    setMediaError(firstErrorRef.current)
+    if (retryable) scheduleRetry()
+    else {
+      if (retryTimerRef.current) clearTimeout(retryTimerRef.current)
+      retryTimerRef.current = null
+    }
+  }
+
+  /**
+   * Calls play() and keeps React state in sync with what the element actually did.
+   * Optimistically flipping `playing` before the promise settles is what previously made the
+   * controls unresponsive: a rejected play() left React showing "Pause" forever while the
+   * element sat paused, so every further click just rejected again.
+   */
+  const attemptPlay = () => {
+    const v = videoRef.current
+    if (!v) return
+    wantPlayingRef.current = true
+    v.play()
+      .then(() => {
+        // Playback is alive: cancel any queued reload, otherwise a pending retry would call
+        // load() on a video that is already running and reset it.
+        clearRetries()
+        setPlaying(true)
+        setMediaError(null)
+        if (!v.seeking && v.readyState >= 3) setBuffering(false)
+      })
+      .catch((err: unknown) => {
+        const name = (err as DOMException)?.name || 'Error'
+        // Aborted by a newer load()/src change — that attempt owns playback now.
+        if (name === 'AbortError') return
+        const mediaErr = videoRef.current?.error ?? null
+        logMediaFailure('play() rejected', videoRef.current, mediaErr, name)
+        setPlaying(false)
+        setBuffering(false)
+        if (name === 'NotAllowedError') {
+          // Autoplay refused: hand control back to the user instead of pretending.
+          wantPlayingRef.current = false
+        } else {
+          // The element's own MediaError is the real story; a rejected play() only reports that
+          // one happened, and its generic name would replace a useful message with a useless one.
+          failWith(describeMediaError(mediaErr, name), mediaErr?.code === 2)
+        }
+      })
+  }
+
+  const reloadForRetry = () => {
+    const v = videoRef.current
+    if (!v) return
+    const saved = retryTimeRef.current ?? v.currentTime
+    retryTimeRef.current = saved
+    retryRestoreCleanupRef.current?.()
+    const restore = () => {
+      if (saved > 0) v.currentTime = saved
+      retryRestoreCleanupRef.current = null
+    }
+    v.addEventListener('loadedmetadata', restore, { once: true })
+    retryRestoreCleanupRef.current = () => v.removeEventListener('loadedmetadata', restore)
+    setBuffering(true)
+    v.load()
+    attemptPlay()
+  }
+
+  const scheduleRetry = () => {
+    // error and play() rejection often report the same failure; keep one timer and count reloads.
+    if (retryTimerRef.current || retryCountRef.current >= 5 || !wantPlayingRef.current) return
+    retryTimerRef.current = setTimeout(() => {
+      retryTimerRef.current = null
+      const v = videoRef.current
+      if (!v || !wantPlayingRef.current || (v.error && v.error.code !== 2)) return
+      retryCountRef.current++
+      reloadForRetry()
+    }, 1000 * (retryCountRef.current + 1))
+  }
+
+  const clearRetries = () => {
+    retryCountRef.current = 0
+    firstErrorRef.current = null
+    if (retryTimerRef.current) clearTimeout(retryTimerRef.current)
+    retryTimerRef.current = null
+    retryTimeRef.current = null
+    retryRestoreCleanupRef.current?.()
+    retryRestoreCleanupRef.current = null
+  }
+
+  // Preserve playback position if source changes (e.g. transitioning from temp to finished file)
+  useEffect(() => {
+    if (prevSrcRef.current === src) return
+    prevSrcRef.current = src
+    const savedTime = currentTime
+    const v = videoRef.current
+    if (!v) return
+    const onLoaded = () => {
+      const el = videoRef.current
+      if (el) {
+        if (savedTime > 0) el.currentTime = savedTime
+        if (wantPlayingRef.current) attemptPlay()
+      }
+      v.removeEventListener('loadedmetadata', onLoaded)
+    }
+    v.addEventListener('loadedmetadata', onLoaded)
+    return () => v.removeEventListener('loadedmetadata', onLoaded)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [src])
+
+  useEffect(() => {
+    if (videoRef.current) {
+      videoRef.current.playbackRate = speed
+    }
+  }, [speed])
+
+  // Playback attempt on mount or source change
+  useEffect(() => {
+    if (!src) return
+    clearRetries()
+    setHasStarted(false)
+    setBuffering(true)
+    setMediaError(null)
+    setBufferedEnd(0)
+    if (wantPlayingRef.current) attemptPlay()
+    return () => {
+      if (retryTimerRef.current) clearTimeout(retryTimerRef.current)
+      retryRestoreCleanupRef.current?.()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [src])
+
+
+  // Auto-resume playback as background download buffer expands
+  useEffect(() => {
+    const v = videoRef.current
+    if (v && wantPlayingRef.current && v.paused && !mediaError && v.readyState >= 2) attemptPlay()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [downloadProgress?.downloaded, isCompleted, mediaError])
+
+  // Watchdog: reconcile React state with the element. A play() that silently failed, an aborted
+  // load(), or a recovered media error would otherwise leave the UI claiming it is playing.
+  useEffect(() => {
+    const id = setInterval(() => {
+      const v = videoRef.current
+      if (!v || !wantPlayingRef.current || mediaError) return
+      if (v.paused && !v.ended) attemptPlay()
+    }, 1000)
+    return () => clearInterval(id)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mediaError])
+
+  // While buffering, record what the element itself sees. `buffering` is React state driven by
+  // media events, so it reads "stuck at 0%" for reasons that are invisible from React — bytes that
+  // never arrived, a decoder holding only metadata, or a stalled clock. One line every five
+  // seconds separates "the server has nothing to send" from "the server is sending and the decoder
+  // will not accept it", which is the whole question when playback only works once fully downloaded.
+  useEffect(() => {
+    if (!buffering || mediaError) return
+    const id = setInterval(() => {
+      const v = videoRef.current
+      if (!v) return
+      const b = v.buffered
+      const spans: string[] = []
+      for (let i = 0; i < b.length; i++) spans.push(`${b.start(i).toFixed(2)}-${b.end(i).toFixed(2)}`)
+      console.warn(
+        `[player] buffering readyState=${v.readyState} networkState=${v.networkState} paused=${v.paused} ` +
+        `t=${v.currentTime.toFixed(2)}/${Number.isFinite(v.duration) ? v.duration.toFixed(2) : '?'} ` +
+        `buffered=[${spans.join(' ')}] downloaded=${Math.round(dlPctRef.current)}%`,
+      )
+    }, 5000)
+    return () => clearInterval(id)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [buffering, mediaError])
+
+  useEffect(() => () => {
+    if (hideTimerRef.current) clearTimeout(hideTimerRef.current)
+    if (retryTimerRef.current) clearTimeout(retryTimerRef.current)
+    retryRestoreCleanupRef.current?.()
+  }, [])
+
+  const resetHideTimer = () => {
+    setShowControls(true)
+    if (hideTimerRef.current) clearTimeout(hideTimerRef.current)
+    if (playing && hasStarted && !buffering) {
+      hideTimerRef.current = setTimeout(() => setShowControls(false), 2500)
+    }
+  }
+
+  const togglePlay = () => {
+    const v = videoRef.current
+    if (!v) return
+    if (v.paused || v.ended) {
+      if (v.ended) v.currentTime = 0
+      attemptPlay()
+    } else {
+      wantPlayingRef.current = false
+      v.pause()
+      setPlaying(false)
+      setBuffering(false)
+    }
+    resetHideTimer()
+  }
+
+  const handleVolumeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = parseFloat(e.target.value)
+    setVolume(val)
+    setMuted(val === 0)
+    if (videoRef.current) {
+      videoRef.current.volume = val
+      videoRef.current.muted = val === 0
+    }
+  }
+
+  const toggleMute = () => {
+    if (!videoRef.current) return
+    if (muted) {
+      videoRef.current.muted = false
+      videoRef.current.volume = volume || 1
+      setMuted(false)
+    } else {
+      videoRef.current.muted = true
+      setMuted(true)
+    }
+  }
+
+  const toggleFullscreen = () => {
+    if (!containerRef.current) return
+    if (!document.fullscreenElement) {
+      containerRef.current.requestFullscreen?.()
+      setFullscreen(true)
+    } else {
+      document.exitFullscreen?.()
+      setFullscreen(false)
+    }
+  }
+
+  const handleSeek = (posFraction: number) => {
+    if (duration <= 0) return // metadata unknown: a seek would silently resolve to 0
+    // Every position is seekable. Clamping to what is already downloaded turned a seek into a
+    // dead end; the media server now waits for bytes the download has not reached, so seeking past
+    // the frontier buffers under a spinner instead of failing.
+    const clampedFraction = Math.max(0, Math.min(1, posFraction))
+    const newTime = Math.max(0, Math.min(duration, clampedFraction * duration))
+    if (videoRef.current) {
+      videoRef.current.currentTime = newTime
+      setCurrentTime(newTime)
+      if (wantPlayingRef.current && videoRef.current.paused) attemptPlay()
+    }
+  }
+
+  // Keyboard navigation: Space (play/pause), Arrows (seek / volume), M (mute), F (fullscreen)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // The player only answers for keys the page is not already using. Space on a focused button must
+      // activate that button alone, arrows must walk a focused list, and M/F must not fire from a field.
+      if (typingTarget(e)) return
+
+      if (e.code === 'Space' || e.key === ' ') {
+        e.preventDefault()
+        togglePlay()
+      } else if (e.key === 'ArrowLeft') {
+        e.preventDefault()
+        if (videoRef.current) {
+          const t = Math.max(0, videoRef.current.currentTime - 5)
+          handleSeek(duration > 0 ? t / duration : 0)
+        }
+      } else if (e.key === 'ArrowRight') {
+        e.preventDefault()
+        if (videoRef.current) {
+          const t = Math.min(duration, videoRef.current.currentTime + 5)
+          handleSeek(duration > 0 ? t / duration : 0)
+        }
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        const newVol = Math.min(1, volume + 0.05)
+        setVolume(newVol)
+        setMuted(false)
+        if (videoRef.current) {
+          videoRef.current.volume = newVol
+          videoRef.current.muted = false
+        }
+      } else if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        const newVol = Math.max(0, volume - 0.05)
+        setVolume(newVol)
+        setMuted(newVol === 0)
+        if (videoRef.current) {
+          videoRef.current.volume = newVol
+          videoRef.current.muted = newVol === 0
+        }
+      } else if (e.key === 'm' || e.key === 'M') {
+        e.preventDefault()
+        toggleMute()
+      } else if (e.key === 'f' || e.key === 'F') {
+        e.preventDefault()
+        toggleFullscreen()
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [playing, duration, volume, muted, isCompleted, dlPct, bufferedEnd, speed])
+
+  const formatTime = (secs: number) => {
+    if (isNaN(secs) || secs < 0) return '0:00'
+    const m = Math.floor(secs / 60)
+    const s = Math.floor(secs % 60)
+    return `${m}:${s < 10 ? '0' : ''}${s}`
+  }
+
+  const progressPct = duration > 0 ? Math.min(100, Math.max(0, (currentTime / duration) * 100)) : 0
+  const actualBufferedPct = duration > 0 ? Math.min(100, Math.max(0, (bufferedEnd / duration) * 100)) : 0
+
+  return (
+    <div
+      ref={containerRef}
+      tabIndex={0}
+      aria-label="Video player"
+      className="relative flex items-center justify-center w-full max-w-5xl aspect-video min-h-[360px] max-h-[86vh] rounded-2xl overflow-hidden group select-none bg-black shadow-2xl cursor-default focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+      onMouseMove={resetHideTimer}
+      onMouseLeave={() => {
+        if (playing && hasStarted && !buffering) {
+          setShowControls(false)
+        }
+      }}
+      onClick={(e) => e.stopPropagation()}
+    >
+      {/* Thumbnail backdrop: stays visible while buffering before video starts, preventing any pitch-black flash */}
+      {poster && (
+        <img
+          src={poster}
+          alt=""
+          onError={(e) => {
+            setTimeout(() => {
+              if (e.currentTarget && poster) e.currentTarget.src = poster
+            }, 1500)
+          }}
+          className={`absolute inset-0 w-full h-full object-contain pointer-events-none transition-opacity duration-300 z-0 ${
+            hasStarted ? 'opacity-0' : 'opacity-100'
+          }`}
+        />
+      )}
+
+      {src && (
+        <video
+          ref={videoRef}
+          src={src}
+          poster={poster || undefined}
+          autoPlay
+          playsInline
+          preload="auto"
+          onClick={togglePlay}
+          onProgress={updateBuffered}
+          onEmptied={updateBuffered}
+          onTimeUpdate={() => {
+            if (videoRef.current) {
+              setCurrentTime(videoRef.current.currentTime)
+              if (videoRef.current.currentTime > 0) setHasStarted(true)
+              updateBuffered()
+            }
+          }}
+          onLoadedMetadata={() => {
+            if (videoRef.current) {
+              setDuration(videoRef.current.duration || initialDuration || 0)
+              updateBuffered()
+            }
+          }}
+          onLoadStart={() => setBuffering(true)}
+          onWaiting={() => setBuffering(true)}
+          onSeeking={() => setBuffering(true)}
+          onSeeked={() => {
+            setBuffering(false)
+            if (wantPlayingRef.current) attemptPlay()
+          }}
+          onCanPlay={() => {
+            setBuffering(false)
+            if (wantPlayingRef.current && videoRef.current?.paused) attemptPlay()
+          }}
+          onLoadedData={() => {
+            setBuffering(false)
+            setHasStarted(true)
+          }}
+          onPlaying={() => {
+            clearRetries()
+            setMediaError(null)
+            setPlaying(true)
+            setBuffering(false)
+            setHasStarted(true)
+          }}
+          onPlay={() => {
+            setPlaying(true)
+          }}
+          onPause={() => {
+            setPlaying(false)
+          }}
+          onEnded={() => {
+            wantPlayingRef.current = false
+            setPlaying(false)
+            setBuffering(false)
+            setShowControls(true)
+          }}
+          onError={() => {
+            const err = videoRef.current?.error ?? null
+            setBuffering(false)
+            // MEDIA_ERR_ABORTED is our own load() interrupting an in-flight request — not a fault.
+            if (!err || err.code === 1) return
+            logMediaFailure('media error', videoRef.current, err)
+            setPlaying(false)
+            failWith(describeMediaError(err), err.code === 2)
+          }}
+          className="relative z-10 w-full h-full object-contain cursor-pointer"
+        />
+      )}
+
+      {/* Center buffering spinner when waiting for media — shown whether playing or paused, since a
+          seek into the not-yet-downloaded part waits just the same */}
+      {buffering && !mediaError && (
+        <div data-testid="player-buffering" className="absolute inset-0 flex items-center justify-center pointer-events-none z-20">
+          <div className="size-16 rounded-full bg-black/60 backdrop-blur-md border border-white/20 flex items-center justify-center text-cyan shadow-2xl">
+            <span className="size-7 rounded-full border-2 border-cyan/30 border-t-cyan animate-spin" />
+          </div>
+        </div>
+      )}
+
+      {/* Playback failed: say so and offer a retry instead of showing a dead pause button */}
+      {mediaError && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/70 z-20 px-6 text-center">
+          <p className="text-[13px] font-medium text-white">{mediaError}</p>
+          <button
+            type="button"
+            onClick={() => {
+              const saved = retryTimeRef.current ?? videoRef.current?.currentTime ?? 0
+              clearRetries()
+              retryTimeRef.current = saved
+              setMediaError(null)
+              reloadForRetry()
+            }}
+            className="px-4 py-1.5 rounded-md bg-cyan text-black text-[12px] font-semibold hover:opacity-90 transition-opacity"
+          >
+            Try again
+          </button>
+        </div>
+      )}
+
+      {/* Center play icon overlay when paused */}
+      {!playing && !mediaError && (
+        <div
+          onClick={togglePlay}
+          className="absolute inset-0 flex items-center justify-center bg-black/25 cursor-pointer z-20"
+        >
+          <div className="size-16 rounded-full bg-black/75 backdrop-blur-md border border-white/20 flex items-center justify-center text-white shadow-2xl transition-transform hover:scale-110">
+            <Play size={28} className="ml-1 fill-white" />
+          </div>
+        </div>
+      )}
+
+      {/* Sleek Custom Bottom Video Controls Bar - always visible when showControls is true */}
+      <div
+        className={`absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/95 via-black/75 to-transparent px-4 pb-3.5 pt-8 flex flex-col gap-2 transition-opacity duration-300 z-30 ${
+          showControls ? 'opacity-100' : 'opacity-0 pointer-events-none'
+        }`}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Custom Sleek Scrubber Timeline */}
+        <div
+          className="w-full flex items-center relative py-1 cursor-pointer group/scrub"
+          onClick={(e) => {
+            const rect = e.currentTarget.getBoundingClientRect()
+            handleSeek((e.clientX - rect.left) / rect.width)
+          }}
+        >
+          <div
+            className="w-full h-1.5 group-hover/scrub:h-2 bg-white/10 rounded-full overflow-hidden transition-all relative"
+            title={isCompleted ? 'Fully downloaded' : `Buffering ${Math.round(dlPct)}%`}
+          >
+            {/* Bytes on disk: neutral, deliberately not cyan, so the bar reads as one buffered fill */}
+            {!isCompleted && dlPct > 0 && (
+              <div
+                className="absolute left-0 top-0 h-full bg-white/30 rounded-full transition-all duration-150"
+                style={{ width: `${dlPct}%` }}
+              />
+            )}
+            {/* Playable buffered track — the single bright fill */}
+            <div
+              data-testid="player-buffered-track"
+              className="absolute left-0 top-0 h-full bg-cyan/45 rounded-full transition-all duration-150"
+              style={{ width: `${actualBufferedPct}%` }}
+              title={`Buffered: ${Math.round(actualBufferedPct)}%`}
+            />
+            {/* Foreground playback progress track */}
+            <div
+              className="absolute left-0 top-0 h-full bg-cyan rounded-full transition-all duration-75"
+              style={{ width: `${progressPct}%` }}
+            />
+          </div>
+          <div
+            className="absolute size-3.5 rounded-full bg-white shadow-md pointer-events-none group-hover/scrub:scale-125 transition-transform"
+            style={{ left: `calc(${progressPct}% - 7px)` }}
+          />
+        </div>
+
+        {/* Controls row */}
+        <div className="flex items-center justify-between text-white text-[12px] font-medium pt-0.5 whitespace-nowrap flex-nowrap gap-3">
+          <div className="flex items-center gap-2.5 shrink-0">
+            <button
+              type="button"
+              onClick={togglePlay}
+              className="p-1 hover:text-cyan transition-colors"
+              title={playing ? 'Pause (Space)' : 'Play (Space)'}
+            >
+              {playing ? <Pause size={17} /> : <Play size={17} className="fill-white" />}
+            </button>
+
+            {/* Time readout */}
+            <span className="font-mono text-[11.5px] text-slate-200 tabular-nums whitespace-nowrap select-none">
+              {formatTime(currentTime)} / {formatTime(duration)}
+            </span>
+
+            {!isCompleted && (buffering || mediaError || dlPct > 0) && (
+              <span data-testid="player-download-status" className="font-mono text-[10.5px] font-semibold text-cyan/90 bg-cyan/15 border border-cyan/30 px-2 py-0.5 rounded-full tabular-nums whitespace-nowrap select-none">
+                {mediaError ? 'Error' : `Buffering ${Math.round(dlPct)}%`}
+              </span>
+            )}
+
+            {/* Full Volume Control with Slider */}
+            <div className="flex items-center gap-1.5 ml-1 group/vol">
+              <button
+                type="button"
+                onClick={toggleMute}
+                className="p-1 hover:text-cyan transition-colors"
+                title={muted || volume === 0 ? 'Unmute' : 'Mute'}
+              >
+                {muted || volume === 0 ? <VolumeX size={17} className="text-danger" /> : <Volume2 size={17} />}
+              </button>
+              <input
+                type="range"
+                min={0}
+                max={1}
+                step={0.05}
+                value={muted ? 0 : volume}
+                onChange={handleVolumeChange}
+                className="w-14 sm:w-18 h-1 bg-white/30 rounded-lg appearance-none cursor-pointer accent-cyan hover:h-1.5 transition-all"
+                title={`Volume: ${Math.round((muted ? 0 : volume) * 100)}%`}
+              />
+              <span className="text-[10px] text-slate-300 font-mono w-7 tabular-nums select-none">
+                {Math.round((muted ? 0 : volume) * 100)}%
+              </span>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 shrink-0">
+            {/* Speed toggle without emoji */}
+            <button
+              type="button"
+              onClick={() => {
+                const speeds = [1, 1.25, 1.5, 2]
+                const nextIndex = (speeds.indexOf(speed) + 1) % speeds.length
+                onSpeedChange(speeds[nextIndex])
+              }}
+              className="flex items-center gap-1 px-2.5 py-1 rounded-md border border-white/20 bg-white/10 hover:bg-white/20 text-white text-[11.5px] font-semibold transition-colors"
+              title="Toggle playback speed"
+            >
+              <Gauge size={13} className="text-cyan" />
+              <span>{speed}x</span>
+            </button>
+
+            {/* Fullscreen toggle (NO 3-dot button!) */}
+            <button
+              type="button"
+              onClick={toggleFullscreen}
+              className="p-1 hover:text-cyan transition-colors"
+              title={fullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
+            >
+              {fullscreen ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+type MediaPreviewModalProps = {
+  open: boolean
+  item: {
+    name: string
+    path?: string | null
+    thumb?: string | null
+    type?: string
+    size?: number
+    duration?: number
+    chatId?: number
+    messageId?: number
+  } | null
+  onClose: () => void
+  onDownload?: () => void
+}
+
+export function MediaPreviewModal(props: MediaPreviewModalProps) {
+  if (!props.open || !props.item) return null
+  const { item } = props
+  const identity = item.chatId && item.messageId
+    ? `message:${item.chatId}:${item.messageId}`
+    : `local:${item.path || item.name}`
+  return <MediaPreviewSession key={identity} {...props} />
+}
+
+function MediaPreviewSession({ open, item, onClose, onDownload }: MediaPreviewModalProps) {
+  const ext = item?.name.split('.').pop()?.toLowerCase() || ''
+  const makeMediaUrl = (path: string, size: number, fileId?: number | null) =>
+    `mediagram://file/${encodeURIComponent(path)}?total=${size}&ext=${encodeURIComponent(ext)}` +
+    (fileId && fileId > 0 ? `&id=${fileId}` : '')
+  const [preparedPath, setPreparedPath] = useState<string | null>(item?.path || null)
+  // The TDLib file id that owns preparedPath. Carried in the media URL because a path can outlive
+  // the id that created it (TDLib reissues ids on re-login), and the protocol handler uses the id
+  // to ask TDLib which file — and how big — it is actually serving.
+  const [preparedFileId, setPreparedFileId] = useState<number | null>(null)
+  const [retryCount, setRetryCount] = useState(0)
+  const [prepProgress, setPrepProgress] = useState<{ downloaded: number, total: number } | null>(null)
+  const [actualSize, setActualSize] = useState<number>(item?.size || 0)
+  const [naturalDims, setNaturalDims] = useState<{ width: number, height: number } | null>(null)
+  const [isFullLoaded, setIsFullLoaded] = useState(false)
+  const [isDownloadCompleted, setIsDownloadCompleted] = useState(Boolean(item?.path))
+  const [imgError, setImgError] = useState(false)
+  const [thumbError, setThumbError] = useState(false)
+  const [speed, setSpeed] = useState<number>(1)
+  const [modalThumb, setModalThumb] = useState<string | null>(null)
+  const audioRef = useRef<HTMLAudioElement>(null)
+  // The keyed session owns this URL. Progress and completion can update metadata, not the decoder's
+  // source; the protocol handler follows the original temp path to its final location.
+  const [playerUrl, setPlayerUrl] = useState<string | null>(() =>
+    item?.path ? makeMediaUrl(item.path, item.size || 0) : null)
+  const onCloseRef = useRef(onClose)
+  onCloseRef.current = onClose
+  const isVideo = ['mp4', 'webm', 'mkv', 'mov', 'm4v'].includes(ext) || item?.type === 'video' || item?.type === 'video_note'
+  const isImage = ['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp'].includes(ext) || item?.type === 'photo' || item?.type === 'image'
+  const isAudio = ['mp3', 'ogg', 'wav', 'flac', 'm4a', 'aac'].includes(ext) || item?.type === 'audio' || item?.type === 'voice'
+
+  // Sync Electron native title bar overlay color with modal background when open
+  useEffect(() => {
+    const bridge = window.mediagram || window.teleflow
+    if (open) {
+      bridge?.setTheme?.('#080c14', '#ffffff')?.catch(() => {})
+    }
+    return () => {
+      const cur = getActiveTheme()
+      bridge?.setTheme?.(cur.overlayColor, cur.symbolColor)?.catch(() => {})
+    }
+  }, [open])
+
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onCloseRef.current() }
+    window.addEventListener('keydown', handleKey)
+    return () => window.removeEventListener('keydown', handleKey)
+  }, [])
+
+  useEffect(() => {
+    if (!item || item.path || !item.chatId || !item.messageId) return
+
+    let targetFileId: number | null = null
+    let active = true
+    // A path can be missing for a beat (TDLib has not created its temp file yet). Ask again instead of
+    // having nothing to play — this ensures immediate playback as soon as the file is allocated.
+    let havePath = false
+    let retryTimer: NodeJS.Timeout | undefined
+    // Three attempts 2.5 s apart used to be the whole budget: on a busy channel page prepareMedia
+    // needs longer than 7.5 s, and after that the modal showed a static thumbnail forever with no
+    // player and no indication anything was still happening. Keep asking while the modal is open.
+    const startedAt = Date.now()
+    const RETRY_MS = 2000
+    const MAX_WAIT_MS = 45_000
+
+    const acceptPath = (path: string, size: number, completed: boolean) => {
+      if (isImage && !completed) {
+        // For still images, wait until the complete file is confirmed on disk before mounting into <img>
+        return
+      }
+      havePath = true
+      clearTimeout(retryTimer)
+      retryTimer = undefined
+      setPreparedPath((prev) => completed ? path : (prev || path))
+      setPlayerUrl((prev) => prev || makeMediaUrl(path, size, targetFileId))
+    }
+
+    const scheduleRetry = () => {
+      retryTimer = undefined
+      if (!active || havePath || Date.now() - startedAt > MAX_WAIT_MS) return
+      retryTimer = setTimeout(prepare, RETRY_MS)
+    }
+
+    const prepare = () => {
+      retryTimer = undefined
+      if (!active || havePath) return
+      call<{ completed: boolean, path: string | null, fileId: number, size: number, downloaded: number, thumb?: string | null }>('media.prepare', {
+        chatId: item!.chatId,
+        messageId: item!.messageId,
+      })
+        .then((res) => {
+          if (!active) return
+          targetFileId = res.fileId > 0 ? res.fileId : null
+          setPreparedFileId(targetFileId)
+          if (res.size && res.size > 0) {
+            setActualSize(res.size)
+          }
+          if (res.thumb) {
+            setModalThumb(res.thumb)
+          }
+          if (res.path) acceptPath(res.path, res.size || item.size || 0, res.completed)
+          if (res.completed) {
+            setIsDownloadCompleted(true)
+            setPrepProgress(null)
+          } else if (res.size) {
+            setPrepProgress({ downloaded: res.downloaded || 0, total: res.size })
+          }
+          if (!havePath && active) scheduleRetry()
+        })
+        .catch(() => {
+          if (active && !havePath) scheduleRetry()
+        })
+    }
+    prepare()
+
+    const unsub = on((event) => {
+      if (!active) return
+      if (event.type === 'fileProgress') {
+        if (targetFileId === null || event.fileId !== targetFileId) return
+        if (event.total && event.total > 0) {
+          setActualSize(event.total)
+        }
+        if (event.path) acceptPath(event.path, event.total || item.size || 0, event.completed)
+        if (event.completed) {
+          setIsDownloadCompleted(true)
+          setPrepProgress(null)
+        } else if (event.total && event.total > 0) {
+          setPrepProgress({ downloaded: event.downloaded, total: event.total })
+        }
+      }
+    })
+
+    return () => {
+      active = false
+      clearTimeout(retryTimer)
+      unsub()
+    }
+  // A new item or reopened modal mounts a new session; parent callbacks and progress don't prepare again.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [retryCount])
+
+  useEffect(() => {
+    if (audioRef.current) audioRef.current.playbackRate = speed
+  }, [speed, preparedPath])
+
+  // Synchronize native titleBarOverlay to black theater while MediaModal is open
+  useEffect(() => {
+    if (!open) return
+    const bridge = window.mediagram || window.teleflow
+    bridge?.setTheme?.('#000000', '#ffffff')?.catch(() => {})
+    return () => {
+      const active = getActiveTheme()
+      bridge?.setTheme?.(active.overlayColor, active.symbolColor, active.id)?.catch(() => {})
+    }
+  }, [open])
+
+  if (!item) return null
+
+  const resolvedPath = item.path || preparedPath
+  const mediaUrl = resolvedPath
+    ? makeMediaUrl(resolvedPath, actualSize || item.size || 0, preparedFileId)
+    : null
+  const effectiveThumb = item.thumb || modalThumb
+  const thumbUrl = effectiveThumb ? `mediagram://thumb/${effectiveThumb}` : null
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex flex-col justify-between bg-black/95 select-none backdrop-blur-md animate-in fade-in duration-200 cursor-pointer overflow-hidden"
+      onClick={onClose}
+    >
+      {/* 1. Seamless native window drag bar across the top matching titleBarOverlay */}
+      <div
+        className="drag flex h-9 shrink-0 items-center justify-between px-3 bg-black/90 select-none z-30 border-b border-white/10"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="no-drag" />
+        {/* Reserved space matching Windows min/max/close controls */}
+        <div className="no-drag" style={{ width: 'calc(env(titlebar-area-width, 140px) + 8px)' }} aria-hidden="true" />
+      </div>
+
+      {/* 2. Floating metadata and action controls toolbar */}
+      <div
+        className="w-full flex items-center justify-between px-6 py-2.5 bg-black/80 backdrop-blur-md border-b border-white/10 z-20 cursor-default"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="min-w-0 flex-1 mr-4">
+          <h3 className="truncate text-[13.5px] font-semibold text-white tracking-wide" title={item.name}>
+            {item.name}
+          </h3>
+          <div className="mt-0.5 flex items-center gap-2 text-[11.5px] text-slate-300">
+            {actualSize > 0 ? <span className="font-mono text-white font-medium">{fmtBytes(actualSize)}</span> : null}
+            {naturalDims ? <span>• {naturalDims.width} × {naturalDims.height}</span> : null}
+            {item.duration ? <span>• {fmtDuration(item.duration)}</span> : null}
+            <TypeChip ext={ext.toUpperCase()} />
+            {isImage && !isFullLoaded && !imgError && (
+              <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10.5px] font-medium bg-primary/20 text-primary border border-primary/30">
+                <span className="size-2 rounded-full border border-primary/40 border-t-primary animate-spin" />
+                <span>Loading photo… {prepProgress && prepProgress.total > 0 ? `${Math.round((prepProgress.downloaded / prepProgress.total) * 100)}%` : ''}</span>
+              </span>
+            )}
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2 shrink-0">
+          {onDownload ? (
+            <Button
+              variant="primary"
+              onClick={onDownload}
+              className="py-1.5 px-3.5 text-[12px] flex items-center gap-1.5 shadow-lg"
+            >
+              <Download size={14} />
+              <span>Download</span>
+            </Button>
+          ) : null}
+
+          <button
+            onClick={onClose}
+            className="flex size-7 items-center justify-center rounded-full bg-white/10 hover:bg-white/20 text-white transition-colors"
+            title="Close (Esc)"
+          >
+            <X size={15} />
+          </button>
+        </div>
+      </div>
+
+      {/* Center Media Stage - Backdrop click closes modal; media element stops propagation */}
+      <div className="flex flex-1 items-center justify-center w-full h-full p-4 overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+        {isVideo ? (
+          // A streamable path means playback starts now — the rest of the file keeps arriving behind it.
+          playerUrl ? (
+            <CustomVideoPlayer
+              src={playerUrl}
+              speed={speed}
+              onSpeedChange={setSpeed}
+              poster={thumbUrl}
+              initialDuration={item.duration}
+              downloadProgress={prepProgress}
+              isCompleted={Boolean(item.path || isDownloadCompleted || (prepProgress && prepProgress.downloaded >= prepProgress.total))}
+            />
+          ) : (
+            <div
+              className="relative flex items-center justify-center w-full max-w-5xl aspect-video min-h-[360px] max-h-[86vh] rounded-2xl overflow-hidden bg-black cursor-default shadow-2xl"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {thumbUrl ? (
+                <img
+                  src={thumbUrl}
+                  alt={item.name}
+                  onError={(e) => { e.currentTarget.style.display = 'none' }}
+                  className="absolute inset-0 w-full h-full object-contain pointer-events-none"
+                />
+              ) : (
+                <div className="w-80 h-52 flex items-center justify-center bg-slate-900/80 rounded-2xl">
+                  <Film size={36} className="text-muted" />
+                </div>
+              )}
+              {/* A static poster with no player looks like nothing is happening. Say what is going on. */}
+              <div className="absolute inset-0 flex items-center justify-center gap-2.5 bg-black/45">
+                <span className="size-4 rounded-full border-2 border-white/25 border-t-white animate-spin" />
+                <span className="text-[13px] font-medium text-white/90">
+                  {prepProgress && prepProgress.total > 0
+                    ? `Preparing video… ${Math.round((prepProgress.downloaded / prepProgress.total) * 100)}%`
+                    : 'Preparing video…'}
+                </span>
+              </div>
+            </div>
+          )
+        ) : isImage ? (
+          <div
+            className="relative flex items-center justify-center min-w-[320px] min-h-[280px] max-h-[85vh] max-w-[95vw] cursor-default"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* 1. Full-resolution Image */}
+            {mediaUrl && !imgError && (
+              <img
+                key={mediaUrl}
+                src={mediaUrl}
+                alt={item.name}
+                onLoad={(e) => {
+                  setNaturalDims({ width: e.currentTarget.naturalWidth, height: e.currentTarget.naturalHeight })
+                  setIsFullLoaded(true)
+                }}
+                onError={() => {
+                  if (prepProgress && prepProgress.downloaded < (prepProgress.total || 1)) {
+                    return
+                  }
+                  setImgError(true)
+                }}
+                className={`max-h-[85vh] max-w-[95vw] w-auto h-auto min-w-[320px] md:min-w-[480px] object-contain rounded-lg shadow-2xl transition-opacity duration-300 ${
+                  isFullLoaded ? 'opacity-100' : 'opacity-0'
+                }`}
+              />
+            )}
+
+            {/* 2. Instant Thumbnail Preview without any loading blocker */}
+            {(!mediaUrl || !isFullLoaded) && thumbUrl && !thumbError && (
+              <img
+                src={thumbUrl}
+                alt={item.name}
+                onError={() => setThumbError(true)}
+                className={`max-h-[85vh] max-w-[95vw] w-auto h-auto min-w-[320px] md:min-w-[480px] object-contain rounded-lg shadow-2xl transition-opacity duration-300 ${
+                  isFullLoaded ? 'opacity-0 pointer-events-none absolute' : 'opacity-100'
+                }`}
+              />
+            )}
+
+            {/* Thumbnail Fallback Bar if full resolution encountered error */}
+            {imgError && thumbUrl && !thumbError && (
+              <div className="absolute bottom-5 inset-x-5 mx-auto max-w-sm flex items-center justify-between gap-3 px-3.5 py-2.5 rounded-2xl bg-slate-950/90 backdrop-blur-md border border-white/20 shadow-2xl text-white z-10 animate-in fade-in duration-200">
+                <div className="flex items-center gap-2 min-w-0">
+                  <ImageOff size={15} className="text-amber-400 shrink-0" />
+                  <span className="text-[12px] text-slate-200 truncate">Previewing thumbnail</span>
+                </div>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  {onDownload && (
+                    <Button variant="primary" onClick={onDownload} className="py-1 px-3 text-[11.5px] flex items-center gap-1.5">
+                      <Download size={12} /> Download
+                    </Button>
+                  )}
+                  <Button
+                    variant="secondary"
+                    onClick={() => {
+                      setImgError(false)
+                      setPreparedPath(null)
+                      setRetryCount((c) => c + 1)
+                    }}
+                    className="py-1 px-2.5 text-[11.5px] bg-white/15 hover:bg-white/25 text-white border-white/20"
+                  >
+                    Retry
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            {/* 3. Fallback when neither thumbnail nor full image is available */}
+            {!isFullLoaded && !thumbUrl && !imgError && (
+              <div className="flex flex-col items-center justify-center p-8 rounded-2xl bg-slate-900/60 text-muted">
+                <ImageIcon size={36} className="text-muted/60" />
+              </div>
+            )}
+
+            {/* 4. Resilient Error Fallback Card (shown when no thumbnail is viewable) */}
+            {imgError && (!thumbUrl || thumbError) && (
+              <div className="flex flex-col items-center justify-center gap-4 p-8 rounded-2xl bg-slate-900/95 border border-white/15 shadow-2xl text-center max-w-md">
+                <div className="size-16 rounded-2xl bg-danger/15 text-danger flex items-center justify-center border border-danger/30 shadow-inner">
+                  <ImageOff size={32} />
+                </div>
+                <div>
+                  <div className="text-[15px] font-bold text-white truncate max-w-sm">{item.name}</div>
+                  <div className="text-[12px] text-slate-300 mt-1">
+                    Photo preview could not be displayed. You can download the file directly to view it.
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 pt-1">
+                  {onDownload && (
+                    <Button variant="primary" onClick={onDownload} className="py-2 px-5 text-[12.5px] flex items-center gap-2">
+                      <Download size={14} /> Download File
+                    </Button>
+                  )}
+                  <Button
+                    variant="secondary"
+                    onClick={() => {
+                      setImgError(false)
+                      setPreparedPath(null)
+                      setRetryCount((c) => c + 1)
+                    }}
+                    className="py-2 px-4 text-[12.5px] bg-white/10 hover:bg-white/20 text-white border-white/20"
+                  >
+                    Retry
+                  </Button>
+                </div>
+              </div>
+            )}
+          </div>
+        ) : isAudio ? (
+          <div
+            className="flex flex-col items-center justify-center gap-6 py-10 px-12 w-full max-w-xl bg-panel/95 backdrop-blur-2xl border border-border rounded-3xl shadow-2xl cursor-default"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="size-24 rounded-full bg-primary/20 text-primary flex items-center justify-center shadow-xl border border-primary/40 animate-pulse">
+              <Music size={42} className="text-primary" />
+            </div>
+            <div className="text-center w-full px-4">
+              <div className="text-[16px] text-text font-bold truncate max-w-md mx-auto">{item.name}</div>
+              <div className="text-[12px] text-muted mt-1">
+                {item.size ? fmtBytes(item.size) : ''} {item.duration ? `• ${fmtDuration(item.duration)}` : ''}
+              </div>
+            </div>
+            {playerUrl ? (
+              <audio ref={audioRef} src={playerUrl} controls autoPlay className="w-full mt-2" />
+            ) : (
+              <div className="flex flex-col items-center gap-2 py-4">
+                <div className="size-10 rounded-full border-2 border-primary/30 border-t-primary animate-spin" />
+                <span className="text-[12.5px] text-primary font-medium">Loading audio…</span>
+              </div>
+            )}
+          </div>
+        ) : (
+          <div
+            className="flex flex-col items-center justify-center gap-4 py-16 px-20 text-center bg-panel rounded-2xl border border-border shadow-2xl cursor-default"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="size-20 rounded-2xl bg-primary/20 flex items-center justify-center text-primary mb-2 shadow">
+              <TypeChip ext={ext.toUpperCase() || 'FILE'} />
+            </div>
+            <div className="text-[16px] font-semibold text-text max-w-md truncate">{item.name}</div>
+            <div className="text-[12.5px] text-muted">{item.size ? fmtBytes(item.size) : ''}</div>
+            {onDownload && (
+              <Button variant="primary" onClick={onDownload} className="mt-3 py-2 px-6 text-[13px] flex items-center gap-2">
+                <Download size={15} /> Download File
+              </Button>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+/** Telegram Join Request / Community Invite Modal */
+export function TelegramInviteModal({
+  open,
+  invite,
+  loading,
+  requestSent,
+  onClose,
+  onJoin,
+}: {
+  open: boolean
+  invite: {
+    title: string
+    members?: number
+    photo?: string | null
+    about?: string
+    createsJoinRequest?: boolean
+    isPublic?: boolean
+    link?: string
+  } | null
+  loading?: boolean
+  requestSent?: boolean
+  onClose: () => void
+  onJoin: () => void
+}) {
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open, onClose])
+
+  if (!open || !invite) return null
+
+  const isRequest = Boolean(invite.createsJoinRequest)
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-md select-none animate-in fade-in duration-150"
+      onClick={onClose}
+    >
+      <div
+        className="relative w-full max-w-sm overflow-hidden rounded-3xl border border-border bg-panel p-6 shadow-2xl flex flex-col items-center text-center animate-in fade-in zoom-in-95 duration-150"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <button
+          onClick={onClose}
+          className="absolute top-4 right-4 size-7 rounded-full bg-tile hover:bg-tile/80 text-muted hover:text-text flex items-center justify-center transition-colors cursor-pointer border border-border"
+          title="Close"
+        >
+          <X size={15} />
+        </button>
+
+        {/* Channel / Group Avatar */}
+        <div className="mt-2 mb-3">
+          {invite.photo ? (
+            <img
+              src={`mediagram://thumb/${invite.photo}`}
+              alt={invite.title}
+              loading="lazy"
+              className="size-20 rounded-full object-cover shadow-xl border-2 border-white/15"
+            />
+          ) : (
+            <div className="size-20 rounded-full bg-primary/20 text-primary flex items-center justify-center text-2xl font-bold shadow-xl border-2 border-primary/30">
+              {invite.title.charAt(0).toUpperCase()}
+            </div>
+          )}
+        </div>
+
+        {/* Channel Title */}
+        <h3 className="text-[17px] font-bold text-text tracking-wide max-w-[280px] truncate" title={invite.title}>
+          {invite.title}
+        </h3>
+
+        {/* Member count */}
+        <p className="text-[12px] text-primary font-medium mt-1">
+          {invite.members ? `${invite.members.toLocaleString()} members` : 'Telegram Community'}
+        </p>
+
+        {/* Description / About */}
+        {invite.about && (
+          <p className="text-[12px] text-muted mt-3 line-clamp-3 leading-relaxed px-2 break-words">
+            {invite.about}
+          </p>
+        )}
+
+        {/* Request notice or request sent badge */}
+        {requestSent ? (
+          <div className="mt-5 w-full p-3 rounded-2xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-[13px] font-semibold flex items-center justify-center gap-2 shadow-sm">
+            <CheckCircle2 size={18} className="text-emerald-400" />
+            <span>Join Request Sent!</span>
+          </div>
+        ) : isRequest ? (
+          <div className="mt-4 p-2.5 rounded-xl bg-primary/10 border border-primary/20 text-[11.5px] text-text-2 flex items-center justify-center gap-1.5 font-medium">
+            <span>An admin will review your request to join</span>
+          </div>
+        ) : null}
+
+        {/* Actions */}
+        <div className="w-full flex flex-col gap-2 mt-5">
+          {requestSent ? (
+            <Button variant="primary" onClick={onClose} className="w-full py-2.5 text-[13.5px] font-semibold rounded-xl">
+              Done
+            </Button>
+          ) : (
+            <>
+              <Button
+                variant="primary"
+                busy={loading}
+                onClick={onJoin}
+                className="w-full py-2.5 text-[13.5px] font-semibold rounded-xl shadow-lg"
+              >
+                {isRequest ? 'Request to Join' : 'Join Channel'}
+              </Button>
+              <Button
+                variant="secondary"
+                onClick={onClose}
+                disabled={loading}
+                className="w-full py-2 text-[12.5px] rounded-xl text-slate-300"
+              >
+                Cancel
+              </Button>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/** Dispatches animation event for flying Telegram shuttle to the Queue nav item */
+export function triggerFlyToQueue(e?: React.MouseEvent | { clientX: number, clientY: number }) {
+  if (typeof window === 'undefined') return
+  const x = e ? ('clientX' in e ? e.clientX : window.innerWidth / 2) : window.innerWidth / 2
+  const y = e ? ('clientY' in e ? e.clientY : window.innerHeight / 2) : window.innerHeight / 2
+  const queueEl = document.getElementById('nav-queue-btn')
+  const rect = queueEl?.getBoundingClientRect()
+  const targetX = rect ? (rect.left + Math.min(28, rect.width / 2)) : 36
+  const targetY = rect ? (rect.top + rect.height / 2) : 210
+  window.dispatchEvent(new CustomEvent('mediagram-fly-to-queue', { detail: { x, y, targetX, targetY } }))
+}
+
+export type DuplicateMatch = {
+  chatId: number
+  messageId: number
+  name: string
+  size: number
+  duration: number
+  diskPath: string
+}
+
+export type DuplicateCheckResult = {
+  scannedPath: string
+  filesScanned: number
+  totalSelected: number
+  onDiskCount: number
+  willDownloadCount: number
+  skippedBytes: number
+  duplicates: DuplicateMatch[]
+  willDownload: { chatId: number, messageId: number, name: string, size: number, duration: number }[]
+}
+
+export function CheckDuplicatesModal({
+  open,
+  loading,
+  selectedCount,
+  result,
+  customPath,
+  onClose,
+  onContinue,
+  onPickCustomPath,
+  onResetCustomPath,
+}: {
+  open: boolean
+  loading: boolean
+  selectedCount: number
+  result: DuplicateCheckResult | null
+  customPath?: string | null
+  onClose: () => void
+  onContinue: (downloadItems: { chatId: number, messageId: number }[], force: boolean) => void
+  onPickCustomPath?: () => void
+  onResetCustomPath?: () => void
+}) {
+  const [skipDuplicates, setSkipDuplicates] = useState(true)
+  const [showDuplicatesList, setShowDuplicatesList] = useState(false)
+
+  useEffect(() => {
+    if (!open) {
+      setSkipDuplicates(true)
+      setShowDuplicatesList(false)
+      return
+    }
+    const handleKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', handleKey)
+    return () => window.removeEventListener('keydown', handleKey)
+  }, [open, onClose])
+
+  if (!open) return null
+
+  const onDiskCount = result?.onDiskCount ?? 0
+  const totalSelected = result?.totalSelected ?? selectedCount
+  const willDownloadCount = skipDuplicates ? (result?.willDownloadCount ?? totalSelected) : totalSelected
+
+  const handleConfirm = () => {
+    if (!result) return
+    if (skipDuplicates) {
+      onContinue(result.willDownload.map((x) => ({ chatId: x.chatId, messageId: x.messageId })), false)
+    } else {
+      const allItems = [...result.willDownload, ...result.duplicates].map((x) => ({ chatId: x.chatId, messageId: x.messageId }))
+      onContinue(allItems, true)
+    }
+  }
+
+  const subtitle = loading
+    ? `Checking ${selectedCount.toLocaleString()} selected files before download`
+    : onDiskCount > 0
+    ? `${onDiskCount.toLocaleString()} duplicates found · ${willDownloadCount.toLocaleString()} ready to download`
+    : `No duplicates found · ${willDownloadCount.toLocaleString()} ready to download`
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-md select-none animate-in fade-in duration-150"
+      onClick={onClose}
+    >
+      <div
+        className="relative w-full max-w-2xl overflow-hidden rounded-2xl border border-border bg-panel shadow-2xl flex flex-col animate-in fade-in zoom-in-95 duration-150"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="flex items-start justify-between border-b border-border px-6 py-5">
+          <div>
+            <h2 className="text-[18px] font-bold text-text tracking-wide leading-tight">Check for duplicates</h2>
+            <p className="text-[13px] text-muted mt-1 leading-normal">{subtitle}</p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg p-1.5 text-muted hover:bg-tile hover:text-text transition-colors cursor-pointer"
+            title="Close"
+          >
+            <X size={18} />
+          </button>
+        </div>
+
+        {/* Content Area */}
+        <div className="p-6">
+          {loading ? (
+            <div className="flex flex-col items-center justify-center py-20">
+              <div className="flex items-center gap-4">
+                <div className="size-8 rounded-full border-2 border-primary/30 border-t-primary animate-spin shrink-0" />
+                <div>
+                  <div className="text-[15px] font-semibold text-text">Scanning download folder</div>
+                  <div className="text-[12.5px] text-muted mt-0.5">Duplicates require an exact filename and exact byte-size match.</div>
+                </div>
+              </div>
+            </div>
+          ) : result ? (
+            <div className="space-y-4">
+              {/* Scanned Path Card */}
+              <div className="rounded-xl border border-border bg-tile/40 p-3.5">
+                <div className="flex items-center justify-between gap-3 pb-2.5 border-b border-border/50 mb-2.5">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[11px] font-bold tracking-wider text-muted uppercase">
+                      Scanned Path{customPath ? ' (Custom)' : ''}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    {customPath && onResetCustomPath && (
+                      <button
+                        type="button"
+                        onClick={onResetCustomPath}
+                        className="px-2.5 py-1 rounded-md text-[11.5px] font-medium text-text-2 hover:text-text bg-tile hover:bg-tile/80 border border-border flex items-center gap-1.5 transition-all cursor-pointer active:scale-95 shadow-sm"
+                        title="Reset to default download folder"
+                      >
+                        <RotateCcw size={11} className="text-muted" />
+                        <span>Reset to default</span>
+                      </button>
+                    )}
+                    {onPickCustomPath && (
+                      <button
+                        type="button"
+                        onClick={onPickCustomPath}
+                        className="px-2.5 py-1 rounded-md text-[11.5px] font-semibold text-primary hover:text-primary-hover bg-primary/15 hover:bg-primary/25 border border-primary/30 flex items-center gap-1.5 transition-all cursor-pointer active:scale-95 shadow-sm"
+                        title="Choose custom folder to scan"
+                      >
+                        <FolderOpen size={12} />
+                        <span>{customPath ? 'Change folder' : 'Browse folder'}</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-tile border border-border">
+                  <Folder size={13} className="text-muted shrink-0" />
+                  <span className="text-[12.5px] font-mono text-text break-all select-text leading-tight">{result.scannedPath}</span>
+                </div>
+              </div>
+
+              {/* 3 Stats Grid */}
+              <div className="grid grid-cols-3 gap-3">
+                <div className="rounded-xl border border-border bg-tile/40 p-4">
+                  <div className="text-[11px] font-bold tracking-wider text-muted uppercase mb-1.5">Selected</div>
+                  <div className="text-[26px] font-bold text-text tabular-nums">{result.totalSelected.toLocaleString()}</div>
+                </div>
+                <div className="rounded-xl border border-border bg-tile/40 p-4">
+                  <div className="text-[11px] font-bold tracking-wider text-muted uppercase mb-1.5">On Disk</div>
+                  <div className={`text-[26px] font-bold tabular-nums ${onDiskCount > 0 ? 'text-amber-400' : 'text-text'}`}>
+                    {result.onDiskCount.toLocaleString()}
+                  </div>
+                </div>
+                <div className="rounded-xl border border-border bg-tile/40 p-4">
+                  <div className="text-[11px] font-bold tracking-wider text-muted uppercase mb-1.5">Will Download</div>
+                  <div className="text-[26px] font-bold text-primary tabular-nums">{willDownloadCount.toLocaleString()}</div>
+                </div>
+              </div>
+
+              {/* Match Criteria Banner */}
+              <div className={`rounded-xl border p-4 flex items-center justify-between gap-3.5 ${
+                onDiskCount > 0
+                  ? 'border-amber-500/30 bg-amber-950/20'
+                  : 'border-emerald-500/30 bg-emerald-950/20'
+              }`}>
+                <div className="flex items-center gap-3.5">
+                  <div className={`flex size-9 shrink-0 items-center justify-center rounded-full ${
+                    onDiskCount > 0 ? 'bg-amber-500/20 text-amber-400' : 'bg-emerald-500/20 text-emerald-400'
+                  }`}>
+                    <Check size={18} strokeWidth={2.5} />
+                  </div>
+                  <div>
+                    <div className={`text-[14px] font-semibold ${onDiskCount > 0 ? 'text-amber-100' : 'text-emerald-100'}`}>
+                      Exact filename + exact byte size
+                    </div>
+                    <div className={`text-[12px] mt-0.5 ${onDiskCount > 0 ? 'text-amber-300/80' : 'text-emerald-300/80'}`}>
+                      {result.filesScanned.toLocaleString()} files scanned · {fmtBytes(result.skippedBytes)} skipped
+                    </div>
+                  </div>
+                </div>
+
+                {onDiskCount > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setShowDuplicatesList(!showDuplicatesList)}
+                    className="text-[12px] font-medium text-amber-300 hover:text-white underline cursor-pointer shrink-0"
+                  >
+                    {showDuplicatesList ? 'Hide details' : 'View duplicates'}
+                  </button>
+                )}
+              </div>
+
+              {/* Duplicates Details & Skip Toggle */}
+              {onDiskCount > 0 && (
+                <div className="space-y-3 pt-1">
+                  <label className="flex items-center gap-2.5 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={skipDuplicates}
+                      onChange={(e) => setSkipDuplicates(e.target.checked)}
+                      className="size-4 rounded accent-primary cursor-pointer"
+                    />
+                    <span className="text-[13px] font-medium text-text">
+                      Skip duplicates on disk (recommended)
+                    </span>
+                  </label>
+
+                  {showDuplicatesList && (
+                    <div className="max-h-48 overflow-y-auto rounded-xl border border-white/10 bg-black/25 p-3 space-y-2 text-[12px]">
+                      {result.duplicates.map((dup, idx) => (
+                        <div key={idx} className="flex items-center justify-between gap-2 border-b border-white/5 pb-1.5 last:border-0 last:pb-0">
+                          <div className="truncate text-slate-200">
+                            <span className="font-medium">{dup.name}</span>
+                            <span className="text-muted ml-2 font-mono text-[11px] truncate">({dup.diskPath})</span>
+                          </div>
+                          <span className="text-muted tabular-nums shrink-0">{fmtBytes(dup.size)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="py-12 text-center text-muted">No scan information available.</div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="border-t border-border px-6 py-4 flex items-center justify-end gap-3 bg-tile/40">
+          <Button variant="secondary" onClick={onClose} className="px-5 py-2">
+            Cancel
+          </Button>
+
+          {loading ? (
+            <Button disabled className="px-5 py-2 opacity-60 bg-primary/40 text-white">
+              Checking...
+            </Button>
+          ) : (
+            <Button
+              onClick={handleConfirm}
+              disabled={willDownloadCount === 0}
+              className="px-6 py-2 font-semibold"
+            >
+              Continue with {willDownloadCount}
+            </Button>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/** Create Channel or Group Modal with full options, avatar preview, and debounced username check */
+export function CreateChatModal({
+  open,
+  onClose,
+  onSuccess,
+}: {
+  open: boolean
+  onClose: () => void
+  onSuccess?: (chatId: number) => void
+}) {
+  const [kind, setKind] = useState<'channel' | 'group'>('channel')
+  const [title, setTitle] = useState('')
+  const [description, setDescription] = useState('')
+  const [isPublic, setIsPublic] = useState(false)
+  const [username, setUsername] = useState('')
+  const [usernameStatus, setUsernameStatus] = useState<{
+    state: 'idle' | 'checking' | 'available' | 'occupied' | 'invalid' | 'too_many' | 'error'
+    message?: string
+  }>({ state: 'idle' })
+
+  // Avatar upload & preview
+  const [avatarFile, setAvatarFile] = useState<File | null>(null)
+  const [avatarPreview, setAvatarPreview] = useState<string | null>(null)
+  const photoInputRef = useRef<HTMLInputElement>(null)
+
+  // Advanced options
+  const [signMessages, setSignMessages] = useState(false)
+  const [joinByRequest, setJoinByRequest] = useState(false)
+  const [isHistoryAvailable, setIsHistoryAvailable] = useState(true)
+  const [hasProtectedContent, setHasProtectedContent] = useState(false)
+  const [showAdvanced, setShowAdvanced] = useState(false)
+
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+
+  // Debounced username availability checking
+  useEffect(() => {
+    if (!isPublic || !username.trim()) {
+      setUsernameStatus({ state: 'idle' })
+      return
+    }
+    const clean = username.replace(/^@/, '').trim()
+    if (clean.length < 5) {
+      setUsernameStatus({ state: 'invalid', message: 'Username must be at least 5 characters' })
+      return
+    }
+    if (!/^[a-zA-Z0-9_]+$/.test(clean)) {
+      setUsernameStatus({ state: 'invalid', message: 'Only a-z, 0-9, and underscores allowed' })
+      return
+    }
+
+    setUsernameStatus({ state: 'checking', message: 'Checking username…' })
+    const timer = setTimeout(async () => {
+      try {
+        const res = await call<{ status: string, message?: string }>('chats.checkUsername', { username: clean })
+        if (res.status === 'available') {
+          setUsernameStatus({ state: 'available', message: `@${clean} is available` })
+        } else if (res.status === 'occupied') {
+          setUsernameStatus({ state: 'occupied', message: `@${clean} is already taken` })
+        } else if (res.status === 'too_many') {
+          setUsernameStatus({ state: 'too_many', message: 'Maximum public channels limit reached' })
+        } else {
+          setUsernameStatus({ state: 'invalid', message: res.message || 'Username unavailable' })
+        }
+      } catch (e: any) {
+        setUsernameStatus({ state: 'error', message: e.message || 'Error checking username' })
+      }
+    }, 450)
+
+    return () => clearTimeout(timer)
+  }, [username, isPublic])
+
+  const handlePickPhoto = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setAvatarFile(file)
+    setAvatarPreview(URL.createObjectURL(file))
+  }
+
+  const handleRemovePhoto = () => {
+    if (avatarPreview) URL.revokeObjectURL(avatarPreview)
+    setAvatarFile(null)
+    setAvatarPreview(null)
+    if (photoInputRef.current) photoInputRef.current.value = ''
+  }
+
+  const resetState = () => {
+    setTitle('')
+    setDescription('')
+    setIsPublic(false)
+    setUsername('')
+    setUsernameStatus({ state: 'idle' })
+    handleRemovePhoto()
+    setSignMessages(false)
+    setJoinByRequest(false)
+    setIsHistoryAvailable(true)
+    setHasProtectedContent(false)
+    setShowAdvanced(false)
+    setError('')
+    setBusy(false)
+  }
+
+  const handleClose = () => {
+    resetState()
+    onClose()
+  }
+
+  const handleSubmit = async () => {
+    if (!title.trim() || busy) return
+    if (isPublic) {
+      if (!username.trim() || usernameStatus.state !== 'available') {
+        setError('Please enter a valid, available username or select Private.')
+        return
+      }
+    }
+
+    setBusy(true)
+    setError('')
+
+    try {
+      let photoPath: string | undefined
+      if (avatarFile) {
+        const paths = await uploadPaths([avatarFile])
+        photoPath = paths[0]
+      }
+
+      const res = await call<any>('chats.create', {
+        kind,
+        title: title.trim(),
+        description: description.trim() || undefined,
+        isPublic,
+        username: isPublic ? username.replace(/^@/, '').trim() : undefined,
+        photoPath,
+        signMessages: kind === 'channel' ? signMessages : undefined,
+        joinByRequest,
+        isHistoryAvailable: kind === 'group' ? isHistoryAvailable : undefined,
+        hasProtectedContent,
+      })
+
+      toast(`Created ${kind === 'channel' ? 'Channel' : 'Group'} "${title.trim()}"`, 'success')
+      resetState()
+      onClose()
+      onSuccess?.(res.id)
+    } catch (err: any) {
+      setError(err?.message || `Failed to create ${kind}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (!open) return null
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-md select-none animate-in fade-in duration-150"
+      onClick={handleClose}
+    >
+      <div
+        className="w-full max-w-lg rounded-2xl border border-border/80 bg-panel shadow-2xl overflow-hidden flex flex-col max-h-[92vh] animate-in fade-in zoom-in-95 duration-150"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-border bg-tile/40">
+          <div className="flex items-center gap-2.5">
+            <div className="flex size-9 items-center justify-center rounded-xl bg-primary/15 text-primary border border-primary/25">
+              {kind === 'channel' ? <Megaphone size={18} /> : <Users size={18} />}
+            </div>
+            <div>
+              <h2 className="text-[15.5px] font-bold text-text leading-tight">
+                Create {kind === 'channel' ? 'Channel' : 'Group'}
+              </h2>
+              <p className="text-[11.5px] text-muted leading-tight mt-0.5">
+                {kind === 'channel' ? 'Broadcast messages to an unlimited audience' : 'Collaborative chat with members and discussions'}
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={handleClose}
+            className="flex size-7 items-center justify-center rounded-lg text-muted hover:bg-tile hover:text-text transition-colors cursor-pointer"
+            title="Close"
+          >
+            <X size={16} />
+          </button>
+        </div>
+
+        {/* Scrollable Body */}
+        <div className="flex-1 overflow-y-auto p-6 space-y-5 [scrollbar-gutter:stable]">
+          {/* Chat Type Segmented Switch */}
+          <div>
+            <label className="block text-[12px] font-semibold text-text-2 mb-2">Type</label>
+            <div className="grid grid-cols-2 gap-2 p-1 rounded-xl bg-tile border border-border">
+              <button
+                type="button"
+                onClick={() => setKind('channel')}
+                className={`flex items-center justify-center gap-2 py-2 rounded-lg text-[13px] font-medium transition-all cursor-pointer ${
+                  kind === 'channel'
+                    ? 'bg-primary text-white shadow-xs'
+                    : 'text-text-2 hover:text-text hover:bg-panel/50'
+                }`}
+              >
+                <Megaphone size={15} />
+                <span>Channel</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setKind('group')}
+                className={`flex items-center justify-center gap-2 py-2 rounded-lg text-[13px] font-medium transition-all cursor-pointer ${
+                  kind === 'group'
+                    ? 'bg-primary text-white shadow-xs'
+                    : 'text-text-2 hover:text-text hover:bg-panel/50'
+                }`}
+              >
+                <Users size={15} />
+                <span>Group</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Profile Photo / Avatar Picker with Live Preview */}
+          <div className="flex items-center gap-4 p-3 rounded-xl border border-border/60 bg-tile/30">
+            <input
+              ref={photoInputRef}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={handlePickPhoto}
+            />
+            <div className="relative group shrink-0">
+              {avatarPreview ? (
+                <img
+                  src={avatarPreview}
+                  alt="Avatar preview"
+                  className="size-16 rounded-full object-cover border-2 border-primary/50 shadow-md"
+                />
+              ) : (
+                <div
+                  onClick={() => photoInputRef.current?.click()}
+                  className="size-16 rounded-full bg-tile border-2 border-dashed border-border hover:border-primary flex flex-col items-center justify-center cursor-pointer transition-colors text-muted hover:text-primary group"
+                  title="Upload photo"
+                >
+                  <Camera size={20} className="group-hover:scale-110 transition-transform" />
+                  <span className="text-[9.5px] font-medium mt-1">Photo</span>
+                </div>
+              )}
+            </div>
+
+            <div className="flex-1 min-w-0">
+              <div className="text-[13px] font-semibold text-text">
+                {kind === 'channel' ? 'Channel Icon' : 'Group Avatar'}
+              </div>
+              <p className="text-[11.5px] text-muted mt-0.5">
+                PNG, JPG, or WEBP up to 5 MB
+              </p>
+              <div className="flex items-center gap-2 mt-2">
+                <Button
+                  variant="secondary"
+                  className="px-3 py-1 text-[11.5px]"
+                  onClick={() => photoInputRef.current?.click()}
+                >
+                  <Camera size={12} />
+                  <span>{avatarPreview ? 'Change' : 'Choose Photo'}</span>
+                </Button>
+                {avatarPreview && (
+                  <Button
+                    variant="danger"
+                    className="px-2.5 py-1 text-[11.5px]"
+                    onClick={handleRemovePhoto}
+                    title="Remove selected photo"
+                  >
+                    <Trash2 size={12} />
+                    <span>Remove</span>
+                  </Button>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Title & Description Fields */}
+          <div className="space-y-3">
+            <div>
+              <label className="block text-[12px] font-semibold text-text-2 mb-1.5">
+                {kind === 'channel' ? 'Channel Name' : 'Group Name'} <span className="text-danger">*</span>
+              </label>
+              <input
+                type="text"
+                maxLength={128}
+                placeholder={kind === 'channel' ? 'e.g. Daily Tech Highlights' : 'e.g. Media Enthusiasts'}
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                className="w-full rounded-xl border border-border bg-tile px-3.5 py-2 text-[13.5px] text-text placeholder:text-muted focus:border-primary outline-none transition-colors"
+              />
+            </div>
+
+            <div>
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="text-[12px] font-semibold text-text-2">Description</label>
+                <span className="text-[11px] text-muted font-mono">{description.length}/255</span>
+              </div>
+              <textarea
+                rows={2}
+                maxLength={255}
+                placeholder="What is this channel or group about? (optional)"
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                className="w-full rounded-xl border border-border bg-tile px-3.5 py-2 text-[13px] text-text placeholder:text-muted focus:border-primary outline-none transition-colors resize-none"
+              />
+            </div>
+          </div>
+
+          {/* Public vs Private Mode Toggle */}
+          <div className="space-y-3 rounded-xl border border-border p-3.5 bg-tile/20">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-[13px] font-semibold text-text flex items-center gap-1.5">
+                  {isPublic ? <Globe size={15} className="text-primary" /> : <Lock size={15} className="text-muted" />}
+                  <span>{isPublic ? 'Public' : 'Private'} {kind === 'channel' ? 'Channel' : 'Group'}</span>
+                </div>
+                <p className="text-[11.5px] text-muted mt-0.5">
+                  {isPublic
+                    ? 'Anyone can find and join via Telegram search or custom link.'
+                    : 'People can only join if invited or by using an invite link.'}
+                </p>
+              </div>
+              <Toggle checked={isPublic} onChange={setIsPublic} />
+            </div>
+
+            {/* Public Username Input with Real-time TDLib Pre-Check */}
+            {isPublic && (
+              <div className="pt-2 border-t border-border/60 space-y-2">
+                <label className="block text-[12px] font-semibold text-text-2">
+                  Permanent Public Link
+                </label>
+                <div className="relative">
+                  <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-muted text-[13px] font-mono select-none">
+                    t.me/
+                  </span>
+                  <input
+                    type="text"
+                    maxLength={32}
+                    placeholder="custom_username"
+                    value={username}
+                    onChange={(e) => setUsername(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, ''))}
+                    className="w-full rounded-xl border border-border bg-tile pl-15 pr-10 py-2 text-[13px] font-mono text-text placeholder:text-muted focus:border-primary outline-none transition-colors"
+                  />
+                  <div className="absolute right-3 top-1/2 -translate-y-1/2">
+                    {usernameStatus.state === 'checking' && (
+                      <Loader2 size={16} className="animate-spin text-primary" />
+                    )}
+                    {usernameStatus.state === 'available' && (
+                      <CheckCircle2 size={16} className="text-success" />
+                    )}
+                    {(usernameStatus.state === 'occupied' || usernameStatus.state === 'invalid' || usernameStatus.state === 'too_many' || usernameStatus.state === 'error') && (
+                      <AlertCircle size={16} className="text-danger" />
+                    )}
+                  </div>
+                </div>
+
+                {/* Status Message Badge */}
+                {usernameStatus.message && (
+                  <div
+                    className={`text-[11.5px] font-medium flex items-center gap-1.5 pt-0.5 ${
+                      usernameStatus.state === 'available'
+                        ? 'text-success'
+                        : usernameStatus.state === 'checking'
+                        ? 'text-muted'
+                        : 'text-danger'
+                    }`}
+                  >
+                    <span>{usernameStatus.message}</span>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Advanced Creation Options */}
+          <div className="border-t border-border/60 pt-3">
+            <button
+              type="button"
+              onClick={() => setShowAdvanced(!showAdvanced)}
+              className="flex items-center justify-between w-full text-[12.5px] font-semibold text-text-2 hover:text-text transition-colors cursor-pointer select-none py-1"
+            >
+              <span className="flex items-center gap-2">
+                <Sliders size={14} className="text-primary" />
+                <span>Advanced Settings</span>
+              </span>
+              <ChevronDown
+                size={15}
+                className={`transition-transform duration-200 ${showAdvanced ? 'rotate-180 text-primary' : 'text-muted'}`}
+              />
+            </button>
+
+            {showAdvanced && (
+              <div className="mt-3 space-y-3.5 p-3.5 rounded-xl border border-border bg-tile/10 animate-in fade-in duration-150">
+                {kind === 'channel' && (
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className="text-[12.5px] font-medium text-text">Sign Messages</div>
+                      <div className="text-[11px] text-muted">Add the name of the posting administrator to posts</div>
+                    </div>
+                    <Toggle checked={signMessages} onChange={setSignMessages} />
+                  </div>
+                )}
+
+                {kind === 'group' && (
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className="text-[12.5px] font-medium text-text">Chat History for New Members</div>
+                      <div className="text-[11px] text-muted">New members can see past messages when joining</div>
+                    </div>
+                    <Toggle checked={isHistoryAvailable} onChange={setIsHistoryAvailable} />
+                  </div>
+                )}
+
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-[12.5px] font-medium text-text">Require Admin Approval</div>
+                    <div className="text-[11px] text-muted">New members must be approved by an administrator</div>
+                  </div>
+                  <Toggle checked={joinByRequest} onChange={setJoinByRequest} />
+                </div>
+
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-[12.5px] font-medium text-text">Restrict Saving Content</div>
+                    <div className="text-[11px] text-muted">Prevent members from copying, saving or forwarding media</div>
+                  </div>
+                  <Toggle checked={hasProtectedContent} onChange={setHasProtectedContent} />
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Error Banner */}
+          {error && (
+            <div role="alert" className="flex items-center gap-2 p-3 rounded-xl bg-danger/15 border border-danger/30 text-danger text-[12.5px] font-medium">
+              <AlertCircle size={16} className="shrink-0" />
+              <span>{error}</span>
+            </div>
+          )}
+        </div>
+
+        {/* Footer Actions */}
+        <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-border bg-tile/40">
+          <Button variant="secondary" onClick={handleClose} disabled={busy}>
+            Cancel
+          </Button>
+          <Button
+            variant="primary"
+            busy={busy}
+            disabled={Boolean(!title.trim() || (isPublic && usernameStatus.state !== 'available'))}
+            onClick={handleSubmit}
+            className="px-5 font-semibold"
+          >
+            Create {kind === 'channel' ? 'Channel' : 'Group'}
+          </Button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/** Manage Channel or Group Settings Modal with title, description, avatar, link, permissions and slow mode */
+export function ManageChatSettingsModal({
+  open,
+  chatId,
+  onClose,
+  onUpdated,
+}: {
+  open: boolean
+  chatId: number | null
+  onClose: () => void
+  onUpdated?: () => void
+}) {
+  const [loading, setLoading] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const [settings, setSettings] = useState<ChatSettings | null>(null)
+
+  // Editable fields
+  const [title, setTitle] = useState('')
+  const [description, setDescription] = useState('')
+  const [isPublic, setIsPublic] = useState(true)
+  const [username, setUsername] = useState('')
+  const [slowModeDelay, setSlowModeDelay] = useState<number>(0)
+  const [signMessages, setSignMessages] = useState(false)
+  const [joinByRequest, setJoinByRequest] = useState(false)
+  const [isHistoryAvailable, setIsHistoryAvailable] = useState(true)
+  const [hasProtectedContent, setHasProtectedContent] = useState(false)
+  const [permissions, setPermissions] = useState<ChatSettings['permissions'] | undefined>(undefined)
+
+  // Avatar change/remove
+  const [avatarFile, setAvatarFile] = useState<File | null>(null)
+  const [avatarPreview, setAvatarPreview] = useState<string | null>(null)
+  const [removePhoto, setRemovePhoto] = useState(false)
+  const photoInputRef = useRef<HTMLInputElement>(null)
+
+  // Username validation state
+  const [usernameStatus, setUsernameStatus] = useState<{
+    state: 'idle' | 'checking' | 'available' | 'occupied' | 'invalid' | 'error'
+    message?: string
+  }>({ state: 'idle' })
+
+  // Active Tab: individual tabs with generous spacing
+  const [activeTab, setActiveTab] = useState<'general' | 'type_link' | 'controls' | 'permissions'>('general')
+  const [copiedLink, setCopiedLink] = useState(false)
+  const [showDeleteModal, setShowDeleteModal] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+
+  // Load chat settings when opened
+  useEffect(() => {
+    if (!open || !chatId) {
+      setSettings(null)
+      return
+    }
+    setLoading(true)
+    setError('')
+    setRemovePhoto(false)
+    setAvatarFile(null)
+    setAvatarPreview(null)
+
+    call<any>('chats.getSettings', { chatId })
+      .then((res) => {
+        const s = (res?.settings ?? res) as ChatSettings
+        setSettings(s)
+        setTitle(s?.title || '')
+        setDescription(s?.description || '')
+        const uname = s?.username || ''
+        setUsername(uname)
+        setIsPublic(Boolean(s?.isPublic || uname))
+        setSlowModeDelay(s?.slowModeDelay || 0)
+        setSignMessages(s?.signMessages || false)
+        setJoinByRequest(s?.joinByRequest || false)
+        setIsHistoryAvailable(s?.isHistoryAvailable ?? true)
+        setHasProtectedContent(s?.hasProtectedContent || false)
+        setPermissions(s?.permissions)
+      })
+      .catch((e) => setError(e?.message || 'Failed to load chat settings'))
+      .finally(() => setLoading(false))
+  }, [open, chatId])
+
+  // Debounce username check if username changes from original
+  useEffect(() => {
+    if (!isPublic || !settings || !username.trim() || username.trim() === (settings.username || '')) {
+      setUsernameStatus({ state: 'idle' })
+      return
+    }
+    const clean = username.replace(/^@/, '').trim()
+    if (clean.length < 5) {
+      setUsernameStatus({ state: 'invalid', message: 'Username must be at least 5 characters' })
+      return
+    }
+    setUsernameStatus({ state: 'checking', message: 'Checking availability…' })
+    const timer = setTimeout(async () => {
+      try {
+        const res = await call<{ status: string, message?: string }>('chats.checkUsername', { username: clean })
+        if (res.status === 'available') {
+          setUsernameStatus({ state: 'available', message: `@${clean} is available` })
+        } else if (res.status === 'occupied') {
+          setUsernameStatus({ state: 'occupied', message: `@${clean} is already taken` })
+        } else {
+          setUsernameStatus({ state: 'invalid', message: res.message || 'Invalid username' })
+        }
+      } catch (e: any) {
+        setUsernameStatus({ state: 'error', message: e.message || 'Error checking username' })
+      }
+    }, 450)
+    return () => clearTimeout(timer)
+  }, [username, isPublic, settings])
+
+  const handlePickPhoto = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setAvatarFile(file)
+    setAvatarPreview(URL.createObjectURL(file))
+    setRemovePhoto(false)
+  }
+
+  const handleRemoveExistingPhoto = () => {
+    setRemovePhoto(true)
+    setAvatarFile(null)
+    if (avatarPreview) URL.revokeObjectURL(avatarPreview)
+    setAvatarPreview(null)
+  }
+
+  const handleCopyInviteLink = () => {
+    if (!settings?.inviteLink) return
+    navigator.clipboard.writeText(settings.inviteLink)
+    setCopiedLink(true)
+    setTimeout(() => setCopiedLink(false), 2000)
+  }
+
+  const handleSave = async () => {
+    if (!chatId || !title.trim() || busy) return
+    if (isPublic && username.trim() && username !== (settings?.username || '') && usernameStatus.state !== 'available') {
+      setError('Please resolve the username conflict before saving.')
+      return
+    }
+
+    setBusy(true)
+    setError('')
+
+    try {
+      let photoPath: string | undefined
+      if (avatarFile) {
+        const paths = await uploadPaths([avatarFile])
+        photoPath = paths[0]
+      }
+
+      const cleanUsername = isPublic && username.trim() ? username.replace(/^@/, '').trim() : ''
+
+      await call('chats.updateSettings', {
+        chatId,
+        title: title.trim(),
+        description: description.trim(),
+        username: cleanUsername,
+        photoPath,
+        removePhoto: removePhoto ? true : undefined,
+        slowModeDelay: settings?.kind === 'group' ? slowModeDelay : undefined,
+        signMessages: settings?.kind === 'channel' ? signMessages : undefined,
+        joinByRequest,
+        isHistoryAvailable: settings?.kind === 'group' ? isHistoryAvailable : undefined,
+        hasProtectedContent,
+        permissions: settings?.kind === 'group' ? permissions : undefined,
+      })
+
+      toast('Chat settings updated successfully', 'success')
+      onUpdated?.()
+      onClose()
+    } catch (err: any) {
+      setError(err?.message || 'Failed to update chat settings')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const handleDeleteChat = async () => {
+    if (!chatId) return
+    setDeleting(true)
+    try {
+      await call('chats.delete', { chatId })
+      toast(`Deleted ${settings?.kind === 'channel' ? 'channel' : 'group'} "${settings?.title}"`, 'info')
+      setShowDeleteModal(false)
+      onClose()
+      onUpdated?.()
+    } catch (err: any) {
+      toast(err?.message || 'Failed to delete chat', 'danger')
+    } finally {
+      setDeleting(false)
+    }
+  }
+
+  if (!open) return null
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-md select-none animate-in fade-in duration-150"
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-lg rounded-2xl border border-border/80 bg-panel shadow-2xl overflow-hidden flex flex-col max-h-[92vh] animate-in fade-in zoom-in-95 duration-150"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-border bg-tile/40">
+          <div className="flex items-center gap-2.5">
+            <div className="flex size-9 items-center justify-center rounded-xl bg-primary/15 text-primary border border-primary/25">
+              <Settings size={18} />
+            </div>
+            <div>
+              <h2 className="text-[15.5px] font-bold text-text leading-tight">
+                Manage {settings?.kind === 'channel' ? 'Channel' : 'Group'}
+              </h2>
+              <p className="text-[11.5px] text-muted leading-tight mt-0.5">
+                {settings?.title || 'Loading settings…'}
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="flex size-7 items-center justify-center rounded-lg text-muted hover:bg-tile hover:text-text transition-colors cursor-pointer"
+            title="Close"
+          >
+            <X size={16} />
+          </button>
+        </div>
+
+        {/* Tab Navigation - Spacious individual tabs */}
+        <div className="flex items-center gap-6 px-6 pt-3 border-b border-border bg-panel/60 overflow-x-auto">
+          <button
+            type="button"
+            onClick={() => setActiveTab('general')}
+            className={`pb-2.5 px-0.5 text-[13px] font-semibold border-b-2 transition-all cursor-pointer shrink-0 ${
+              activeTab === 'general' ? 'border-primary text-primary' : 'border-transparent text-text-2 hover:text-text'
+            }`}
+          >
+            General
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('type_link')}
+            className={`pb-2.5 px-0.5 text-[13px] font-semibold border-b-2 transition-all cursor-pointer shrink-0 ${
+              activeTab === 'type_link' ? 'border-primary text-primary' : 'border-transparent text-text-2 hover:text-text'
+            }`}
+          >
+            {settings?.kind === 'channel' ? 'Channel Type & Link' : 'Group Type & Link'}
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('controls')}
+            className={`pb-2.5 px-0.5 text-[13px] font-semibold border-b-2 transition-all cursor-pointer shrink-0 ${
+              activeTab === 'controls' ? 'border-primary text-primary' : 'border-transparent text-text-2 hover:text-text'
+            }`}
+          >
+            Controls
+          </button>
+          {settings?.kind === 'group' && (
+            <button
+              type="button"
+              onClick={() => setActiveTab('permissions')}
+              className={`pb-2.5 px-0.5 text-[13px] font-semibold border-b-2 transition-all cursor-pointer shrink-0 ${
+                activeTab === 'permissions' ? 'border-primary text-primary' : 'border-transparent text-text-2 hover:text-text'
+              }`}
+            >
+              Member Rights
+            </button>
+          )}
+        </div>
+
+        {/* Body */}
+        <div className="flex-1 overflow-y-auto p-6 space-y-5 [scrollbar-gutter:stable]">
+          {loading ? (
+            <div className="py-16 flex flex-col items-center justify-center text-muted gap-3">
+              <Loader2 size={28} className="animate-spin text-primary" />
+              <span className="text-[13px]">Loading settings from Telegram…</span>
+            </div>
+          ) : (
+            <>
+              {/* TAB 1: General Info */}
+              {activeTab === 'general' && (
+                <div className="space-y-4">
+                  {/* Photo row */}
+                  <div className="flex items-center gap-4 p-3 rounded-xl border border-border/60 bg-tile/30">
+                    <input
+                      ref={photoInputRef}
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={handlePickPhoto}
+                    />
+                    <div className="relative shrink-0">
+                      {avatarPreview ? (
+                        <img
+                          src={avatarPreview}
+                          alt="Avatar preview"
+                          className="size-16 rounded-full object-cover border-2 border-primary/50 shadow-md"
+                        />
+                      ) : removePhoto ? (
+                        <div className="size-16 rounded-full bg-tile border border-border flex items-center justify-center text-muted text-xs">
+                          No Photo
+                        </div>
+                      ) : (
+                        <Avatar src={settings?.photo || null} name={title || 'Chat'} size={64} />
+                      )}
+                    </div>
+
+                    <div className="flex-1 min-w-0">
+                      <div className="text-[13px] font-semibold text-text">
+                        {settings?.kind === 'channel' ? 'Channel Photo' : 'Group Photo'}
+                      </div>
+                      <div className="flex items-center gap-2 mt-2">
+                        <Button
+                          variant="secondary"
+                          className="px-3 py-1 text-[11.5px]"
+                          onClick={() => photoInputRef.current?.click()}
+                        >
+                          <Camera size={12} />
+                          <span>Change Photo</span>
+                        </Button>
+                        {(settings?.photo || avatarPreview) && !removePhoto && (
+                          <Button
+                            variant="danger"
+                            className="px-2.5 py-1 text-[11.5px]"
+                            onClick={handleRemoveExistingPhoto}
+                          >
+                            <Trash2 size={12} />
+                            <span>Delete</span>
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Title */}
+                  <div>
+                    <label className="block text-[12px] font-semibold text-text-2 mb-1.5">Title</label>
+                    <input
+                      type="text"
+                      maxLength={128}
+                      value={title}
+                      onChange={(e) => setTitle(e.target.value)}
+                      className="w-full rounded-xl border border-border bg-tile px-3.5 py-2 text-[13.5px] text-text focus:border-primary outline-none transition-colors"
+                    />
+                  </div>
+
+                  {/* Description */}
+                  <div>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <label className="text-[12px] font-semibold text-text-2">Description</label>
+                      <span className="text-[11px] text-muted font-mono">{description.length}/255</span>
+                    </div>
+                    <textarea
+                      rows={3}
+                      maxLength={255}
+                      value={description}
+                      onChange={(e) => setDescription(e.target.value)}
+                      className="w-full rounded-xl border border-border bg-tile px-3.5 py-2 text-[13px] text-text focus:border-primary outline-none transition-colors resize-none"
+                    />
+                  </div>
+
+                  {/* Danger Zone: Delete Channel/Group for creator */}
+                  {settings?.isCreator && (
+                    <div className="pt-3 mt-2 border-t border-danger/25">
+                      <div className="flex items-center justify-between p-3 rounded-xl border border-danger/30 bg-danger/10">
+                        <div className="space-y-0.5 min-w-0 pr-3">
+                          <div className="text-[12.5px] font-semibold text-danger flex items-center gap-1.5">
+                            <Trash2 size={14} className="shrink-0" />
+                            <span>Delete {settings.kind === 'channel' ? 'Channel' : 'Group'}</span>
+                          </div>
+                          <p className="text-[11.5px] text-muted">
+                            Permanently delete this {settings.kind} and all its messages. This cannot be undone.
+                          </p>
+                        </div>
+                        <Button
+                          variant="danger"
+                          disabled={busy || loading}
+                          onClick={() => setShowDeleteModal(true)}
+                          className="px-3.5 py-1.5 text-[12px] font-semibold bg-danger text-white hover:bg-danger/90 shadow-sm cursor-pointer shrink-0"
+                        >
+                          Delete {settings.kind === 'channel' ? 'Channel' : 'Group'}
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* TAB 2: Channel/Group Type & Link */}
+              {activeTab === 'type_link' && (
+                <div className="space-y-4">
+                  {/* Public vs Private Mode Toggle */}
+                  <div className="space-y-3 rounded-xl border border-border p-3.5 bg-tile/20">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <div className="text-[13px] font-semibold text-text flex items-center gap-1.5">
+                          {isPublic ? <Globe size={15} className="text-primary" /> : <Lock size={15} className="text-muted" />}
+                          <span>{isPublic ? 'Public' : 'Private'} {settings?.kind === 'channel' ? 'Channel' : 'Group'}</span>
+                        </div>
+                        <p className="text-[11.5px] text-muted mt-0.5">
+                          {isPublic
+                            ? 'Anyone can find and join via Telegram search or custom link.'
+                            : 'People can only join if invited or by using an invite link.'}
+                        </p>
+                      </div>
+                      <Toggle checked={isPublic} onChange={setIsPublic} />
+                    </div>
+
+                    {/* Public Username Input with Real-time TDLib Pre-Check */}
+                    {isPublic && (
+                      <div className="pt-2 border-t border-border/60 space-y-2">
+                        <label className="block text-[12px] font-semibold text-text-2">
+                          Permanent Public Link (@username)
+                        </label>
+                        <div className="relative">
+                          <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-muted text-[13px] font-mono select-none">
+                            t.me/
+                          </span>
+                          <input
+                            type="text"
+                            maxLength={32}
+                            placeholder="custom_username"
+                            value={username}
+                            onChange={(e) => setUsername(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, ''))}
+                            className="w-full rounded-xl border border-border bg-tile pl-15 pr-10 py-2 text-[13px] font-mono text-text placeholder:text-muted focus:border-primary outline-none transition-colors"
+                          />
+                          <div className="absolute right-3 top-1/2 -translate-y-1/2">
+                            {usernameStatus.state === 'checking' && (
+                              <Loader2 size={16} className="animate-spin text-primary" />
+                            )}
+                            {usernameStatus.state === 'available' && (
+                              <CheckCircle2 size={16} className="text-success" />
+                            )}
+                            {(usernameStatus.state === 'occupied' || usernameStatus.state === 'invalid' || usernameStatus.state === 'error') && (
+                              <AlertCircle size={16} className="text-danger" />
+                            )}
+                          </div>
+                        </div>
+                        {usernameStatus.message && (
+                          <div
+                            className={`text-[11.5px] font-medium pt-0.5 ${
+                              usernameStatus.state === 'available'
+                                ? 'text-success'
+                                : usernameStatus.state === 'checking'
+                                ? 'text-muted'
+                                : 'text-danger'
+                            }`}
+                          >
+                            {usernameStatus.message}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Private / Permanent Invite Link */}
+                  {settings?.inviteLink && (
+                    <div className="p-3.5 rounded-xl border border-border bg-tile/20 space-y-2">
+                      <label className="block text-[12.5px] font-semibold text-text flex items-center gap-1.5">
+                        <Lock size={15} className="text-muted" />
+                        <span>Invite Link</span>
+                      </label>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="text"
+                          readOnly
+                          value={settings.inviteLink}
+                          className="flex-1 rounded-xl border border-border bg-tile px-3 py-2 text-[12.5px] font-mono text-muted select-all outline-none"
+                        />
+                        <Button
+                          variant="secondary"
+                          className="px-3 py-2 text-[12px] shrink-0"
+                          onClick={handleCopyInviteLink}
+                        >
+                          {copiedLink ? <Check size={14} className="text-success" /> : <Copy size={14} />}
+                          <span>{copiedLink ? 'Copied' : 'Copy'}</span>
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* TAB 3: Advanced Controls */}
+              {activeTab === 'controls' && (
+                <div className="space-y-4">
+                  {/* Slow Mode Delay - ONLY FOR GROUPS (Channels do not support slow mode in TDLib) */}
+                  {settings?.kind === 'group' && (
+                    <div className="p-3.5 rounded-xl border border-border bg-tile/20 space-y-2">
+                      <label className="block text-[12.5px] font-semibold text-text flex items-center gap-1.5">
+                        <Gauge size={15} className="text-primary" />
+                        <span>Slow Mode Delay</span>
+                      </label>
+                      <p className="text-[11.5px] text-muted">
+                        Members can only send one message per delay interval.
+                      </p>
+                      <Select
+                        value={slowModeDelay}
+                        onChange={(v) => setSlowModeDelay(Number(v))}
+                        options={[
+                          { value: 0, label: 'Off' },
+                          { value: 10, label: '10 seconds' },
+                          { value: 30, label: '30 seconds' },
+                          { value: 60, label: '1 minute' },
+                          { value: 300, label: '5 minutes' },
+                          { value: 900, label: '15 minutes' },
+                          { value: 3600, label: '1 hour' },
+                        ]}
+                        className="w-full"
+                      />
+                    </div>
+                  )}
+
+                  {/* Advanced Feature Toggles */}
+                  <div className="p-3.5 rounded-xl border border-border bg-tile/20 space-y-3.5">
+                    {settings?.kind === 'channel' && (
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <div className="text-[12.5px] font-medium text-text">Sign Messages</div>
+                          <div className="text-[11px] text-muted">Include admin author names on posts</div>
+                        </div>
+                        <Toggle checked={signMessages} onChange={setSignMessages} />
+                      </div>
+                    )}
+
+                    {settings?.kind === 'group' && (
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <div className="text-[12.5px] font-medium text-text">Chat History for New Members</div>
+                          <div className="text-[11px] text-muted">Allow new members to view older messages</div>
+                        </div>
+                        <Toggle checked={isHistoryAvailable} onChange={setIsHistoryAvailable} />
+                      </div>
+                    )}
+
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <div className="text-[12.5px] font-medium text-text">Join Requests</div>
+                        <div className="text-[11px] text-muted">Require administrator approval to join</div>
+                      </div>
+                      <Toggle checked={joinByRequest} onChange={setJoinByRequest} />
+                    </div>
+
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <div className="text-[12.5px] font-medium text-text">Restrict Saving Content</div>
+                        <div className="text-[11px] text-muted">Disable copying and forwarding messages</div>
+                      </div>
+                      <Toggle checked={hasProtectedContent} onChange={setHasProtectedContent} />
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* TAB 3: Member Permissions (Groups only) */}
+              {activeTab === 'permissions' && permissions && (
+                <div className="space-y-3 p-3.5 rounded-xl border border-border bg-tile/20">
+                  <div className="text-[13px] font-semibold text-text mb-2 flex items-center gap-1.5">
+                    <Shield size={15} className="text-primary" />
+                    <span>What can members do?</span>
+                  </div>
+
+                  {[
+                    { key: 'canSendBasicMessages', label: 'Send text messages' },
+                    { key: 'canSendPhotos', label: 'Send photos' },
+                    { key: 'canSendVideos', label: 'Send videos' },
+                    { key: 'canSendAudios', label: 'Send music and audio' },
+                    { key: 'canSendDocuments', label: 'Send files and documents' },
+                    { key: 'canAddWebPagePreviews', label: 'Add web link previews' },
+                    { key: 'canSendPolls', label: 'Send polls' },
+                    { key: 'canInviteUsers', label: 'Add other members' },
+                    { key: 'canPinMessages', label: 'Pin messages' },
+                    { key: 'canChangeInfo', label: 'Change chat info & photo' },
+                  ].map(({ key, label }) => {
+                    const checked = (permissions as any)[key] ?? true
+                    return (
+                      <label
+                        key={key}
+                        className="flex items-center justify-between py-1.5 px-1 rounded-lg hover:bg-tile/50 cursor-pointer select-none"
+                      >
+                        <span className="text-[12.5px] text-text">{label}</span>
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={(e) => {
+                            setPermissions({
+                              ...permissions,
+                              [key]: e.target.checked,
+                            })
+                          }}
+                          className="size-4 rounded accent-primary cursor-pointer"
+                        />
+                      </label>
+                    )
+                  })}
+                </div>
+              )}
+
+              {/* Error Message */}
+              {error && (
+                <div role="alert" className="flex items-center gap-2 p-3 rounded-xl bg-danger/15 border border-danger/30 text-danger text-[12.5px] font-medium">
+                  <AlertCircle size={16} className="shrink-0" />
+                  <span>{error}</span>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-border bg-tile/40">
+          <Button variant="secondary" onClick={onClose} disabled={busy}>
+            Cancel
+          </Button>
+          <Button
+            variant="primary"
+            busy={busy}
+            disabled={Boolean(loading || !(title || '').trim() || (isPublic && (username || '').trim() && username !== (settings?.username || '') && usernameStatus.state !== 'available'))}
+            onClick={handleSave}
+            className="px-5 font-semibold"
+          >
+            Save Changes
+          </Button>
+        </div>
+      </div>
+
+      {/* Delete Chat / Channel Confirmation Dialog */}
+      {showDeleteModal && (
+        <Dialog
+          open={showDeleteModal}
+          onClose={() => setShowDeleteModal(false)}
+          title={`Delete ${settings?.kind === 'channel' ? 'Channel' : 'Group'}`}
+        >
+          <div className="space-y-4">
+            <div className="flex items-start gap-3 p-3.5 rounded-xl bg-danger/10 border border-danger/25">
+              <div className="size-9 rounded-xl bg-danger/20 text-danger flex items-center justify-center shrink-0">
+                <Trash2 size={18} />
+              </div>
+              <div className="space-y-1">
+                <div className="text-[13.5px] font-semibold text-text">
+                  Permanently delete "{settings?.title}"?
+                </div>
+                <p className="text-[12px] text-muted leading-relaxed">
+                  This will delete the {settings?.kind || 'chat'} and all its messages for all members. This action cannot be undone.
+                </p>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 pt-2 border-t border-border">
+              <Button
+                variant="secondary"
+                onClick={() => setShowDeleteModal(false)}
+                className="px-4 py-1.5 text-[12.5px]"
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="danger"
+                busy={deleting}
+                onClick={handleDeleteChat}
+                className="flex items-center gap-1.5 px-4 py-1.5 text-[12.5px] font-semibold"
+              >
+                <Trash2 size={14} />
+                <span>Delete {settings?.kind === 'channel' ? 'Channel' : 'Group'}</span>
+              </Button>
+            </div>
+          </div>
+        </Dialog>
+      )}
+    </div>
+  )
+}
+

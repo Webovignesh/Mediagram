@@ -1,0 +1,628 @@
+@import "tailwindcss";
+
+/* UI.md > Design system > Color tokens */
+@theme {
+  --color-bg: #0f172a;
+  --color-sidebar: #111c35;
+  --color-panel: rgb(30 41 59 / 0.88);
+  --color-tile: #1e293b;
+  --color-border: rgb(148 163 184 / 0.18);
+  --color-primary: #3b82f6;
+  --color-primary-hover: #60a5fa;
+  --color-text: #f8fafc;
+  --color-text-2: #cbd5e1;
+  --color-muted: #94a3b8;
+  --color-success: #10b981;
+  --color-warning: #f59e0b;
+  --color-danger: #ef4444;
+  --color-upload: #a855f7;
+  --color-cyan: #38bdf8;
+  --color-pink: #f472b6;
+  --shadow-glow: 0 0 0 1px var(--color-primary), 0 0 16px color-mix(in srgb, var(--color-primary) 35%, transparent);
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+:root, [data-theme="dark"] {
+  --color-bg: #0b1329;
+  --color-sidebar: #0f172a;
+  --color-panel: rgb(17 26 48 / 0.92);
+  --color-tile: #15223e;
+  --color-border: rgb(148 163 184 / 0.18);
+  --color-text: #f8fafc;
+  --color-text-2: #cbd5e1;
+  --color-muted: #94a3b8;
+  --color-primary: #3b82f6;
+  --color-primary-hover: #60a5fa;
+  --color-cyan: #38bdf8;
+  --shadow-glow: 0 0 0 1px #3b82f6, 0 0 16px rgb(59 130 246 / 0.35);
+  --chat-bg: #070d1a;
+  --chat-gradient: radial-gradient(ellipse 95% 85% at 50% 15%, rgba(20, 36, 58, 0.5) 0%, rgba(10, 18, 30, 0.8) 60%, rgba(6, 10, 18, 0.96) 100%);
+  --chat-doodle-color: #94a3b8;
+  --chat-doodle-opacity: 0.16;
+}
+
+[data-theme="fulldark"], [data-theme="tokyo"] {
+  --color-bg: #000000;
+  --color-sidebar: #09090b;
+  --color-panel: #111113;
+  --color-tile: #17171a;
+  --color-border: rgb(255 255 255 / 0.14);
+  --color-text: #ffffff;
+  --color-text-2: #e4e4e7;
+  --color-muted: #a1a1aa;
+  --color-primary: #38bdf8;
+  --color-primary-hover: #0ea5e9;
+  --color-cyan: #38bdf8;
+  --shadow-glow: 0 0 0 1px #38bdf8, 0 0 16px rgb(56 189 248 / 0.35);
+  --chat-bg: #030303;
+  --chat-gradient: radial-gradient(ellipse 95% 85% at 50% 15%, rgba(18, 18, 20, 0.7) 0%, rgba(3, 3, 3, 0.98) 100%);
+  --chat-doodle-color: #38bdf8;
+  --chat-doodle-opacity: 0.14;
+}
+
+[data-theme="telegram"] {
+  --color-bg: #17212b;
+  --color-sidebar: #0e1621;
+  --color-panel: rgb(24 37 51 / 0.95);
+  --color-tile: #242f3d;
+  --color-border: rgb(255 255 255 / 0.12);
+  --color-text: #ffffff;
+  --color-text-2: #cbd5e1;
+  --color-muted: #94a3b8;
+  --color-primary: #5288c1;
+  --color-primary-hover: #6ba3de;
+  --color-cyan: #5288c1;
+  --shadow-glow: 0 0 0 1px #5288c1, 0 0 16px rgb(82 136 193 / 0.35);
+  --chat-bg: #0e1621;
+  --chat-gradient: radial-gradient(ellipse 95% 85% at 50% 15%, rgba(23, 33, 43, 0.7) 0%, rgba(14, 22, 33, 0.95) 100%);
+  --chat-doodle-color: #5288c1;
+  --chat-doodle-opacity: 0.18;
+}
+
+[data-theme="ocean"] {
+  --color-bg: #070e1e;
+  --color-sidebar: #0b152d;
+  --color-panel: rgb(15 28 56 / 0.92);
+  --color-tile: #16274e;
+  --color-border: rgb(56 189 248 / 0.18);
+  --color-text: #ffffff;
+  --color-text-2: #bae6fd;
+  --color-muted: #93c5fd;
+  --color-primary: #0ea5e9;
+  --color-primary-hover: #38bdf8;
+  --color-cyan: #38bdf8;
+  --shadow-glow: 0 0 0 1px #0ea5e9, 0 0 16px rgb(14 165 233 / 0.35);
+  --chat-bg: #050b17;
+  --chat-gradient: radial-gradient(ellipse 95% 85% at 50% 15%, rgba(11, 21, 45, 0.6) 0%, rgba(7, 14, 30, 0.95) 100%);
+  --chat-doodle-color: #0ea5e9;
+  --chat-doodle-opacity: 0.18;
+}
+
+[data-theme="light"] {
+  --color-bg: #f8fafc;
+  --color-sidebar: #f1f5f9;
+  --color-panel: #ffffff;
+  --color-tile: #f1f5f9;
+  --color-border: #cbd5e1;
+  --color-text: #090d16;
+  --color-text-2: #243042;
+  --color-muted: #53647d;
+  --color-primary: #0284c7;
+  --color-primary-hover: #0369a1;
+  --color-cyan: #0284c7;
+  --shadow-glow: 0 0 0 1px #0284c7, 0 2px 10px rgb(2 132 199 / 0.2);
+  --chat-bg: #e2e8f0;
+  --chat-gradient: radial-gradient(ellipse 95% 85% at 50% 15%, rgba(255, 255, 255, 0.85) 0%, rgba(235, 240, 246, 0.9) 60%, rgba(220, 227, 236, 0.98) 100%);
+  --chat-doodle-color: #475569;
+  --chat-doodle-opacity: 0.16;
+}
+
+[data-theme="cream"], [data-theme="emerald"], [data-theme="sunset"] {
+  --color-bg: #faf6ee;
+  --color-sidebar: #f3ece0;
+  --color-panel: #ffffff;
+  --color-tile: #f8f3eb;
+  --color-border: rgb(196 178 156 / 0.45);
+  --color-text: #1c1917;
+  --color-text-2: #44403c;
+  --color-muted: #78716c;
+  --color-primary: #c27803;
+  --color-primary-hover: #a16207;
+  --color-cyan: #c27803;
+  --shadow-glow: 0 0 0 1px #c27803, 0 2px 10px rgb(194 120 3 / 0.22);
+  --chat-bg: #f4ecdf;
+  --chat-gradient: radial-gradient(ellipse 95% 85% at 50% 15%, rgba(255, 252, 246, 0.95) 0%, rgba(246, 238, 227, 0.88) 60%, rgba(238, 226, 210, 0.98) 100%);
+  --chat-doodle-color: #9c8469;
+  --chat-doodle-opacity: 0.18;
+}
+
+@layer base {
+  html, body, #root { height: 100%; }
+  body {
+    margin: 0;
+    background: radial-gradient(ellipse 90% 60% at 50% 0%, color-mix(in srgb, var(--color-primary) 14%, transparent), transparent), var(--color-bg);
+    color: var(--color-text);
+    font-family: var(--font-sans);
+    font-size: 13px;
+    line-height: 1.5;
+    letter-spacing: 0.015em;
+    word-spacing: 0.03em;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: geometricPrecision;
+    transition: background-color 0.18s ease, border-color 0.18s ease, color 0.18s ease;
+  }
+  :focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
+}
+
+.bg-bg, .bg-panel, .bg-sidebar, .bg-tile {
+  transition: background-color 0.18s ease, border-color 0.18s ease, color 0.18s ease;
+}
+
+.emoji-glyph {
+  font-family: "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", "Twemoji Mozilla", sans-serif;
+  font-style: normal;
+  font-weight: normal;
+  display: inline-block;
+  line-height: 1;
+  color: initial;
+}
+
+@keyframes pulse-subtle {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.65; }
+}
+.animate-pulse-subtle {
+  animation: pulse-subtle 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+/* Enhanced Flying to Queue Animation (Hardware-accelerated 3D curve with dynamic targets) */
+@keyframes flyToQueue {
+  0% {
+    transform: translate3d(var(--fly-start-x), var(--fly-start-y), 0) translate(-50%, -50%) scale(0.4) rotate(0deg);
+    opacity: 0;
+    filter: drop-shadow(0 0 4px rgba(56, 189, 248, 0.4));
+  }
+  15% {
+    transform: translate3d(var(--fly-start-x), calc(var(--fly-start-y) - 26px), 0) translate(-50%, -50%) scale(1.25) rotate(-15deg);
+    opacity: 1;
+    filter: drop-shadow(0 0 20px rgba(56, 189, 248, 0.9));
+  }
+  50% {
+    transform: translate3d(
+      calc(var(--fly-start-x) * 0.45 + var(--fly-target-x) * 0.55),
+      calc(var(--fly-start-y) * 0.35 + var(--fly-target-y) * 0.65 - 65px),
+      0
+    ) translate(-50%, -50%) scale(1.15) rotate(-28deg);
+    opacity: 1;
+    filter: drop-shadow(0 0 26px rgba(56, 189, 248, 0.95));
+  }
+  85% {
+    transform: translate3d(
+      calc(var(--fly-start-x) * 0.08 + var(--fly-target-x) * 0.92),
+      calc(var(--fly-start-y) * 0.08 + var(--fly-target-y) * 0.92),
+      0
+    ) translate(-50%, -50%) scale(0.85) rotate(-45deg);
+    opacity: 0.95;
+    filter: drop-shadow(0 0 22px rgba(56, 189, 248, 0.9));
+  }
+  100% {
+    transform: translate3d(var(--fly-target-x), var(--fly-target-y), 0) translate(-50%, -50%) scale(0.18) rotate(-60deg);
+    opacity: 0;
+    filter: drop-shadow(0 0 32px rgba(56, 189, 248, 1));
+  }
+}
+
+.fly-to-queue-shuttle {
+  animation: flyToQueue 0.68s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  will-change: transform, opacity, filter;
+}
+
+/* Comet tail trailing behind the shuttle */
+.fly-shuttle-tail {
+  position: absolute;
+  top: 50%;
+  right: -24px;
+  width: 44px;
+  height: 12px;
+  transform: translateY(-50%) rotate(24deg);
+  background: linear-gradient(to right, rgba(56, 189, 248, 0.8), rgba(99, 102, 241, 0.4), transparent);
+  border-radius: 9999px;
+  filter: blur(3px);
+  pointer-events: none;
+}
+
+/* Dynamic sparks trailing */
+.fly-shuttle-spark {
+  position: absolute;
+  border-radius: 50%;
+  background: #38bdf8;
+  pointer-events: none;
+}
+.fly-shuttle-spark.spark-1 {
+  width: 5px;
+  height: 5px;
+  right: -14px;
+  top: 35%;
+  box-shadow: 0 0 8px #38bdf8;
+  animation: sparkFade 0.4s ease-out infinite alternate;
+}
+.fly-shuttle-spark.spark-2 {
+  width: 4px;
+  height: 4px;
+  right: -26px;
+  top: 60%;
+  box-shadow: 0 0 6px #818cf8;
+  animation: sparkFade 0.3s ease-out infinite alternate 0.1s;
+}
+
+@keyframes sparkFade {
+  0% { opacity: 0.4; transform: scale(0.8); }
+  100% { opacity: 1; transform: scale(1.3); }
+}
+
+/* Nav item impact animation */
+@keyframes queueImpactPulse {
+  0% { transform: scale(1); }
+  35% {
+    transform: scale(1.22);
+    box-shadow: 0 0 25px rgba(56, 189, 248, 0.8), inset 0 0 10px rgba(56, 189, 248, 0.5);
+  }
+  65% { transform: scale(0.96); }
+  85% { transform: scale(1.08); }
+  100% { transform: scale(1); }
+}
+
+.queue-nav-bumping {
+  animation: queueImpactPulse 0.55s cubic-bezier(0.34, 1.56, 0.64, 1) both !important;
+}
+
+@keyframes queueImpactRipple {
+  0% {
+    transform: scale(0.7);
+    opacity: 0.9;
+  }
+  100% {
+    transform: scale(2.2);
+    opacity: 0;
+  }
+}
+
+.queue-nav-ripple {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  border: 2px solid rgba(56, 189, 248, 0.85);
+  box-shadow: 0 0 16px rgba(56, 189, 248, 0.6);
+  animation: queueImpactRipple 0.65s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* Login -> dashboard hand-off transitions (inspired by Telegram Desktop & Linear) */
+@keyframes loginExit {
+  0% { opacity: 1; transform: scale(1); filter: blur(0px); }
+  100% { opacity: 0; transform: scale(0.96); filter: blur(4px); }
+}
+
+.login-exit {
+  animation: loginExit 0.45s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes loginEnter {
+  0% { opacity: 0; transform: scale(0.96) translateY(8px); filter: blur(4px); }
+  100% { opacity: 1; transform: scale(1) translateY(0); filter: blur(0px); }
+}
+
+.login-enter {
+  animation: loginEnter 0.45s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes appEnter {
+  0% { opacity: 0; }
+  100% { opacity: 1; }
+}
+
+.app-enter {
+  animation: appEnter 0.25s ease both;
+}
+
+/* The screen being left lingers over the one arriving and leaves the way it came in, so the auth
+   pipeline (splash → login → dashboard → logout → login) cross-fades instead of cutting to bg. */
+@keyframes splashEnter {
+  0% { opacity: 0; }
+  100% { opacity: 1; }
+}
+
+.splash-enter {
+  animation: splashEnter 0.25s ease both;
+}
+
+@keyframes screenExit {
+  0% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+.splash-exit,
+.logout-exit,
+.app-exit {
+  animation: screenExit 0.25s ease both;
+}
+
+@keyframes fadeEnter {
+  0% { opacity: 0; }
+  100% { opacity: 1; }
+}
+
+.fade-enter {
+  animation: fadeEnter 0.25s ease both;
+}
+
+/* The `animate-in fade-in slide-in-from-* zoom-in-95` utilities the UI was written against come from
+   tailwindcss-animate, which is not installed — so they never did anything. One keyframe reads the
+   per-class entry values, and `--tw-duration` (set by every duration-* utility) times it. */
+@keyframes twEnter {
+  from {
+    opacity: var(--tw-enter-opacity, 1);
+    translate: var(--tw-enter-translate-x, 0) var(--tw-enter-translate-y, 0);
+    scale: var(--tw-enter-scale, 1);
+  }
+}
+
+.animate-in {
+  animation-name: twEnter;
+  animation-duration: var(--tw-duration, 0.15s);
+  animation-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+  animation-fill-mode: both;
+}
+.fade-in { --tw-enter-opacity: 0; }
+.slide-in-from-top-1 { --tw-enter-translate-y: -0.25rem; }
+.slide-in-from-top-2 { --tw-enter-translate-y: -0.5rem; }
+.slide-in-from-top-3 { --tw-enter-translate-y: -0.75rem; }
+.slide-in-from-bottom-1 { --tw-enter-translate-y: 0.25rem; }
+.slide-in-from-bottom-2 { --tw-enter-translate-y: 0.5rem; }
+.slide-in-from-bottom-3 { --tw-enter-translate-y: 0.75rem; }
+.slide-in-from-left-4 { --tw-enter-translate-x: -1rem; }
+.zoom-in-95 { --tw-enter-scale: 0.95; }
+.zoom-in-90 { --tw-enter-scale: 0.90; }
+.zoom-in-75 { --tw-enter-scale: 0.75; }
+
+@keyframes pageFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.page-transition {
+  animation: pageFadeIn 0.14s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* Exit mirrors the enter shim: `animate-out fade-out slide-out-to-*` read --tw-exit-* the same way. */
+@keyframes twExit {
+  to {
+    opacity: var(--tw-exit-opacity, 0);
+    translate: var(--tw-exit-translate-x, 0) var(--tw-exit-translate-y, 0);
+    scale: var(--tw-exit-scale, 1);
+  }
+}
+
+.animate-out {
+  animation-name: twExit;
+  animation-duration: var(--tw-duration, 0.15s);
+  animation-timing-function: cubic-bezier(0.4, 0, 1, 1);
+  animation-fill-mode: both;
+}
+.fade-out { --tw-exit-opacity: 0; }
+.slide-out-to-left-4 { --tw-exit-translate-x: -1rem; }
+
+/* Login > "How to get your Telegram API credentials": a popover pinned to the right of the sign-in
+   card (which stays centred — the popover never re-flows it), dropping beneath it on narrow windows. */
+.guide-pop {
+  position: absolute;
+  left: calc(100% + 18px);
+  top: 50%;
+  translate: 0 -50%;
+  width: 330px;
+  animation: guidePopIn 0.34s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.guide-pop.is-closing { animation: guidePopOut 0.16s ease-in both; }
+
+/* The tail lands on the "View guide" row: both offsets are measured from layout boxes (offsetTop), so
+   the running entrance transform cannot skew them. */
+.guide-pop-tail {
+  position: absolute;
+  left: -7px;
+  top: var(--guide-tail-top, 50%);
+  width: 13px;
+  height: 13px;
+  rotate: 45deg;
+  background: inherit;
+  border-left: 1px solid var(--color-border);
+  border-bottom: 1px solid var(--color-border);
+  border-bottom-left-radius: 3px;
+}
+
+.guide-step { animation: guideStepIn 0.4s cubic-bezier(0.16, 1, 0.3, 1) both; }
+.guide-step:nth-child(1) { animation-delay: 0.07s; }
+.guide-step:nth-child(2) { animation-delay: 0.13s; }
+.guide-step:nth-child(3) { animation-delay: 0.19s; }
+.guide-step:nth-child(4) { animation-delay: 0.25s; }
+
+@keyframes guidePopIn {
+  from { opacity: 0; transform: translateX(22px) scale(0.96); }
+  to { opacity: 1; transform: translateX(0) scale(1); }
+}
+@keyframes guidePopOut {
+  from { opacity: 1; transform: translateX(0) scale(1); }
+  to { opacity: 0; transform: translateX(16px) scale(0.97); }
+}
+@keyframes guideStepIn {
+  from { opacity: 0; translate: 0 6px; }
+  to { opacity: 1; translate: 0 0; }
+}
+
+/* Not enough room to the right of the 420px card (the window is allowed down to 1024px): the popover
+   stacks below it instead and its tail points up at the card. */
+@media (max-width: 1160px) {
+  .guide-pop {
+    left: 50%;
+    top: calc(100% + 16px);
+    translate: -50% 0;
+    animation-name: guidePopInUp;
+  }
+  .guide-pop.is-closing { animation-name: guidePopOutUp; }
+  .guide-pop-tail {
+    left: var(--guide-tail-x, 50%);
+    top: -7px;
+    border-left: 1px solid var(--color-border);
+    border-bottom: 0;
+    border-top: 1px solid var(--color-border);
+    border-bottom-left-radius: 0;
+    border-top-left-radius: 3px;
+  }
+}
+
+@keyframes guidePopInUp {
+  from { opacity: 0; transform: translateY(16px) scale(0.97); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes guidePopOutUp {
+  from { opacity: 1; transform: translateY(0) scale(1); }
+  to { opacity: 0; transform: translateY(10px) scale(0.98); }
+}
+
+@keyframes splashPulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.05); }
+}
+
+@keyframes splashAura {
+  0%, 100% { transform: scale(0.88); opacity: 0.32; }
+  50% { transform: scale(1.26); opacity: 0.65; }
+}
+
+.splash-icon {
+  animation: splashPulse 2.2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+.splash-aura {
+  animation: splashAura 2.2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  pointer-events: none;
+}
+
+@keyframes logoutPulse {
+  0%, 100% { transform: scale(1); opacity: 0.92; }
+  50% { transform: scale(1.07); opacity: 1; filter: drop-shadow(0 0 30px rgba(239, 68, 68, 0.65)); }
+}
+
+.logout-icon {
+  animation: logoutPulse 2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+/* Logout Button layout protection: guaranteed horizontal layout */
+.btn-logout {
+  display: inline-flex !important;
+  flex-direction: row !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 8px !important;
+  white-space: nowrap !important;
+}
+
+.btn-logout > svg {
+  display: inline-block !important;
+  vertical-align: middle !important;
+  flex-shrink: 0 !important;
+}
+
+/* Window drag region */
+.drag {
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+
+.no-drag {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+/* Custom sleek scrollbar adopting active theme primary */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--color-muted) 35%, transparent);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--color-primary) 50%, transparent);
+}
+* {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--color-muted) 35%, transparent) transparent;
+}
+
+.no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+@keyframes shrinkWidth {
+  from { width: 100%; }
+  to { width: 0%; }
+}
+
+/* Telegram Iconic Chat Wallpaper with Theme-Adaptive Vector Doodle Pattern */
+.telegram-chat-wallpaper {
+  position: relative;
+  background-color: var(--chat-bg, #070c14);
+  background-image: var(--chat-gradient);
+  background-repeat: no-repeat;
+  background-size: 100% 100%;
+}
+
+.telegram-chat-wallpaper::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-color: var(--chat-doodle-color, #94a3b8);
+  opacity: var(--chat-doodle-opacity, 0.16);
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='400' viewBox='0 0 400 400' fill='none' stroke='white' stroke-width='1.25' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M35 150 C35 140 45 130 65 130 C85 130 95 145 95 155 C95 165 75 170 55 170 C40 170 35 160 35 150 Z M95 150 C105 142 115 140 115 135 M95 152 C105 155 115 160 115 165 M60 130 C60 120 55 115 50 115 M60 125 C65 118 70 118 75 125' /%3E%3Cpath d='M305 55 C305 35 320 20 320 20 C320 20 335 35 335 55 L335 75 L305 75 Z M305 70 L295 80 L305 80 M335 70 L345 80 L335 80 M320 42 A4 4 0 1 0 320 50 A4 4 0 1 0 320 42 M315 80 L320 90 L325 80' /%3E%3Cpath d='M65 52 A14 14 0 1 0 65 24 A14 14 0 1 0 65 52 Z M45 40 C53 32 77 32 85 40 C77 48 53 48 45 40' /%3E%3Cpath d='M140 152 C130 152 125 157 125 164 C125 172 135 177 155 177 C175 177 185 172 185 164 C185 157 180 152 170 152 Z M150 152 V144 H158 M140 164 A1.8 1.8 0 1 0 140 166 M152 164 A1.8 1.8 0 1 0 152 166 M164 164 A1.8 1.8 0 1 0 164 166' /%3E%3Cpath d='M275 178 Q277 158 273 143 M273 143 Q260 135 253 143 M273 143 Q267 128 263 125 M273 143 Q283 128 287 125 M273 143 Q290 135 295 145' /%3E%3Cpath d='M160 48 V28 H166 V32 H172 V28 H178 V32 H184 V28 H190 V48 Z M175 40 V48 M148 53 C148 46 158 46 163 50 C168 44 183 44 188 50 C193 46 203 48 203 53 Z' /%3E%3Cpath d='M245 42 A12 12 0 1 0 245 18 A12 12 0 1 0 245 42 Z M245 30 A5 5 0 1 0 245 20 A5 5 0 1 0 245 30 Z M245 26 A1.5 1.5 0 1 0 245 23 M245 30 A2 2 0 1 0 245 26' /%3E%3Cpath d='M45 255 C35 255 30 259 30 262 C30 265 40 268 55 268 C70 268 80 265 80 262 C80 259 75 255 65 255 Z M47 255 C47 248 63 248 63 255' /%3E%3Cpath d='M35 345 L78 360 L44 372 L36 392 L32 368 Z M44 372 L78 360' /%3E%3Cpath d='M140 250 C140 240 150 233 165 233 C180 233 190 240 190 250 C190 260 180 268 165 268 C160 268 155 270 150 273 L151 266 C144 263 140 257 140 250 Z' /%3E%3Cpath d='M335 155 C329 155 323 159 323 165 L325 180 C326 183 329 185 332 185 L337 179 L345 179 L350 185 C353 185 356 183 357 180 L359 165 C359 159 353 155 347 155 Z M341 164 H349 M345 160 V168' /%3E%3Cpath d='M235 255 H261 V273 C261 281 255 285 248 285 C241 285 235 281 235 273 Z M261 259 H268 C272 259 274 262 274 266 C274 270 272 273 268 273 H261 M231 289 H265' /%3E%3Cpath d='M140 345 V367 C138 365 134 365 131 367 C127 369 125 373 127 377 C129 381 134 383 138 381 C141 379 143 375 143 371 V353 H165 V367 C163 365 159 365 156 367 C152 369 150 373 152 377 C154 381 159 383 163 381 C166 379 168 375 168 371 V345 Z' /%3E%3Cpath d='M315 260 C310 250 296 254 296 264 C296 275 315 288 315 288 C315 288 334 275 334 264 C334 254 320 250 315 260 Z' /%3E%3Cpath d='M245 355 A15 15 0 1 0 245 325 A15 15 0 1 0 245 355 Z M245 332 V340 L251 343' /%3E%3Cpath d='M335 350 A16 16 0 1 0 335 318 A16 16 0 1 0 335 350 Z M329 330 A1.5 1.5 0 1 0 329 333 A1.5 1.5 0 1 0 329 330 Z M341 330 A1.5 1.5 0 1 0 341 333 A1.5 1.5 0 1 0 341 330 Z M328 338 C331 344 339 344 342 338' /%3E%3Cpath d='M45 95 Q50 95 50 90 Q50 95 55 95 Q50 95 50 100 Q50 95 45 95 Z' /%3E%3Cpath d='M365 105 Q370 105 370 100 Q370 105 375 105 Q370 105 370 110 Q370 105 365 105 Z' /%3E%3Cpath d='M205 185 Q210 185 210 180 Q210 185 215 185 Q210 185 210 190 Q210 185 205 185 Z' /%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='400' viewBox='0 0 400 400' fill='none' stroke='white' stroke-width='1.25' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M35 150 C35 140 45 130 65 130 C85 130 95 145 95 155 C95 165 75 170 55 170 C40 170 35 160 35 150 Z M95 150 C105 142 115 140 115 135 M95 152 C105 155 115 160 115 165 M60 130 C60 120 55 115 50 115 M60 125 C65 118 70 118 75 125' /%3E%3Cpath d='M305 55 C305 35 320 20 320 20 C320 20 335 35 335 55 L335 75 L305 75 Z M305 70 L295 80 L305 80 M335 70 L345 80 L335 80 M320 42 A4 4 0 1 0 320 50 A4 4 0 1 0 320 42 M315 80 L320 90 L325 80' /%3E%3Cpath d='M65 52 A14 14 0 1 0 65 24 A14 14 0 1 0 65 52 Z M45 40 C53 32 77 32 85 40 C77 48 53 48 45 40' /%3E%3Cpath d='M140 152 C130 152 125 157 125 164 C125 172 135 177 155 177 C175 177 185 172 185 164 C185 157 180 152 170 152 Z M150 152 V144 H158 M140 164 A1.8 1.8 0 1 0 140 166 M152 164 A1.8 1.8 0 1 0 152 166 M164 164 A1.8 1.8 0 1 0 164 166' /%3E%3Cpath d='M275 178 Q277 158 273 143 M273 143 Q260 135 253 143 M273 143 Q267 128 263 125 M273 143 Q283 128 287 125 M273 143 Q290 135 295 145' /%3E%3Cpath d='M160 48 V28 H166 V32 H172 V28 H178 V32 H184 V28 H190 V48 Z M175 40 V48 M148 53 C148 46 158 46 163 50 C168 44 183 44 188 50 C193 46 203 48 203 53 Z' /%3E%3Cpath d='M245 42 A12 12 0 1 0 245 18 A12 12 0 1 0 245 42 Z M245 30 A5 5 0 1 0 245 20 A5 5 0 1 0 245 30 Z M245 26 A1.5 1.5 0 1 0 245 23 M245 30 A2 2 0 1 0 245 26' /%3E%3Cpath d='M45 255 C35 255 30 259 30 262 C30 265 40 268 55 268 C70 268 80 265 80 262 C80 259 75 255 65 255 Z M47 255 C47 248 63 248 63 255' /%3E%3Cpath d='M35 345 L78 360 L44 372 L36 392 L32 368 Z M44 372 L78 360' /%3E%3Cpath d='M140 250 C140 240 150 233 165 233 C180 233 190 240 190 250 C190 260 180 268 165 268 C160 268 155 270 150 273 L151 266 C144 263 140 257 140 250 Z' /%3E%3Cpath d='M335 155 C329 155 323 159 323 165 L325 180 C326 183 329 185 332 185 L337 179 L345 179 L350 185 C353 185 356 183 357 180 L359 165 C359 159 353 155 347 155 Z M341 164 H349 M345 160 V168' /%3E%3Cpath d='M235 255 H261 V273 C261 281 255 285 248 285 C241 285 235 281 235 273 Z M261 259 H268 C272 259 274 262 274 266 C274 270 272 273 268 273 H261 M231 289 H265' /%3E%3Cpath d='M140 345 V367 C138 365 134 365 131 367 C127 369 125 373 127 377 C129 381 134 383 138 381 C141 379 143 375 143 371 V353 H165 V367 C163 365 159 365 156 367 C152 369 150 373 152 377 C154 381 159 383 163 381 C166 379 168 375 168 371 V345 Z' /%3E%3Cpath d='M315 260 C310 250 296 254 296 264 C296 275 315 288 315 288 C315 288 334 275 334 264 C334 254 320 250 315 260 Z' /%3E%3Cpath d='M245 355 A15 15 0 1 0 245 325 A15 15 0 1 0 245 355 Z M245 332 V340 L251 343' /%3E%3Cpath d='M335 350 A16 16 0 1 0 335 318 A16 16 0 1 0 335 350 Z M329 330 A1.5 1.5 0 1 0 329 333 A1.5 1.5 0 1 0 329 330 Z M341 330 A1.5 1.5 0 1 0 341 333 A1.5 1.5 0 1 0 341 330 Z M328 338 C331 344 339 344 342 338' /%3E%3Cpath d='M45 95 Q50 95 50 90 Q50 95 55 95 Q50 95 50 100 Q50 95 45 95 Z' /%3E%3Cpath d='M365 105 Q370 105 370 100 Q370 105 375 105 Q370 105 370 110 Q370 105 365 105 Z' /%3E%3Cpath d='M205 185 Q210 185 210 180 Q210 185 215 185 Q210 185 210 190 Q210 185 205 185 Z' /%3E%3C/svg%3E");
+  -webkit-mask-repeat: repeat;
+  mask-repeat: repeat;
+  -webkit-mask-size: 400px 400px;
+  mask-size: 400px 400px;
+  z-index: 0;
+}
+
+@keyframes emojiBounceIn {
+  0% { transform: scale(0.65) translateY(10px); opacity: 0; }
+  60% { transform: scale(1.15) translateY(-2px); opacity: 1; }
+  100% { transform: scale(1) translateY(0); opacity: 1; }
+}
+
+@keyframes emojiFloat {
+  0%, 100% { transform: translateY(0px) scale(1); }
+  50% { transform: translateY(-5px) scale(1.02); }
+}
+
+.animate-emoji-standalone {
+  animation: emojiBounceIn 0.35s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards, emojiFloat 3.6s ease-in-out infinite 0.35s;
+  will-change: transform;
+  display: inline-block;
+}
+
+/* Prevent accidental ghost image drag overlays across the app */
+img {
+  -webkit-user-drag: none;
+  user-drag: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
