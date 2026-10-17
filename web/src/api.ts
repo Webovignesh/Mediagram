@@ -46,6 +46,11 @@ export function clearCallCache() {
   callCache.clear()
 }
 
+// Global thumbnail memory cache to prevent flickering / placeholder flash across renders
+const loadedThumbUrls = new Set<string>()
+export const isThumbLoaded = (url: string | null): boolean => (url ? loadedThumbUrls.has(url) : false)
+export const markThumbLoaded = (url: string | null) => { if (url) loadedThumbUrls.add(url) }
+
 /** Hook that calls a method once on mount and refetches when the specified topics are invalidated. */
 export function useCall<T>(
   method: string,
@@ -57,9 +62,11 @@ export function useCall<T>(
     (args === null || UNCACHED.has(method)) ? undefined : (callCache.get(key) as T | undefined)
   )
   const [error, setError] = useState('')
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(() => data === undefined && args !== null)
   const [tick, setTick] = useState(0)
   const previousKey = useRef(key)
+  const dataRef = useRef(data)
+  dataRef.current = data
 
   const reload = useCallback(() => {
     setError('')
@@ -80,12 +87,19 @@ export function useCall<T>(
       setLoading(false)
       return
     }
-    // Switching to a different key (another chat, another page) must not keep showing the old answer
-    // while the new one is in flight.
-    if (!UNCACHED.has(method) && callCache.has(key)) setData(callCache.get(key) as T)
-    else if (keyChanged) setData(undefined)
+
+    if (!UNCACHED.has(method) && callCache.has(key)) {
+      setData(callCache.get(key) as T)
+      setLoading(false)
+    } else if (keyChanged) {
+      setData(undefined)
+      setLoading(true)
+    } else if (dataRef.current === undefined) {
+      setLoading(true)
+    }
+    // If key has not changed and data is already populated, keep loading false during background re-fetch
+
     setError('')
-    setLoading(true)
     let active = true
     pendingSince.current = Date.now()
     call<T>(method, args)

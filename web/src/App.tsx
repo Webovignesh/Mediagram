@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, type ReactNode } from 'react'
-import { Home, Download, Upload, ListOrdered, Settings as SettingsIcon, LogOut, PanelLeftClose, PanelLeftOpen } from 'lucide-react'
+import { Home, Download, Upload, ListOrdered, Settings as SettingsIcon, LogOut, PanelLeftClose, PanelLeftOpen, ShieldAlert, Clock, ArrowRight, Loader2 } from 'lucide-react'
 import { call, useCall, useLive, useRoute, navigate } from './api.ts'
-import { Empty, ErrorState, Badge, toast, MediagramLogo } from './ui.tsx'
+import { Empty, ErrorState, Badge, toast, MediagramLogo, Button } from './ui.tsx'
 import type { AuthState } from '../../core/shapes.ts'
 import Login from './pages/Login.tsx'
 import Overview from './pages/Overview.tsx'
@@ -168,11 +168,11 @@ function Sidebar({
 
 // The four full-screen states of the auth pipeline, and the class each one enters and exits with.
 // Leaving one and entering another is always a cross-fade of the two, never a cut.
-type Screen = 'splash' | 'logout' | 'login' | 'app'
-const ENTER: Record<Screen, string> = { splash: 'splash-enter', logout: 'fade-enter', login: 'login-enter', app: 'app-enter' }
-const EXIT: Record<Screen, string> = { splash: 'splash-exit', logout: 'logout-exit', login: 'login-exit', app: 'app-exit' }
+type Screen = 'splash' | 'logout' | 'session-expired' | 'login' | 'app'
+const ENTER: Record<Screen, string> = { splash: 'splash-enter', logout: 'fade-enter', 'session-expired': 'fade-enter', login: 'login-enter', app: 'app-enter' }
+const EXIT: Record<Screen, string> = { splash: 'splash-exit', logout: 'logout-exit', 'session-expired': 'logout-exit', login: 'login-exit', app: 'app-exit' }
 /** How long each screen's CSS exit runs (styles.css). The overlay is kept mounted for exactly this long. */
-const EXIT_MS: Record<Screen, number> = { splash: 250, logout: 250, login: 450, app: 250 }
+const EXIT_MS: Record<Screen, number> = { splash: 250, logout: 250, 'session-expired': 250, login: 450, app: 250 }
 
 // Main App with full-height sidebar and topbar inside main flex container
 export default function App() {
@@ -215,30 +215,58 @@ export default function App() {
     }
     prevConnection.current = isAuthed ? now : undefined
   }, [auth?.connection, auth?.step])
+
+  const [dismissedExpired, setDismissedExpired] = useState(false)
+  const [isExpiredActive, setIsExpiredActive] = useState(false)
+
+  useEffect(() => {
+    if ((auth as any)?.sessionExpired || auth?.step === 'session-expired') {
+      setIsExpiredActive(true)
+      setDismissedExpired(false)
+    } else if (auth?.step === 'ready') {
+      setIsExpiredActive(false)
+      setDismissedExpired(false)
+    }
+  }, [auth?.step, (auth as any)?.sessionExpired])
+
+  const wasAuthed = useRef(false)
+  useEffect(() => {
+    if (auth?.step === 'ready') {
+      wasAuthed.current = true
+    } else if (auth?.step === 'logging-out' || auth?.step === 'session-expired' || (auth as any)?.sessionExpired) {
+      wasAuthed.current = false
+    }
+  }, [auth?.step, (auth as any)?.sessionExpired])
+
   // Sustained logout state: stays active throughout the entire logout pipeline (closing sockets, wiping local
   // session, restarting with saved keys) until the phone/credentials step is fully established and stable.
   const [isLoggingOut, setIsLoggingOut] = useState(false)
   useEffect(() => {
-    if (auth?.step === 'logging-out') {
+    if (auth?.step === 'logging-out' && !(auth as any)?.sessionExpired) {
       setIsLoggingOut(true)
     } else if (isLoggingOut && (auth?.step === 'phone' || auth?.step === 'credentials')) {
       const timer = setTimeout(() => setIsLoggingOut(false), 600)
       return () => clearTimeout(timer)
     }
-  }, [auth?.step, isLoggingOut])
+  }, [auth?.step, (auth as any)?.sessionExpired, isLoggingOut])
 
-  // Which of the four full-screen states is up.
+  // Which of the full-screen states is up.
   const seenScreen = useRef(false)
-  const screen: Screen = isLoggingOut || auth?.step === 'logging-out' ? 'logout'
-    : loading || !auth || (!seenScreen.current && auth.step === 'starting') ? 'splash'
-      : auth.step !== 'ready' ? 'login' : 'app'
+  const isSessionExpired = !dismissedExpired && (isExpiredActive || Boolean((auth as any)?.sessionExpired) || auth?.step === 'session-expired')
+
+  const screen: Screen = (isLoggingOut || (auth?.step === 'logging-out' && !(auth as any)?.sessionExpired)) ? 'logout'
+    : isSessionExpired ? 'session-expired'
+    : (!seenScreen.current && (loading || !auth || auth.step === 'starting')) ? 'splash'
+      : (!auth && !seenScreen.current) ? 'splash'
+        : (auth?.step === 'starting' && wasAuthed.current) ? 'app'
+          : auth?.step !== 'ready' ? 'login' : 'app'
 
   // Every switch cross-fades: the screen being left stays mounted — on top, and inert — for the length
   // of its exit, so no transition ever cuts to the bare background before the next one fades in.
   const [leaving, setLeaving] = useState<{ screen: Screen, id: number } | null>(null)
   const lastScreen = useRef(screen)
   useEffect(() => {
-    if (screen === 'login' || screen === 'app') seenScreen.current = true
+    if (screen === 'login' || screen === 'app' || screen === 'session-expired') seenScreen.current = true
     if (lastScreen.current === screen) return
     const from = lastScreen.current
     lastScreen.current = screen
@@ -250,6 +278,16 @@ export default function App() {
     return () => clearTimeout(timer)
   }, [screen])
 
+  const mainRef = useRef<HTMLElement>(null)
+  const rawPage = route.split('?')[0] || '/overview'
+  const page = rawPage === '' || rawPage === '/' ? '/overview' : rawPage
+
+  useEffect(() => {
+    if (mainRef.current) {
+      mainRef.current.scrollTop = 0
+    }
+  }, [page])
+
   if (error) {
     return (
       <div className="flex h-full flex-col">
@@ -258,9 +296,6 @@ export default function App() {
       </div>
     )
   }
-
-  const rawPage = route.split('?')[0] || '/overview'
-  const page = rawPage === '' || rawPage === '/' ? '/overview' : rawPage
 
   const shell = (
     <div className="flex h-full w-full flex-col overflow-hidden bg-bg">
@@ -282,7 +317,7 @@ export default function App() {
           onToggleCollapse={() => setCollapsed(!collapsed)}
         />
 
-        <main className={`flex-1 min-h-0 h-full [scrollbar-gutter:stable] ${page === '/settings' ? 'overflow-hidden' : 'overflow-auto'}`}>
+        <main ref={mainRef} className={`flex-1 min-h-0 h-full [scrollbar-gutter:stable] ${page === '/settings' ? 'overflow-hidden' : 'overflow-auto'}`}>
           {page === '/overview' && <Overview />}
           {page === '/downloads' && <Downloads />}
           {page === '/uploads' && <Uploads />}
@@ -346,6 +381,65 @@ export default function App() {
                 <span className="size-1.5 rounded-full bg-primary animate-pulse" />
                 Connecting to Telegram…
               </div>
+            </div>
+          </div>
+        </div>
+      )
+    }
+    if (s === 'session-expired') {
+      const isReadyToSignIn = auth?.step === 'phone' || auth?.step === 'credentials'
+      return (
+        <div className="relative flex h-screen w-screen flex-col items-center justify-center bg-bg select-none overflow-hidden p-6">
+          <WindowDragBar />
+          <div className="relative flex w-[420px] max-w-full flex-col items-center rounded-2xl border border-border bg-panel p-8 text-center shadow-2xl shrink-0">
+            {/* Ambient amber glow */}
+            <div
+              className="absolute -top-12 size-36 rounded-full bg-amber-500/15 blur-3xl pointer-events-none"
+              aria-hidden
+            />
+
+            {/* Shield / Alert icon badge */}
+            <div className="relative mb-5 grid size-16 place-items-center rounded-2xl border border-amber-500/30 bg-amber-500/10 text-amber-500 shadow-[0_0_30px_rgba(245,158,11,0.2)]">
+              <ShieldAlert size={30} strokeWidth={2.2} />
+              <span className="absolute -bottom-1 -right-1 grid size-5 place-items-center rounded-full bg-panel border border-amber-500/40 text-amber-500">
+                <Clock size={12} strokeWidth={2.5} />
+              </span>
+            </div>
+
+            <h1 className="text-[20px] font-bold tracking-tight text-text">Session Expired</h1>
+            <p className="mt-2 text-[13px] leading-relaxed text-text-2">
+              Your Telegram session has expired or was terminated on another device.
+            </p>
+            <p className="mt-1 text-[12px] leading-relaxed text-muted">
+              Local session data was cleared for your security. Sign in again with your phone number to continue using Mediagram.
+            </p>
+
+            <div className="mt-6 w-full">
+              <Button
+                variant="primary"
+                className="w-full h-10 text-[13px] font-semibold flex items-center justify-center gap-2 shadow-lg shadow-primary/20"
+                onClick={() => {
+                  setDismissedExpired(true)
+                }}
+                disabled={!isReadyToSignIn}
+              >
+                {!isReadyToSignIn ? (
+                  <>
+                    <Loader2 size={16} className="animate-spin" />
+                    <span>Preparing sign-in…</span>
+                  </>
+                ) : (
+                  <>
+                    <span>Sign In Again</span>
+                    <ArrowRight size={16} />
+                  </>
+                )}
+              </Button>
+            </div>
+
+            <div className="mt-4 flex items-center gap-1.5 text-[11px] text-muted">
+              <span className={`size-1.5 rounded-full ${isReadyToSignIn ? 'bg-success' : 'bg-amber-500 animate-pulse'}`} />
+              <span>{isReadyToSignIn ? 'Ready to sign in' : 'Resetting session safely…'}</span>
             </div>
           </div>
         </div>

@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import { Plus, RotateCcw, Download, Folder, CheckSquare, Square, FolderOpen, FileText, MessageSquare, Play, Pause, Music, Film, LogOut, RefreshCw, AlertCircle, Clock, LayoutGrid, List, Check, Sparkles, Image as ImageIcon, Pin, PinOff, Bell, BellOff, Archive, FolderUp, ArrowLeft, SquarePen, Settings, Trash2, Eraser } from 'lucide-react'
-import { call, useCall, useTyping, useRouteQuery } from '../api.ts'
+import { call, useCall, useTyping, useRouteQuery, isThumbLoaded, markThumbLoaded } from '../api.ts'
 import { SearchInput, Chip, Select, Button, Avatar, Pill, Thumb, TypeChip, Pagination, Empty, ErrorState, OpenChatDialog, MediaPreviewModal, Dialog, fmtBytes, fmtAgo, fmtDate, fmtDuration, toast, triggerFlyToQueue, CheckDuplicatesModal, TelegramInviteModal, CreateChatModal, ManageChatSettingsModal, type DuplicateCheckResult } from '../ui.tsx'
 import { ChatView } from './ChatView.tsx'
 import { useNotifications, registerMutedChats } from '../notifications.ts'
@@ -74,7 +74,7 @@ function loadInitialGridSize(): 'md' | 'lg' | 'xl' {
   return 'md'
 }
 
-function MediaGridThumb({
+const MediaGridThumb = React.memo(function MediaGridThumb({
   thumb,
   name,
   type,
@@ -85,7 +85,6 @@ function MediaGridThumb({
   type: string
   aspectClass: string
 }) {
-  const [loaded, setLoaded] = useState(false)
   const [failed, setFailed] = useState(false)
   const ext = (name.split('.').pop() || 'FILE').toUpperCase()
 
@@ -94,6 +93,11 @@ function MediaGridThumb({
         ? thumb
         : `teleflow://thumb/${thumb}`)
     : null
+  const [loaded, setLoaded] = useState(() => isThumbLoaded(url))
+
+  useEffect(() => {
+    if (url && isThumbLoaded(url)) setLoaded(true)
+  }, [url])
 
   const getMediaIcon = () => {
     switch (type) {
@@ -129,9 +133,12 @@ function MediaGridThumb({
             draggable={false}
             loading="lazy"
             decoding="async"
-            onLoad={() => setLoaded(true)}
+            onLoad={() => {
+              markThumbLoaded(url)
+              setLoaded(true)
+            }}
             onError={() => setFailed(true)}
-            className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105 pointer-events-none"
+            className={`w-full h-full object-cover transition-transform duration-300 group-hover:scale-105 pointer-events-none ${loaded ? 'opacity-100' : 'opacity-0'}`}
           />
         </>
       ) : (
@@ -144,9 +151,9 @@ function MediaGridThumb({
       )}
     </div>
   )
-}
+})
 
-function MediaGridCard({
+const MediaGridCard = React.memo(function MediaGridCard({
   item,
   isSelected,
   selectedCount,
@@ -318,7 +325,9 @@ function MediaGridCard({
       </div>
     </div>
   )
-}
+})
+
+const EMPTY_ARGS = {}
 
 export default function Downloads() {
   const [openChat, setOpenChat] = useState(false)
@@ -437,7 +446,6 @@ export default function Downloads() {
 
   // Chat view state
   const [msgLimit, setMsgLimit] = useState(30)
-  const messagesEndRef = useRef<HTMLDivElement>(null)
 
   // Dedupe check modal state
   const [dedupeModalOpen, setDedupeModalOpen] = useState(false)
@@ -497,7 +505,7 @@ export default function Downloads() {
   const { data: authData } = useCall<any>('auth.get', undefined, ['auth'])
   const me = authData?.me
 
-  const { data: chatsData, error: chatsErr, reload: chatsReload } = useCall<{ chats: any[], folders: any[] }>('chats.list', {}, ['chats'])
+  const { data: chatsData, error: chatsErr, reload: chatsReload } = useCall<{ chats: any[], folders: any[] }>('chats.list', EMPTY_ARGS, ['chats'])
 
   // Register muted chats from chatsData
   useEffect(() => {
@@ -613,7 +621,8 @@ export default function Downloads() {
   const [enteringIds, setEnteringIds] = useState<ReadonlySet<number>>(new Set())
   const [leavingChatId, setLeavingChatId] = useState<number | null>(null)
   useEffect(() => {
-    const next = new Set<number>((chatsData?.chats ?? []).map((c: any) => c.id))
+    if (!chatsData?.chats || chatsData.chats.length === 0) return
+    const next = new Set<number>(chatsData.chats.map((c: any) => c.id))
     if (knownChatIdsRef.current === null) { knownChatIdsRef.current = next; return } // first load: no motion
     const known = knownChatIdsRef.current
     const added = [...next].filter((id) => !known.has(id))
@@ -773,7 +782,7 @@ export default function Downloads() {
       : undefined
 
   const mediaPageSize = fileViewMode === 'grid' ? 60 : 20
-  const mediaFilters = {
+  const mediaFilters = useMemo(() => ({
     chatId: activeChatId || 0,
     type: mediaType !== 'all' ? mediaType : undefined,
     duration: resolvedDuration,
@@ -782,9 +791,13 @@ export default function Downloads() {
     q: fileSearch || undefined,
     page,
     pageSize: mediaPageSize,
-  }
+  }), [activeChatId, mediaType, resolvedDuration, resolvedSize, resolvedSort, fileSearch, page, mediaPageSize])
+
   // downloads.checkDuplicates takes the same filters as chats.media, minus the fields that call carries itself.
-  const { chatId: _chatId, page: _page, pageSize: _pageSize, ...dupFilters } = mediaFilters
+  const dupFilters = useMemo(() => {
+    const { chatId: _chatId, page: _page, pageSize: _pageSize, ...rest } = mediaFilters
+    return rest
+  }, [mediaFilters])
 
   const { data: mediaData, error: mediaErr, reload: mediaReload } = useCall<{ items: any[], total: number, exts: string[], scan: { state: 'scanning' | 'failed' | 'paused' | 'done' | 'idle', indexed: number, total: number | null, error?: string } }>(
     'chats.media', activeChatId ? mediaFilters : null, activeChatId ? [`media:${activeChatId}`] : []
@@ -792,8 +805,16 @@ export default function Downloads() {
 
   const [loadingOlder, setLoadingOlder] = useState(false)
 
+  const msgArgs = useMemo(() => {
+    return activeChatId && view === 'chat' ? { chatId: activeChatId, limit: msgLimit } : null
+  }, [activeChatId, view, msgLimit])
+
+  const msgTopics = useMemo(() => {
+    return activeChatId ? [`messages:${activeChatId}`] : []
+  }, [activeChatId])
+
   const { data: msgData, error: msgErr, loading: msgLoading, reload: msgReload } = useCall<{ messages: any[], more: boolean }>(
-    'chats.messages', activeChatId && view === 'chat' ? { chatId: activeChatId, limit: msgLimit } : null, activeChatId ? [`messages:${activeChatId}`] : []
+    'chats.messages', msgArgs, msgTopics
   )
 
   useEffect(() => {
@@ -893,16 +914,7 @@ export default function Downloads() {
     setCustomDurationModalOpen(false)
   }
 
-  const scrollToBottom = (behavior: ScrollBehavior = 'smooth') => {
-    messagesEndRef.current?.scrollIntoView({ behavior })
-  }
 
-  // Only scroll to bottom when switching chats or entering chat view
-  useEffect(() => {
-    if (view === 'chat' && activeChatId) {
-      setTimeout(() => scrollToBottom('auto'), 80)
-    }
-  }, [view, activeChatId])
 
   const handleLoadOlder = () => {
     setLoadingOlder(true)
@@ -1314,6 +1326,20 @@ export default function Downloads() {
       setInviteLoading(false)
     }
   }
+
+  const handleChatDownloadItem = useCallback((item: any, force?: boolean, e?: any) => {
+    downloadItems([item], force, e)
+  }, [activeChatId])
+
+  const handleSelectChatInView = useCallback((id: number) => {
+    setChatId(id)
+    handleSetView('chat')
+    chatsReload()
+  }, [chatsReload, handleSetView])
+
+  const handleOpenManageChatSettings = useCallback(() => {
+    setManageChatId(activeChatId)
+  }, [activeChatId])
 
   return (
     <div className="flex h-full overflow-hidden">
@@ -1884,7 +1910,19 @@ export default function Downloads() {
         <div className="flex-1 overflow-y-auto p-2 space-y-1 no-scrollbar">
           {chatsErr ? (
             <ErrorState error={chatsErr} onRetry={chatsReload} />
-          ) : !chatsData ? null : (
+          ) : !chatsData ? (
+            <div className="space-y-1 p-1">
+              {Array.from({ length: 8 }).map((_, i) => (
+                <div key={i} className="flex items-center gap-3 rounded-xl py-2.5 px-3 min-h-[58px] bg-tile/40 animate-pulse">
+                  <div className="size-[38px] rounded-full bg-tile/80 shrink-0" />
+                  <div className="min-w-0 flex-1 space-y-1.5">
+                    <div className="h-3.5 bg-tile/80 rounded w-3/4" />
+                    <div className="h-2.5 bg-tile/60 rounded w-1/2" />
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
             <>
               {/* In Archive Folder header */}
               {inArchiveFolder && (
@@ -2435,7 +2473,33 @@ export default function Downloads() {
                 >
                   {mediaErr ? (
                     <ErrorState error={mediaErr} onRetry={mediaReload} />
-                  ) : !mediaData ? null : mediaItems.length === 0 ? (
+                  ) : !mediaData ? (
+                    fileViewMode === 'grid' ? (
+                      <div className={gridColsClass}>
+                        {Array.from({ length: 12 }).map((_, i) => (
+                          <div key={i} className="flex flex-col rounded-xl border border-border/50 bg-tile/40 overflow-hidden animate-pulse">
+                            <div className={`w-full ${aspectClass} bg-tile/70`} />
+                            <div className="p-2.5 space-y-2">
+                              <div className="h-3.5 bg-tile rounded w-3/4" />
+                              <div className="h-2.5 bg-tile/80 rounded w-1/2" />
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="space-y-2.5 p-2">
+                        {Array.from({ length: 10 }).map((_, i) => (
+                          <div key={i} className="flex items-center gap-3 py-2.5 px-3 rounded-lg bg-tile/30 animate-pulse">
+                            <div className="size-4 bg-tile rounded" />
+                            <div className="h-7 w-10 bg-tile rounded" />
+                            <div className="h-3.5 bg-tile rounded flex-1" />
+                            <div className="h-3.5 bg-tile rounded w-20" />
+                            <div className="h-3.5 bg-tile rounded w-20" />
+                          </div>
+                        ))}
+                      </div>
+                    )
+                  ) : mediaItems.length === 0 ? (
                     <div className="py-16 text-center">
                       <Empty message="No media files found matching the criteria" />
                       <Button variant="secondary" onClick={resetFilters} className="mt-2 text-[12px]">Reset filters</Button>
@@ -2638,16 +2702,12 @@ export default function Downloads() {
               onLoadOlder={handleLoadOlder}
               onReload={msgReload}
               onOpenViewer={setPreviewItem}
-              onDownloadItem={(item, force, e) => downloadItems([item], force, e)}
+              onDownloadItem={handleChatDownloadItem}
               onRevealFile={revealFile}
               onOpenLink={handleTelegramLink}
               activeTyping={activeTyping}
-              onSelectChat={(id) => {
-                setChatId(id)
-                handleSetView('chat')
-                chatsReload()
-              }}
-              onOpenManageSettings={() => setManageChatId(activeChatId)}
+              onSelectChat={handleSelectChatInView}
+              onOpenManageSettings={handleOpenManageChatSettings}
             />
           </div>
         )}

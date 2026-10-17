@@ -25,6 +25,8 @@ let creds: Creds | null = null
 let tdAuth: Td.AuthorizationState | null = null
 let connection: AuthState['connection'] = 'offline'
 let loggingOut = false
+let userInitiatedLogout = false
+let isSessionExpired = false
 let credError: string | undefined
 // Credentials gate: Telegram checks api_id/api_hash only while authorizing a NEW session, never when an existing
 // tdlib session resumes, so the keys that signed this session in are fingerprinted on disk (keysMatch) and compared
@@ -73,11 +75,19 @@ async function bounded<T>(promise: Promise<T>, ms: number): Promise<T> {
 
 export const init = (d: Deps) => {
   deps = d
+  userInitiatedLogout = false
+  isSessionExpired = false
   if (d.hasSavedCredentials) {
     auth = { step: 'starting', connection: 'connecting' }
   }
 }
 export const authState = () => auth
+export const clearSessionExpired = () => {
+  if (isSessionExpired) {
+    isSessionExpired = false
+    changed()
+  }
+}
 /** The keys this session is running on: the gate compares them, Settings and the ready callback keep them,
  *  and logout restarts the app with them. */
 export const credentials = (): Creds | null => creds
@@ -85,8 +95,8 @@ export const credentials = (): Creds | null => creds
 export const onUpdate = (fn: (u: Td.Update) => void) => { listeners.add(fn); return () => { listeners.delete(fn) } }
 
 function changed() {
-  const next: AuthState = client ? { connection, ...mapAuth(tdAuth, me) }
-    : { connection: 'offline', step: creds ? 'starting' : 'credentials', ...(credError && { error: credError }), ...(offerFresh && { needsFresh: true }) }
+  const next: AuthState = client ? { connection, ...mapAuth(tdAuth, me, isSessionExpired) }
+    : { connection: 'offline', step: isSessionExpired ? 'session-expired' : creds ? 'starting' : 'credentials', ...(credError && { error: credError }), ...(offerFresh && { needsFresh: true }), ...(isSessionExpired && { sessionExpired: true }) }
   if (JSON.stringify(next) === JSON.stringify(auth)) return
   if (next.step !== auth.step) log('info', `Telegram: ${next.step}`)
   auth = next
@@ -231,6 +241,7 @@ async function launch(c: Creds, fresh = false) {
   offerFresh = false
   loggingIn = false
   loggingOut = false
+  userInitiatedLogout = false
   for (const m of [chats, cache.users, cache.basicGroups, cache.supergroups]) m.clear()
   folders = []
   opened.clear()
@@ -267,6 +278,8 @@ export async function close() {
 
 /** Clear All Data: closes the client and forgets the credentials, so auth returns to the API Keys step. */
 export function reset() {
+  userInitiatedLogout = false
+  isSessionExpired = false
   const run = starting.then(async () => { await close(); creds = null; credError = undefined; offerFresh = false; changed() })
   starting = run.catch(() => {})
   return run
@@ -415,8 +428,13 @@ function onTdUpdate(cl: Client, u: Td.Update) {
   switch (u._) {
     case 'updateAuthorizationState':
       tdAuth = u.authorization_state
-      if (tdAuth._ === 'authorizationStateLoggingOut') loggingOut = true
+      if (tdAuth._ === 'authorizationStateLoggingOut') {
+        if (!userInitiatedLogout) isSessionExpired = true
+        loggingOut = true
+      }
       if (tdAuth._ === 'authorizationStateReady') {
+        isSessionExpired = false
+        userInitiatedLogout = false
         // The gate: a session resuming under keys it was never signed in with (or never recorded) is closed before
         // onReady can read a single chat. A sign-in this run completed is proof Telegram checked the pair itself.
         if (creds && !(keysMatch || loggingIn)) { void blockSession(); break }
@@ -543,6 +561,7 @@ function onTdUpdate(cl: Client, u: Td.Update) {
 // has started"), so a Continue click landing while the same number is still in flight shares that one request.
 let sending: { phone: string, done: Promise<void> } | null = null
 export const sendPhone = async (phone: string) => {
+  isSessionExpired = false
   if (sending?.phone === phone) return sending.done
   loggingIn = true
   const done = (async () => {
@@ -570,6 +589,8 @@ export const sendPassword = async (password: string) => {
 /** Logs out; with Telegram unreachable for 15 s the local session is deleted anyway (`local: true`).
  *  ponytail: the queue is kept and jobs are not tied to an account; upgrade: store me.id on jobs and pause other accounts' jobs. */
 export async function logout() {
+  userInitiatedLogout = true
+  isSessionExpired = false
   const cl = client
   if (!cl) return { local: true }
   const fresh = new Promise<void>((r) => restarted.push(r))

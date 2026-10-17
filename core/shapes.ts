@@ -13,11 +13,12 @@ type Step =
   // needsFresh: the keys could not be accounted for against the saved session, so the only way forward is a fresh
   // sign-in (wiping the local session, where Telegram really checks the keys at the code step).
   | { step: 'credentials', error?: string, needsFresh?: boolean }
-  | { step: 'phone', error?: string }
+  | { step: 'phone', error?: string, sessionExpired?: boolean }
   | { step: 'code', phone: string, via: 'telegram' | 'sms' | 'call' | 'other' }
   | { step: 'password', hint: string }
   | { step: 'ready', me: Me }
   | { step: 'logging-out' }
+  | { step: 'session-expired' }
 export type AuthState = { connection: 'ready' | 'connecting' | 'updating' | 'offline' } & Step
 export type TextEntity = {
   type: 'bold' | 'italic' | 'underline' | 'strikethrough' | 'code' | 'pre' | 'spoiler' | 'url' | 'mention' | 'botCommand' | 'custom_emoji'
@@ -201,15 +202,16 @@ const codeVia = (t: Td.AuthenticationCodeType) => t._ === 'authenticationCodeTyp
   : t._.startsWith('authenticationCodeTypeSms') ? 'sms' as const : t._ === 'authenticationCodeTypeCall' ? 'call' as const : 'other' as const
 
 /** TDLib authorization state → login step. `ready` waits for `me` (getMe), so it shows `starting` until then. */
-export function mapAuth(s: Td.AuthorizationState | null, me: Me | null): Step {
-  if (!s) return { step: 'starting' }
+export function mapAuth(s: Td.AuthorizationState | null, me: Me | null, sessionExpired = false): Step {
+  if (!s) return { step: 'starting', ...(sessionExpired && { sessionExpired: true }) }
   switch (s._) {
-    case 'authorizationStateWaitTdlibParameters': return { step: 'starting' }
-    case 'authorizationStateWaitPhoneNumber': return { step: 'phone' }
+    case 'authorizationStateWaitTdlibParameters': return { step: 'starting', ...(sessionExpired && { sessionExpired: true }) }
+    case 'authorizationStateWaitPhoneNumber': return { step: 'phone', ...(sessionExpired && { sessionExpired: true }) }
     case 'authorizationStateWaitCode': return { step: 'code', phone: `+${s.code_info.phone_number.replace(/\D/g, '')}`, via: codeVia(s.code_info.type) }
     case 'authorizationStateWaitPassword': return { step: 'password', hint: s.password_hint }
     case 'authorizationStateReady': return me ? { step: 'ready', me } : { step: 'starting' }
-    case 'authorizationStateLoggingOut': case 'authorizationStateClosing': case 'authorizationStateClosed': return { step: 'logging-out' }
+    case 'authorizationStateLoggingOut': case 'authorizationStateClosing': case 'authorizationStateClosed':
+      return { step: 'logging-out', ...(sessionExpired && { sessionExpired: true }) }
     default: return { step: 'phone', error: `Telegram needs ${unsupported[s._]} for this number, which Mediagram does not support yet. Finish it in the official Telegram app, then try again.` }
   }
 }

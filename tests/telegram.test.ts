@@ -535,6 +535,25 @@ test('reset: after a logout the keys leave memory, so auth returns to the API-ke
   assert.deepEqual([live().length, step(), tg.authState().connection], [0, 'credentials', 'offline'])
 })
 
+test('session expired: when Telegram server revokes the session without user logout, auth state has sessionExpired', async () => {
+  const client = await signIn(() => notFound())
+  fs.mkdirSync(path.join(dir, 'db'), { recursive: true })
+  client.update(auth('authorizationStateLoggingOut'))
+  assert.equal(step(), 'logging-out')
+  assert.equal((tg.authState() as any).sessionExpired, true)
+  client.update(auth('authorizationStateClosed'))
+  client.end()
+  await until(() => last() !== client)
+  assert.ok(!fs.existsSync(path.join(dir, 'db'))) // session was cleaned up
+  const fresh = last()
+  fresh.update(auth('authorizationStateWaitPhoneNumber'))
+  assert.equal(step(), 'phone')
+  assert.equal((tg.authState() as any).sessionExpired, true)
+  tg.clearSessionExpired()
+  assert.equal((tg.authState() as any).sessionExpired, undefined)
+  await tg.reset()
+})
+
 // ---- Credentials gate: the keys that made the session are the only keys that open it ----
 
 test('credentials gate: mismatched keys are refused before TDLib starts, an unrecorded session is closed unread', async () => {

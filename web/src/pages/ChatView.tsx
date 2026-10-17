@@ -367,10 +367,12 @@ interface ChatViewProps {
   onOpenManageSettings?: () => void
 }
 
+const EMPTY_CHATS: any[] = []
+
 export function ChatView({
   chatId,
   activeChat,
-  allChats = [],
+  allChats = EMPTY_CHATS,
   me,
   messages,
   hasMore,
@@ -713,9 +715,19 @@ export function ChatView({
     })
   }, [messages, mediaOnly, chatMsgSearch])
 
+  const chronologicalMessages = useMemo(() => [...filteredMessages].reverse(), [filteredMessages])
+
   // Scroll to bottom helper
   const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
-    messagesEndRef.current?.scrollIntoView({ behavior })
+    if (chatScrollRef.current) {
+      if (behavior === 'smooth') {
+        chatScrollRef.current.scrollTo({ top: chatScrollRef.current.scrollHeight, behavior: 'smooth' })
+      } else {
+        chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight
+      }
+    } else {
+      messagesEndRef.current?.scrollIntoView({ behavior })
+    }
   }, [])
 
   // Scroll to bottom on initial load / chat switch or when uploads/messages arrive
@@ -1240,7 +1252,34 @@ export function ChatView({
         className="flex-1 overflow-y-auto overflow-x-hidden p-4 space-y-3.5 select-text z-10"
       >
 
-        {filteredMessages.length === 0 && chatUploads.length === 0 ? (
+        {loading && filteredMessages.length === 0 && chatUploads.length === 0 ? (
+          <div className="space-y-4 py-6 px-2 animate-pulse">
+            <div className="flex gap-3 items-end max-w-[70%]">
+              <div className="size-8 rounded-full bg-tile/80 shrink-0" />
+              <div className="space-y-2 flex-1">
+                <div className="h-4 bg-tile/70 rounded-lg w-28" />
+                <div className="h-14 bg-tile/60 rounded-2xl w-full" />
+              </div>
+            </div>
+            <div className="flex gap-3 items-end max-w-[65%] ml-auto justify-end">
+              <div className="space-y-2 flex-1 items-end">
+                <div className="h-12 bg-primary/20 rounded-2xl w-full ml-auto" />
+              </div>
+            </div>
+            <div className="flex gap-3 items-end max-w-[80%]">
+              <div className="size-8 rounded-full bg-tile/80 shrink-0" />
+              <div className="space-y-2 flex-1">
+                <div className="h-4 bg-tile/70 rounded-lg w-32" />
+                <div className="h-20 bg-tile/60 rounded-2xl w-full" />
+              </div>
+            </div>
+            <div className="flex gap-3 items-end max-w-[60%] ml-auto justify-end">
+              <div className="space-y-2 flex-1 items-end">
+                <div className="h-16 bg-primary/20 rounded-2xl w-full ml-auto" />
+              </div>
+            </div>
+          </div>
+        ) : filteredMessages.length === 0 && chatUploads.length === 0 ? (
           <div className="py-24 text-center text-muted">
             <p className="text-[13.5px]">No messages found</p>
           </div>
@@ -1256,7 +1295,7 @@ export function ChatView({
               </div>
             )}
             {/* Render in chronological order */}
-            {[...filteredMessages].reverse().map((m: any, idx: number, arr: any[]) => {
+            {chronologicalMessages.map((m: any, idx: number, arr: any[]) => {
               const currentDateGroup = getDateGroup(m.date)
               const prevDateGroup = idx > 0 ? getDateGroup(arr[idx - 1].date) : null
               const showDateDivider = currentDateGroup !== prevDateGroup

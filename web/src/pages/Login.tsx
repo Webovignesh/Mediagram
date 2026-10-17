@@ -1,5 +1,5 @@
 import { useState, type FormEvent, type ReactNode, type CSSProperties, useEffect, useLayoutEffect, useRef } from 'react'
-import { ArrowLeft, ArrowRight, ArrowDown, Check, Loader2, AlertTriangle, ExternalLink, Eye, EyeOff, HelpCircle, BookOpen, Lock, X } from 'lucide-react'
+import { ArrowLeft, ArrowRight, ArrowDown, Check, Loader2, AlertTriangle, ExternalLink, Eye, EyeOff, HelpCircle, BookOpen, Lock, X, ShieldAlert } from 'lucide-react'
 import type { AuthState } from '../../../core/shapes.ts'
 import { call, useCall } from '../api.ts'
 import { Input, Button, Select, toast, MediagramLogo, ErrorState } from '../ui.tsx'
@@ -58,10 +58,16 @@ function Stage({ state, children }: { state: 'done' | 'active' | 'pending', chil
   )
 }
 
+const EMPTY_ARGS = {}
+
+// Preserves user input across any background auth events or temporary component remounts
+let draftCountryCode = '+91'
+let draftPhone = ''
+
 // Phase 4.6: Full login flow with all auth steps
 export default function Login() {
   const { data: auth, reload, error: loadError } = useCall<AuthState>('auth.get', undefined, ['auth'])
-  const { data: settings } = useCall<{ lastUser?: string | null }>('settings.get', {}, ['settings'])
+  const { data: settings } = useCall<{ lastUser?: string | null }>('settings.get', EMPTY_ARGS, ['settings'])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   /** A rejection the user backed out of: the phone screen must not keep showing it, while a fresh
@@ -79,9 +85,33 @@ export default function Login() {
   const [showApiId, setShowApiId] = useState(false)
   const [showApiHash, setShowApiHash] = useState(false)
 
-  // Phone step
-  const [countryCode, setCountryCode] = useState('+91')
-  const [phone, setPhone] = useState('')
+  // Phone step: initialized from draft to prevent wipes on background reload
+  const [countryCode, setCountryCodeState] = useState(draftCountryCode)
+  const [phone, setPhoneState] = useState(draftPhone)
+
+  const setCountryCode = (c: string) => {
+    draftCountryCode = c
+    setCountryCodeState(c)
+  }
+
+  const setPhone = (p: string) => {
+    draftPhone = p
+    setPhoneState(p)
+  }
+
+  useEffect(() => {
+    if (auth?.step === 'ready') {
+      draftPhone = ''
+    }
+  }, [auth?.step])
+
+  const [sessionExpiredNotice, setSessionExpiredNotice] = useState(() => Boolean((auth as any)?.sessionExpired))
+  useEffect(() => {
+    if ((auth as any)?.sessionExpired) {
+      setSessionExpiredNotice(true)
+    }
+  }, [auth])
+
   /** The number dialed on the phone screen, kept while the API step asks for the keys that can send its code. */
   const [dialled, setDialled] = useState('')
   const [showApi, setShowApi] = useState(false)
@@ -355,7 +385,7 @@ export default function Login() {
 
   // The processing screen covers every moment TDLib/Telegram hold the keys — and a sign-in that succeeded on an
   // auto-start rests on the success note (App keeps this page mounted through the hand-off to the dashboard).
-  const step = raw === 'ready' ? 'signed-in' : (processing || raw === 'starting') ? 'processing' : current
+  const step = raw === 'ready' ? 'signed-in' : (raw === 'starting' || (processing && (dialled || sending || raw === 'credentials'))) ? 'processing' : current
   const a = auth as any
   const activeError = error || authError
   const engineDone = raw !== 'starting'
@@ -558,6 +588,27 @@ export default function Login() {
 
           {step === 'phone' && (
             <form onSubmit={submitPhone}>
+              {sessionExpiredNotice && (
+                <div role="status" className="mb-4 flex items-start gap-2.5 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-[12.5px] text-amber-500">
+                  <ShieldAlert size={16} className="mt-0.5 shrink-0 text-amber-500" aria-hidden />
+                  <div className="flex-1">
+                    <p className="font-semibold text-[13px] text-amber-500">Session Expired</p>
+                    <p className="mt-0.5 text-[12px] leading-relaxed text-amber-500/90">
+                      Your previous session expired after inactivity. Enter your phone number to sign back in.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSessionExpiredNotice(false)
+                    }}
+                    className="p-1 hover:text-amber-300 text-amber-500/70 transition-colors"
+                    aria-label="Dismiss notice"
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+              )}
               <h1 className="text-xl font-semibold">Phone Number</h1>
               <p className="mt-1 text-text-2">Enter your phone number to sign in to Telegram.</p>
               <div className="mt-5">

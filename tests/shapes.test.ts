@@ -24,6 +24,9 @@ test('mapAuth: every TDLib state, incl. the five Mediagram cannot complete', () 
   assert.deepEqual(mapAuth(s('authorizationStateReady'), null), { step: 'starting' }) // until getMe answers
   assert.deepEqual(mapAuth(s('authorizationStateReady'), me), { step: 'ready', me })
   for (const t of ['LoggingOut', 'Closing', 'Closed']) assert.deepEqual(mapAuth(s(`authorizationState${t}`), me), { step: 'logging-out' })
+  for (const t of ['LoggingOut', 'Closing', 'Closed']) assert.deepEqual(mapAuth(s(`authorizationState${t}`), me, true), { step: 'logging-out', sessionExpired: true })
+  assert.deepEqual(mapAuth(s('authorizationStateWaitPhoneNumber'), null, true), { step: 'phone', sessionExpired: true })
+  assert.deepEqual(mapAuth(null, null, true), { step: 'starting', sessionExpired: true })
   const unsupported = { WaitEmailAddress: 'email setup', WaitEmailCode: 'email setup', WaitRegistration: 'account registration',
     WaitOtherDeviceConfirmation: 'confirmation on another device', WaitPremiumPurchase: 'Telegram Premium' }
   for (const [t, need] of Object.entries(unsupported)) {

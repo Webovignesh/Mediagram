@@ -179,8 +179,9 @@ function AreaChart({
 export default function Overview() {
   const [previewItem, setPreviewItem] = useState<any>(null)
   const liveState = useLive()
-  const { data: live } = useCall<LiveStats>('stats.live', {}, ['stats'])
-  const liveStats = liveState.stats || live
+  const { data: initialLive } = useCall<LiveStats>('stats.live', {}, [])
+  const live = liveState.stats || initialLive
+  const liveStats = live
   const { data: overview, error: ovErr, reload: ovReload } = useCall<OverviewStats>('stats.overview', {}, ['history'])
   const [actRange, setActRange] = useState('7d')
   const { data: activity, error: actErr, reload: actReload } = useCall<{ buckets: number[], download: number[], upload: number[] }>('stats.activity', { range: actRange }, ['history'])

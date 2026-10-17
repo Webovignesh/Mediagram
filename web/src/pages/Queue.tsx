@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { Download, Upload, CheckCircle2, XCircle, Pause, Play, RotateCcw, X, FolderOpen, ArrowUp, ArrowDown, ArrowUpRight, Clock } from 'lucide-react'
 import { call, useCall, useLive, useRouteQuery } from '../api.ts'
 import type { Job, Action } from '../../../core/db.ts'
@@ -15,6 +15,8 @@ const tabs: { value: Tab, label: string, icon: typeof Download }[] = [
 const validTab = (value: string | null): value is Tab => tabs.some((t) => t.value === value)
 const time = (value: number | null) => value ? new Date(value).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : ''
 
+const EMPTY_ARGS = {}
+
 export default function Queue() {
   const routeTab = useRouteQuery().get('tab')
   const [tab, setTab] = useState<Tab>(() => {
@@ -30,12 +32,13 @@ export default function Queue() {
   const [preview, setPreview] = useState<Job | null>(null)
   const [now, setNow] = useState(() => Date.now())
   const liveState = useLive()
-  const { data: initialLive } = useCall<LiveStats>('stats.live', {}, [])
+  const { data: initialLive } = useCall<LiveStats>('stats.live', EMPTY_ARGS, [])
   const live = liveState.stats ?? initialLive
   const kind = tab === 'downloads' ? 'download' : tab === 'uploads' ? 'upload' : undefined
-  const { data: jobs, reload, error } = useCall<{ items: Job[], total: number }>('jobs.list', {
+  const jobsArgs = useMemo(() => ({
     kind, status: kind ? status : tab === 'completed' ? 'completed' : 'failed', q: search, page, pageSize: 25,
-  }, ['jobs'])
+  }), [kind, status, tab, search, page])
+  const { data: jobs, reload, error } = useCall<{ items: Job[], total: number }>('jobs.list', jobsArgs, ['jobs'])
 
   // URL changes take over once. Including `tab` here would continuously undo the user's tab clicks.
   useEffect(() => {

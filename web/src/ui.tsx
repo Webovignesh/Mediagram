@@ -1,7 +1,7 @@
 // Phase 5: Complete UI primitives per UI.md
-import { type ReactNode, useState, useEffect, useId, useRef } from 'react'
+import { type ReactNode, useState, useEffect, useId, useRef, memo } from 'react'
 import { Loader2, ChevronDown, X, Search, Check, Pause, Play, Download, CheckCircle2, AlertCircle, AlertTriangle, Info, Music, FolderOpen, Gauge, Film, Volume2, VolumeX, Maximize2, Minimize2, RotateCcw, Folder, Bookmark, ImageOff, Image as ImageIcon, Megaphone, Users, Shield, Copy, Settings, Trash2, Globe, Lock, Sliders, Camera } from 'lucide-react'
-import { call, on, uploadPaths } from './api.ts'
+import { call, on, uploadPaths, isThumbLoaded, markThumbLoaded } from './api.ts'
 import type { ChatSettings } from '../../core/shapes.ts'
 import { getActiveTheme } from './theme.ts'
 import { fmtBytes, fmtDuration } from './format.ts'
@@ -532,8 +532,7 @@ export function getAvatarInitial(name: string): string {
   return first ? first.toUpperCase() : '?'
 }
 
-export function Avatar({ src, name, size = 36 }: { src: string | null, name: string, size?: number }) {
-  const [loaded, setLoaded] = useState(false)
+export const Avatar = memo(function Avatar({ src, name, size = 36 }: { src: string | null, name: string, size?: number }) {
   const [failed, setFailed] = useState(false)
   const [retries, setRetries] = useState(0)
   const isSaved = name?.toLowerCase().includes('saved')
@@ -550,6 +549,13 @@ export function Avatar({ src, name, size = 36 }: { src: string | null, name: str
   // A retry has to actually re-request, and it must not remount the element: swapping the src keeps
   // the old frame in place while the new one decodes, so a slow avatar lands instead of flashing.
   const url = raw ? (retries > 0 ? `${raw}${raw.includes('?') ? '&' : '?'}r=${retries}` : raw) : null
+  const [loaded, setLoaded] = useState(() => (url ? isThumbLoaded(url) : false))
+
+  useEffect(() => {
+    if (url && isThumbLoaded(url)) {
+      setLoaded(true)
+    }
+  }, [url])
 
   if (isSaved && !url) {
     return (
@@ -582,7 +588,10 @@ export function Avatar({ src, name, size = 36 }: { src: string | null, name: str
         alt={name}
         loading="lazy"
         decoding="async"
-        onLoad={() => setLoaded(true)}
+        onLoad={() => {
+          if (url) markThumbLoaded(url)
+          setLoaded(true)
+        }}
         onError={() => {
           if (retries < 2) {
             setTimeout(() => setRetries((r) => r + 1), 1200)
@@ -595,24 +604,13 @@ export function Avatar({ src, name, size = 36 }: { src: string | null, name: str
       />
     </div>
   )
-}
+})
 
 export function Thumb({ src, name }: { src: string | null, name: string }) {
-  const [loaded, setLoaded] = useState(false)
+  const ext = (name.split('.').pop() || 'FILE').toUpperCase()
   const [attempt, setAttempt] = useState(0)
   const [failed, setFailed] = useState(false)
-  const ext = (name.split('.').pop() || 'FILE').toUpperCase()
   const giveUp = attempt >= 3
-
-  // A thumbnail 404s whenever TDLib takes a few seconds longer than the caller is willing to wait.
-  // It used to stay failed for as long as the row stayed mounted, which is why a channel page
-  // showed file-type badges instead of pictures. Retry with backoff; the backend caps how often
-  // the same id may actually be re-fetched.
-  useEffect(() => {
-    if (!failed || giveUp) return
-    const t = setTimeout(() => { setFailed(false); setLoaded(false); setAttempt((a) => a + 1) }, 1200 * (attempt + 1))
-    return () => clearTimeout(t)
-  }, [failed, giveUp, attempt])
 
   // Compute URL unconditionally before any conditional returns (hooks rule).
   const raw = (src && !giveUp)
@@ -621,6 +619,19 @@ export function Thumb({ src, name }: { src: string | null, name: string }) {
         : `mediagram://thumb/${src}`)
     : null
   const url = raw ? (attempt > 0 ? `${raw}${raw.includes('?') ? '&' : '?'}r=${attempt}` : raw) : null
+  const [loaded, setLoaded] = useState(() => isThumbLoaded(url))
+
+  useEffect(() => {
+    if (url && isThumbLoaded(url)) setLoaded(true)
+  }, [url])
+
+  // A thumbnail 404s whenever TDLib takes a few seconds longer than the caller is willing to wait.
+  // Retry with backoff; the backend caps how often the same id may actually be re-fetched.
+  useEffect(() => {
+    if (!failed || giveUp) return
+    const t = setTimeout(() => { setFailed(false); setLoaded(false); setAttempt((a) => a + 1) }, 1200 * (attempt + 1))
+    return () => clearTimeout(t)
+  }, [failed, giveUp, attempt])
 
   if (!url) {
     return (
@@ -643,9 +654,12 @@ export function Thumb({ src, name }: { src: string | null, name: string }) {
         draggable={false}
         loading="lazy"
         decoding="async"
-        onLoad={() => setLoaded(true)}
+        onLoad={() => {
+          markThumbLoaded(url)
+          setLoaded(true)
+        }}
         onError={() => setFailed(true)}
-        className={`h-full w-full object-cover pointer-events-none ${loaded ? 'opacity-100' : 'opacity-0'}`}
+        className={`h-full w-full object-cover pointer-events-none transition-opacity duration-150 ${loaded ? 'opacity-100' : 'opacity-0'}`}
       />
     </div>
   )
@@ -664,27 +678,29 @@ export function ChatMediaThumb({
   minHeight?: string
   maxHeight?: string
 }) {
-  const [loaded, setLoaded] = useState(false)
   const [attempt, setAttempt] = useState(0)
   const [failed, setFailed] = useState(false)
   const giveUp = attempt >= 3
 
-  // Same backoff retry as Thumb: a preview that404s once must not stay a grey placeholder forever.
-  useEffect(() => {
-    if (!failed || giveUp) return
-    const t = setTimeout(() => { setFailed(false); setLoaded(false); setAttempt((a) => a + 1) }, 1200 * (attempt + 1))
-    return () => clearTimeout(t)
-  }, [failed, giveUp, attempt])
-
   // Compute URL unconditionally (hook rules require this before any conditional return).
-  // useMemo avoids rebuilding the string on every render during scroll.
-  // eslint-disable-next-line react-hooks/rules-of-hooks
   const raw = (src && !giveUp)
     ? (src.startsWith('mediagram://') || src.startsWith('teleflow://') || src.startsWith('data:') || src.startsWith('blob:') || src.startsWith('http')
         ? src
         : `mediagram://thumb/${src}`)
     : null
   const url = raw ? (attempt > 0 ? `${raw}${raw.includes('?') ? '&' : '?'}r=${attempt}` : raw) : null
+  const [loaded, setLoaded] = useState(() => isThumbLoaded(url))
+
+  useEffect(() => {
+    if (url && isThumbLoaded(url)) setLoaded(true)
+  }, [url])
+
+  // Same backoff retry as Thumb: a preview that 404s once must not stay a grey placeholder forever.
+  useEffect(() => {
+    if (!failed || giveUp) return
+    const t = setTimeout(() => { setFailed(false); setLoaded(false); setAttempt((a) => a + 1) }, 1200 * (attempt + 1))
+    return () => clearTimeout(t)
+  }, [failed, giveUp, attempt])
 
   if (!url) {
     return (
@@ -718,9 +734,12 @@ export function ChatMediaThumb({
         alt={alt}
         loading="lazy"
         decoding="async"
-        onLoad={() => setLoaded(true)}
+        onLoad={() => {
+          markThumbLoaded(url)
+          setLoaded(true)
+        }}
         onError={() => setFailed(true)}
-        className={`w-full max-h-[480px] h-auto object-cover block ${loaded ? 'opacity-100' : 'opacity-0'} ${className}`}
+        className={`w-full max-h-[480px] h-auto object-cover block transition-opacity duration-150 ${loaded ? 'opacity-100' : 'opacity-0'} ${className}`}
         style={{ minHeight: loaded ? undefined : minHeight, maxHeight }}
       />
     </div>

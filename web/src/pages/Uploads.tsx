@@ -36,6 +36,9 @@ interface StagedFile {
   file?: File
 }
 
+const EMPTY_ARGS = {}
+const UPLOAD_JOBS_ARGS = { kind: 'upload' as const, status: 'open', pageSize: 15 }
+
 export default function Uploads() {
   const [chatId, setChatId] = useState<number | null>(() => {
     try {
@@ -97,17 +100,17 @@ export default function Uploads() {
 
   // Real-time transfer stats
   const liveState = useLive()
-  const { data: initialLive } = useCall<LiveStats>('stats.live', {}, [])
+  const { data: initialLive } = useCall<LiveStats>('stats.live', EMPTY_ARGS, [])
   const live = liveState.stats ?? initialLive
 
-  const { data: chatsData, error: chatsErr, reload: chatsReload } = useCall<{ chats: any[] }>('chats.list', {}, ['chats'])
-  const { data: authData } = useCall<{ me?: { uploadMax?: number, isPremium?: boolean } }>('auth.get', {}, ['auth'])
-  const { data: settings } = useCall<any>('settings.get', {}, ['settings'])
+  const { data: chatsData, error: chatsErr, reload: chatsReload } = useCall<{ chats: any[] }>('chats.list', EMPTY_ARGS, ['chats'])
+  const { data: authData } = useCall<{ me?: { uploadMax?: number, isPremium?: boolean } }>('auth.get', EMPTY_ARGS, ['auth'])
+  const { data: settings } = useCall<any>('settings.get', EMPTY_ARGS, ['settings'])
 
   // Live queue data for Uploads snapshot table
   const { data: queueData, reload: reloadQueue } = useCall<{ items: Job[], total: number }>(
     'jobs.list',
-    { kind: 'upload', status: 'open', pageSize: 15 },
+    UPLOAD_JOBS_ARGS,
     ['jobs']
   )
   const uploadJobs = (queueData?.items ?? (queueData as any)?.jobs ?? []) as Job[]
