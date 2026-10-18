@@ -2793,7 +2793,7 @@ export function CheckDuplicatesModal({
                 </div>
                 <div className="rounded-xl border border-border bg-tile/40 p-4">
                   <div className="text-[11px] font-bold tracking-wider text-muted uppercase mb-1.5">On Disk</div>
-                  <div className={`text-[26px] font-bold tabular-nums ${onDiskCount > 0 ? 'text-amber-600 dark:text-amber-400' : 'text-text'}`}>
+                  <div className={`text-[26px] font-bold tabular-nums ${onDiskCount > 0 ? 'text-amber-500' : 'text-text'}`}>
                     {result.onDiskCount.toLocaleString()}
                   </div>
                 </div>
@@ -2820,28 +2820,20 @@ export function CheckDuplicatesModal({
                 <div className="flex items-center gap-3.5 min-w-0">
                   <div className={`flex size-9 shrink-0 items-center justify-center rounded-full ${
                     totalDuplicates > 0
-                      ? 'bg-amber-500/20 text-amber-600 dark:text-amber-400'
-                      : 'bg-emerald-500/20 text-emerald-600 dark:text-emerald-400'
+                      ? 'bg-amber-500/20 text-amber-600'
+                      : 'bg-emerald-500/20 text-emerald-600'
                   }`}>
                     <Check size={18} strokeWidth={2.5} />
                   </div>
                   <div className="min-w-0">
-                    <div className={`text-[14px] font-semibold ${
-                      totalDuplicates > 0
-                        ? 'text-amber-950 dark:text-amber-100'
-                        : 'text-emerald-950 dark:text-emerald-100'
-                    }`}>
+                    <div className="text-[14px] font-semibold text-text">
                       {inSelectionCount > 0 && onDiskCount > 0
                         ? 'Duplicates found on disk & across selected items'
                         : inSelectionCount > 0
                         ? 'Duplicates found in selection'
                         : 'Exact match on disk'}
                     </div>
-                    <div className={`text-[12px] mt-0.5 ${
-                      totalDuplicates > 0
-                        ? 'text-amber-900/80 dark:text-amber-300/80'
-                        : 'text-emerald-900/80 dark:text-emerald-300/80'
-                    }`}>
+                    <div className="text-[12px] mt-0.5 text-muted">
                       {onDiskCount > 0 && inSelectionCount > 0 ? (
                         <>{result.filesScanned.toLocaleString()} disk files scanned · {inSelectionCount} in selection · {fmtBytes(result.skippedBytes)} skipped</>
                       ) : inSelectionCount > 0 ? (
@@ -2857,7 +2849,7 @@ export function CheckDuplicatesModal({
                   <button
                     type="button"
                     onClick={() => setShowDuplicatesList(!showDuplicatesList)}
-                    className="text-[12px] font-medium text-amber-800 dark:text-amber-300 hover:text-amber-950 dark:hover:text-amber-100 underline cursor-pointer shrink-0"
+                    className="text-[12px] font-semibold text-primary hover:text-primary-hover hover:underline cursor-pointer shrink-0"
                   >
                     {showDuplicatesList ? 'Hide details' : 'View duplicates'}
                   </button>
@@ -2893,7 +2885,7 @@ export function CheckDuplicatesModal({
                                 In Selection
                               </span>
                             ) : (
-                              <span className="shrink-0 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-500/15 text-amber-700 dark:text-amber-400 border border-amber-500/30">
+                              <span className="shrink-0 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-500/15 text-amber-600 border border-amber-500/30">
                                 On Disk
                               </span>
                             )}
