@@ -1150,6 +1150,8 @@ export default function Downloads() {
           filesScanned: validResults.reduce((acc, r) => acc + r.filesScanned, 0),
           totalSelected: validResults.reduce((acc, r) => acc + r.totalSelected, 0),
           onDiskCount: validResults.reduce((acc, r) => acc + r.onDiskCount, 0),
+          inSelectionCount: validResults.reduce((acc, r) => acc + (r.inSelectionCount ?? 0), 0),
+          totalDuplicates: validResults.reduce((acc, r) => acc + (r.totalDuplicates ?? r.onDiskCount), 0),
           willDownloadCount: validResults.reduce((acc, r) => acc + r.willDownloadCount, 0),
           skippedBytes: validResults.reduce((acc, r) => acc + r.skippedBytes, 0),
           duplicates: validResults.flatMap((r) => r.duplicates),

@@ -2627,6 +2627,8 @@ export type DuplicateMatch = {
   size: number
   duration: number
   diskPath: string
+  reason?: 'disk' | 'selection'
+  originalMessageId?: number
 }
 
 export type DuplicateCheckResult = {
@@ -2634,6 +2636,8 @@ export type DuplicateCheckResult = {
   filesScanned: number
   totalSelected: number
   onDiskCount: number
+  inSelectionCount?: number
+  totalDuplicates?: number
   willDownloadCount: number
   skippedBytes: number
   duplicates: DuplicateMatch[]
@@ -2678,6 +2682,8 @@ export function CheckDuplicatesModal({
   if (!open) return null
 
   const onDiskCount = result?.onDiskCount ?? 0
+  const inSelectionCount = result?.inSelectionCount ?? 0
+  const totalDuplicates = result?.totalDuplicates ?? (onDiskCount + inSelectionCount)
   const totalSelected = result?.totalSelected ?? selectedCount
   const willDownloadCount = skipDuplicates ? (result?.willDownloadCount ?? totalSelected) : totalSelected
 
@@ -2693,8 +2699,12 @@ export function CheckDuplicatesModal({
 
   const subtitle = loading
     ? `Checking ${selectedCount.toLocaleString()} selected files before download`
-    : onDiskCount > 0
-    ? `${onDiskCount.toLocaleString()} duplicates found · ${willDownloadCount.toLocaleString()} ready to download`
+    : totalDuplicates > 0
+    ? onDiskCount > 0 && inSelectionCount > 0
+      ? `${totalDuplicates.toLocaleString()} duplicates found (${onDiskCount} on disk, ${inSelectionCount} in selection) · ${willDownloadCount.toLocaleString()} ready to download`
+      : inSelectionCount > 0
+      ? `${inSelectionCount.toLocaleString()} duplicate${inSelectionCount === 1 ? '' : 's'} in selection · ${willDownloadCount.toLocaleString()} ready to download`
+      : `${onDiskCount.toLocaleString()} duplicate${onDiskCount === 1 ? '' : 's'} on disk · ${willDownloadCount.toLocaleString()} ready to download`
     : `No duplicates found · ${willDownloadCount.toLocaleString()} ready to download`
 
   return (
@@ -2729,8 +2739,8 @@ export function CheckDuplicatesModal({
               <div className="flex items-center gap-4">
                 <div className="size-8 rounded-full border-2 border-primary/30 border-t-primary animate-spin shrink-0" />
                 <div>
-                  <div className="text-[15px] font-semibold text-text">Scanning download folder</div>
-                  <div className="text-[12.5px] text-muted mt-0.5">Duplicates require an exact filename and exact byte-size match.</div>
+                  <div className="text-[15px] font-semibold text-text">Scanning for duplicates</div>
+                  <div className="text-[12.5px] text-muted mt-0.5">Checking destination folder and selected items for exact matches.</div>
                 </div>
               </div>
             </div>
@@ -2775,18 +2785,26 @@ export function CheckDuplicatesModal({
                 </div>
               </div>
 
-              {/* 3 Stats Grid */}
-              <div className="grid grid-cols-3 gap-3">
+              {/* Stats Grid - adapts to 4 columns when inSelectionCount > 0 */}
+              <div className={`grid gap-3 ${inSelectionCount > 0 ? 'grid-cols-4' : 'grid-cols-3'}`}>
                 <div className="rounded-xl border border-border bg-tile/40 p-4">
                   <div className="text-[11px] font-bold tracking-wider text-muted uppercase mb-1.5">Selected</div>
                   <div className="text-[26px] font-bold text-text tabular-nums">{result.totalSelected.toLocaleString()}</div>
                 </div>
                 <div className="rounded-xl border border-border bg-tile/40 p-4">
                   <div className="text-[11px] font-bold tracking-wider text-muted uppercase mb-1.5">On Disk</div>
-                  <div className={`text-[26px] font-bold tabular-nums ${onDiskCount > 0 ? 'text-amber-400' : 'text-text'}`}>
+                  <div className={`text-[26px] font-bold tabular-nums ${onDiskCount > 0 ? 'text-amber-600 dark:text-amber-400' : 'text-text'}`}>
                     {result.onDiskCount.toLocaleString()}
                   </div>
                 </div>
+                {inSelectionCount > 0 && (
+                  <div className="rounded-xl border border-border bg-tile/40 p-4">
+                    <div className="text-[11px] font-bold tracking-wider text-muted uppercase mb-1.5">In Selection</div>
+                    <div className="text-[26px] font-bold text-cyan tabular-nums">
+                      {inSelectionCount.toLocaleString()}
+                    </div>
+                  </div>
+                )}
                 <div className="rounded-xl border border-border bg-tile/40 p-4">
                   <div className="text-[11px] font-bold tracking-wider text-muted uppercase mb-1.5">Will Download</div>
                   <div className="text-[26px] font-bold text-primary tabular-nums">{willDownloadCount.toLocaleString()}</div>
@@ -2795,31 +2813,51 @@ export function CheckDuplicatesModal({
 
               {/* Match Criteria Banner */}
               <div className={`rounded-xl border p-4 flex items-center justify-between gap-3.5 ${
-                onDiskCount > 0
-                  ? 'border-amber-500/30 bg-amber-950/20'
-                  : 'border-emerald-500/30 bg-emerald-950/20'
+                totalDuplicates > 0
+                  ? 'border-amber-500/35 bg-amber-500/10'
+                  : 'border-emerald-500/35 bg-emerald-500/10'
               }`}>
-                <div className="flex items-center gap-3.5">
+                <div className="flex items-center gap-3.5 min-w-0">
                   <div className={`flex size-9 shrink-0 items-center justify-center rounded-full ${
-                    onDiskCount > 0 ? 'bg-amber-500/20 text-amber-400' : 'bg-emerald-500/20 text-emerald-400'
+                    totalDuplicates > 0
+                      ? 'bg-amber-500/20 text-amber-600 dark:text-amber-400'
+                      : 'bg-emerald-500/20 text-emerald-600 dark:text-emerald-400'
                   }`}>
                     <Check size={18} strokeWidth={2.5} />
                   </div>
-                  <div>
-                    <div className={`text-[14px] font-semibold ${onDiskCount > 0 ? 'text-amber-100' : 'text-emerald-100'}`}>
-                      Exact filename + exact byte size
+                  <div className="min-w-0">
+                    <div className={`text-[14px] font-semibold ${
+                      totalDuplicates > 0
+                        ? 'text-amber-950 dark:text-amber-100'
+                        : 'text-emerald-950 dark:text-emerald-100'
+                    }`}>
+                      {inSelectionCount > 0 && onDiskCount > 0
+                        ? 'Duplicates found on disk & across selected items'
+                        : inSelectionCount > 0
+                        ? 'Duplicates found in selection'
+                        : 'Exact match on disk'}
                     </div>
-                    <div className={`text-[12px] mt-0.5 ${onDiskCount > 0 ? 'text-amber-300/80' : 'text-emerald-300/80'}`}>
-                      {result.filesScanned.toLocaleString()} files scanned · {fmtBytes(result.skippedBytes)} skipped
+                    <div className={`text-[12px] mt-0.5 ${
+                      totalDuplicates > 0
+                        ? 'text-amber-900/80 dark:text-amber-300/80'
+                        : 'text-emerald-900/80 dark:text-emerald-300/80'
+                    }`}>
+                      {onDiskCount > 0 && inSelectionCount > 0 ? (
+                        <>{result.filesScanned.toLocaleString()} disk files scanned · {inSelectionCount} in selection · {fmtBytes(result.skippedBytes)} skipped</>
+                      ) : inSelectionCount > 0 ? (
+                        <>{inSelectionCount} duplicate{inSelectionCount === 1 ? '' : 's'} across selected items · {fmtBytes(result.skippedBytes)} skipped</>
+                      ) : (
+                        <>{result.filesScanned.toLocaleString()} disk files scanned · {fmtBytes(result.skippedBytes)} skipped</>
+                      )}
                     </div>
                   </div>
                 </div>
 
-                {onDiskCount > 0 && (
+                {totalDuplicates > 0 && (
                   <button
                     type="button"
                     onClick={() => setShowDuplicatesList(!showDuplicatesList)}
-                    className="text-[12px] font-medium text-amber-300 hover:text-white underline cursor-pointer shrink-0"
+                    className="text-[12px] font-medium text-amber-800 dark:text-amber-300 hover:text-amber-950 dark:hover:text-amber-100 underline cursor-pointer shrink-0"
                   >
                     {showDuplicatesList ? 'Hide details' : 'View duplicates'}
                   </button>
@@ -2827,7 +2865,7 @@ export function CheckDuplicatesModal({
               </div>
 
               {/* Duplicates Details & Skip Toggle */}
-              {onDiskCount > 0 && (
+              {totalDuplicates > 0 && (
                 <div className="space-y-3 pt-1">
                   <label className="flex items-center gap-2.5 cursor-pointer select-none">
                     <input
@@ -2837,19 +2875,32 @@ export function CheckDuplicatesModal({
                       className="size-4 rounded accent-primary cursor-pointer"
                     />
                     <span className="text-[13px] font-medium text-text">
-                      Skip duplicates on disk (recommended)
+                      {inSelectionCount > 0 && onDiskCount > 0
+                        ? `Skip duplicate files (${onDiskCount} on disk, ${inSelectionCount} in selection)`
+                        : inSelectionCount > 0
+                        ? `Skip ${inSelectionCount} duplicate${inSelectionCount === 1 ? '' : 's'} in selection (recommended)`
+                        : `Skip duplicates on disk (recommended)`}
                     </span>
                   </label>
 
                   {showDuplicatesList && (
-                    <div className="max-h-48 overflow-y-auto rounded-xl border border-white/10 bg-black/25 p-3 space-y-2 text-[12px]">
+                    <div className="max-h-48 overflow-y-auto rounded-xl border border-border bg-tile/60 p-3 space-y-2 text-[12px]">
                       {result.duplicates.map((dup, idx) => (
-                        <div key={idx} className="flex items-center justify-between gap-2 border-b border-white/5 pb-1.5 last:border-0 last:pb-0">
-                          <div className="truncate text-slate-200">
-                            <span className="font-medium">{dup.name}</span>
-                            <span className="text-muted ml-2 font-mono text-[11px] truncate">({dup.diskPath})</span>
+                        <div key={idx} className="flex items-center justify-between gap-2 border-b border-border/40 pb-1.5 last:border-0 last:pb-0">
+                          <div className="min-w-0 flex items-center gap-2">
+                            {dup.reason === 'selection' ? (
+                              <span className="shrink-0 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-cyan/15 text-cyan border border-cyan/30">
+                                In Selection
+                              </span>
+                            ) : (
+                              <span className="shrink-0 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-500/15 text-amber-700 dark:text-amber-400 border border-amber-500/30">
+                                On Disk
+                              </span>
+                            )}
+                            <span className="font-medium text-text truncate">{dup.name}</span>
+                            <span className="text-muted font-mono text-[11px] shrink-0">({dup.diskPath})</span>
                           </div>
-                          <span className="text-muted tabular-nums shrink-0">{fmtBytes(dup.size)}</span>
+                          <span className="text-muted tabular-nums shrink-0 text-[11.5px]">{fmtBytes(dup.size)}</span>
                         </div>
                       ))}
                     </div>

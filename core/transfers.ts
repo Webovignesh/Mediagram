@@ -683,15 +683,30 @@ export function createEngine(d: EngineDeps) {
       historyMap.set(`${h.chat_id}:${h.message_id}`, { path: h.path, size: h.size })
     }
 
-    const duplicates: Array<{ chatId: number, messageId: number, name: string, size: number, duration: number, diskPath: string }> = []
+    const duplicates: Array<{
+      chatId: number
+      messageId: number
+      name: string
+      size: number
+      duration: number
+      diskPath: string
+      reason: 'disk' | 'selection'
+      originalMessageId?: number
+    }> = []
     const willDownload: Array<{ chatId: number, messageId: number, name: string, size: number, duration: number }> = []
     let skippedBytes = 0
+    let onDiskCount = 0
+    let inSelectionCount = 0
+
+    // Track items accepted into the batch to detect duplicate files within the selection itself
+    const seenInBatch = new Map<string, { chatId: number, messageId: number, name: string, size: number }>()
 
     for (const item of candidates) {
       const targetName = fileName(item.name, item.date || Math.floor(Date.now() / 1000), s.datePrefix)
       const lower = targetName.toLowerCase()
       let matchedPath: string | null = null
 
+      // 1. Check disk matches in targetDir
       const diskMatches = diskFiles.get(lower) ?? []
       for (const p of diskMatches) {
         try {
@@ -703,6 +718,7 @@ export function createEngine(d: EngineDeps) {
         } catch {}
       }
 
+      // 2. Check history table (same chat & message)
       if (!matchedPath) {
         const hist = historyMap.get(`${item.chatId}:${item.messageId}`)
         if (hist) {
@@ -723,18 +739,43 @@ export function createEngine(d: EngineDeps) {
           size: item.size,
           duration: item.duration,
           diskPath: matchedPath,
+          reason: 'disk',
         })
         skippedBytes += item.size
-      } else {
-        willDownload.push(item)
+        onDiskCount++
+        continue
       }
+
+      // 3. Check for in-batch duplicates within the selected items
+      const batchKey = `${lower}:${item.size}${item.duration ? `:${item.duration}` : ''}`
+      const earlierItem = seenInBatch.get(batchKey)
+      if (earlierItem) {
+        duplicates.push({
+          chatId: item.chatId,
+          messageId: item.messageId,
+          name: item.name,
+          size: item.size,
+          duration: item.duration,
+          diskPath: `Matches #${earlierItem.messageId}`,
+          reason: 'selection',
+          originalMessageId: earlierItem.messageId,
+        })
+        skippedBytes += item.size
+        inSelectionCount++
+        continue
+      }
+
+      seenInBatch.set(batchKey, item)
+      willDownload.push(item)
     }
 
     return {
       scannedPath: targetDir,
       filesScanned,
       totalSelected: candidates.length,
-      onDiskCount: duplicates.length,
+      onDiskCount,
+      inSelectionCount,
+      totalDuplicates: onDiskCount + inSelectionCount,
       willDownloadCount: willDownload.length,
       skippedBytes,
       duplicates,
