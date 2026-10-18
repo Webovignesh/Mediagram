@@ -15,7 +15,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.0.0-blue.svg?style=flat-square" alt="Version 1.0.0" />
+  <img src="https://img.shields.io/badge/version-1.1.0-blue.svg?style=flat-square" alt="Version 1.1.0" />
   <img src="https://img.shields.io/badge/Electron-44.5.1-47848F?style=flat-square&logo=electron&logoColor=white" alt="Electron" />
   <img src="https://img.shields.io/badge/React-18.3-61DAFB?style=flat-square&logo=react&logoColor=black" alt="React 18" />
   <img src="https://img.shields.io/badge/TDLib-1.8.66-2CA5E0?style=flat-square&logo=telegram&logoColor=white" alt="TDLib" />
@@ -28,6 +28,7 @@
 <p align="center">
   🚀 <b>Fast Multi-Stream Downloads</b> &nbsp;|&nbsp;
   ⚡ <b>Instant Video Streaming</b> &nbsp;|&nbsp;
+  ✨ <b>Visual Media Deduplication</b> &nbsp;|&nbsp;
   🛡️ <b>Sandboxed & Private</b>
 </p>
 
@@ -71,6 +72,16 @@ https://github.com/user-attachments/assets/9997ea5c-0dd0-4673-988b-d543f02f9140
     <td width="50%" valign="top">
       <h3>🎬 Instant Video Streaming</h3>
       <p>Click any large video file and it starts playing right away in the built-in player. Mediagram fetches the video header and tail chunks in the background, so you don't have to wait for the whole file to download.</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <h3>✨ Perceptual Media Deduplication</h3>
+      <p>Scan local folders or Telegram downloads for visual duplicates using perceptual gradient hashing (dHash 64-bit + secondary frame analysis) and color signatures, detecting identical media across re-encodes.</p>
+    </td>
+    <td width="50%" valign="top">
+      <h3>🔍 Side-by-Side Comparison Studio</h3>
+      <p>Inspect duplicate pairs side-by-side with synchronized video playback, resolution and duration breakdown, keeper toggles, and safe 1-click cleanup to the Windows Recycle Bin.</p>
     </td>
   </tr>
   <tr>
@@ -127,7 +138,7 @@ Mediagram includes six themes. Click any screenshot to open it in full resolutio
   </tr>
   <tr>
     <td align="center"><i>Bandwidth activity curve, completed tasks, and top channels</i></td>
-    <td align="center"><i>Active multi-part chunk downloads running at 46.4 MB/s</i></td>
+    <td align="center"><i>Active multi-part chunk downloads running at 44.3 MB/s</i></td>
   </tr>
 </table>
 
@@ -160,7 +171,34 @@ Mediagram includes six themes. Click any screenshot to open it in full resolutio
 
 <br />
 
-### 3. Uploads Studio & Settings
+### 3. Deduplication Studio & Visual Media Compare
+
+<table width="100%">
+  <tr>
+    <th width="50%" align="center">✨ Duplicate Cleaner — <i>Velvet Cream</i></th>
+    <th width="50%" align="center">🔍 Side-by-Side Compare Studio — <i>Dark Slate</i></th>
+  </tr>
+  <tr>
+    <td>
+      <a href="assets/screenshots/07-dedupe-velvet-cream.png" target="_blank">
+        <img src="assets/screenshots/07-dedupe-velvet-cream.png" alt="Duplicate Cleaner with visual duplicate clusters (Velvet Cream theme)" width="100%" style="border-radius: 8px;" />
+      </a>
+    </td>
+    <td>
+      <a href="assets/screenshots/08-dedupe-dark-slate.png" target="_blank">
+        <img src="assets/screenshots/08-dedupe-dark-slate.png" alt="Side-by-side media comparison and keeper selection (Dark Slate theme)" width="100%" style="border-radius: 8px;" />
+      </a>
+    </td>
+  </tr>
+  <tr>
+    <td align="center"><i>Perceptual fingerprint scan clusters, reclaimable disk metrics, and batch actions</i></td>
+    <td align="center"><i>Synchronized video scrubbing, dimension & duration comparison, and Recycle Bin safety</i></td>
+  </tr>
+</table>
+
+<br />
+
+### 4. Uploads Studio & Settings
 
 <table width="100%">
   <tr>
@@ -195,7 +233,7 @@ Mediagram includes six themes. Click any screenshot to open it in full resolutio
 **Requirements:** Windows 10 or 11 (x64) and a Telegram account.
 
 1. **Download the installer**
-   Get the latest `Mediagram-Setup-1.0.0.exe` from the [Releases](https://github.com/Webovignesh/Mediagram/releases) page.
+   Get the latest `Mediagram-Setup-1.1.0.exe` from the [Releases](https://github.com/Webovignesh/Mediagram/releases) page.
 2. **Run setup**
    Install Mediagram. No administrator privileges are required.
 3. **Sign in**
@@ -269,6 +307,7 @@ Mediagram/
 │   │   │   ├── Downloads.tsx  Main hub (chat sidebar, media filters, grid & table views)
 │   │   │   ├── ChatView.tsx   Telegram-style chat (messages, reactions, composer)
 │   │   │   ├── Queue.tsx      Live transfer manager (pause, resume, reorder)
+│   │   │   ├── Dedupe.tsx     Visual duplicate cleaner & side-by-side comparison studio
 │   │   │   ├── Uploads.tsx    Drag-and-drop batch uploads
 │   │   │   ├── Overview.tsx   Stats dashboard, storage gauges, notifications
 │   │   │   └── Settings.tsx   Themes, download folder, duplicate checker
@@ -343,8 +382,12 @@ npm run dist
 </details>
 
 <details>
-  <summary><b>How do duplicate checks work?</b></summary>
-  <p>Before queueing a transfer, Mediagram compares local file paths and exact byte sizes. If the file is already downloaded, it is marked as <code>Saved</code> and skipped.</p>
+  <summary><b>How do duplicate checks and visual deduplication work?</b></summary>
+  <p>Mediagram provides a dual-layer deduplication system:</p>
+  <ul>
+    <li><b>Download Deduplication:</b> When queueing or selecting media items, Mediagram checks local file paths, file sizes, and Telegram media uniqueness. Items already saved locally or duplicate across your batch selection are automatically flagged with clear warnings.</li>
+    <li><b>Visual Media Cleaner (Dedupe Studio):</b> Scans local folders or downloads using 64-bit perceptual difference hashing (dHash), dual-frame video fingerprinting, and color histograms. Identical or near-identical videos/photos (even across re-encodes) are grouped for side-by-side review and non-destructive cleanup to the Windows Recycle Bin.</li>
+  </ul>
 </details>
 
 ---

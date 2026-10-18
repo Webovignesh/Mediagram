@@ -184,6 +184,7 @@ export default function Dedupe() {
           setFreedStats(s.freedStats || { count: 0, bytes: 0 })
           setView(s.view || 'duplicates')
           setFiles(s.files)
+          if (s.compareGroupId) setCompareGroupId(s.compareGroupId)
           setStatusText(`Loaded folder: ${s.folder} (${s.files.length} files).`)
         }
       }
