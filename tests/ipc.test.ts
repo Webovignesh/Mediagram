@@ -470,6 +470,53 @@ test('downloads.checkDuplicates: the scan folder must be picked or inside the do
   assert.equal(typeof await call(f, 'downloads.checkDuplicates', { items, customPath: outside }), 'object')
 })
 
+test('downloads.checkDuplicates: identifies both on-disk duplicates and in-selection duplicate items', async () => {
+  const f = fixture({ chat: (id: number) => (id === 5 ? { id: 5, title: 'Fixture chat', canPost: false } : null) } as unknown as Partial<Ctx['tg']>)
+  const chatFolder = path.join(f.root, 'Fixture chat')
+  fs.mkdirSync(chatFolder, { recursive: true })
+  // Put an existing file on disk with exact size 4 bytes in the chat folder
+  fs.writeFileSync(path.join(chatFolder, 'existing.mp4'), 'test')
+
+  // Put media items into db
+  // 1: matches existing.mp4 on disk (name 'existing.mp4', size 4)
+  // 2: video 'clip.mp4' (size 100, duration 10)
+  // 3: duplicate of #2 in the selection batch (same name, same size 100, duration 10)
+  // 4: unique photo 'photo.jpg' (size 50, duration 0)
+  putMedia(f.db, [
+    { chatId: 5, messageId: 1, date: 1, type: 'video', name: 'existing.mp4', ext: 'mp4', size: 4, duration: 2, caption: '', thumb: null },
+    { chatId: 5, messageId: 2, date: 2, type: 'video', name: 'clip.mp4', ext: 'mp4', size: 100, duration: 10, caption: '', thumb: null },
+    { chatId: 5, messageId: 3, date: 3, type: 'video', name: 'clip.mp4', ext: 'mp4', size: 100, duration: 10, caption: '', thumb: null },
+    { chatId: 5, messageId: 4, date: 4, type: 'photo', name: 'photo.jpg', ext: 'jpg', size: 50, duration: 0, caption: '', thumb: null },
+  ])
+
+  const res = await call(f, 'downloads.checkDuplicates', {
+    items: [
+      { chatId: 5, messageId: 1 },
+      { chatId: 5, messageId: 2 },
+      { chatId: 5, messageId: 3 },
+      { chatId: 5, messageId: 4 },
+    ],
+  })
+
+  assert.equal(res.totalSelected, 4)
+  assert.equal(res.onDiskCount, 1)
+  assert.equal(res.inSelectionCount, 1)
+  assert.equal(res.totalDuplicates, 2)
+  assert.equal(res.willDownloadCount, 2)
+
+  // Verify duplicate details
+  const diskDup = res.duplicates.find((d: any) => d.messageId === 1)
+  assert.ok(diskDup)
+  assert.equal(diskDup.reason, 'disk')
+
+  const selectionDup = res.duplicates.find((d: any) => d.messageId === 3)
+  assert.ok(selectionDup)
+  assert.equal(selectionDup.reason, 'selection')
+  assert.equal(selectionDup.originalMessageId, 2)
+  assert.match(selectionDup.diskPath, /Duplicate in selection/)
+})
+
+
 test('app.networkChanged: back online notifies the engine and invalidates the views; offline does nothing', async () => {
   const f = fixture()
   assert.deepEqual(await call(f, 'app.networkChanged', { online: false }), { online: false })
