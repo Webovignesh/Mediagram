@@ -199,9 +199,20 @@ function startup() {
   }
   // Download-root provenance: only a folder the Browse dialog handed back may become the root.
   const pickedFolders = new Set<string>()
+  try {
+    const savedDedupe = readSetting(db, 'dedupeFolder')
+    if (typeof savedDedupe === 'string' && path.isAbsolute(savedDedupe)) pickedFolders.add(grantKey(savedDedupe))
+  } catch {}
   const picks = {
     add: (p: string) => { if (typeof p === 'string' && p && p.length <= 4096 && path.isAbsolute(p)) pickedFolders.add(grantKey(p)) },
     has: (p: string) => pickedFolders.has(grantKey(p)),
+    isUnder: (p: string) => {
+      const norm = grantKey(p)
+      for (const f of pickedFolders) {
+        if (norm === f || norm.startsWith(f + path.sep)) return true
+      }
+      return false
+    },
   }
   const prepareForQuit = async () => {
     quitting = true
@@ -285,7 +296,7 @@ function startup() {
   // 7.
   app.whenReady().then(async () => {
     session.defaultSession.setPermissionRequestHandler((_contents, permission, done) => {
-      if (permission === 'clipboard-read' || permission === 'clipboard-sanitized-write') return done(true)
+      if (permission === 'clipboard-read' || permission === 'clipboard-sanitized-write' || permission === 'fullscreen') return done(true)
       done(false)
     })
     session.defaultSession.setPermissionCheckHandler((_contents, permission) =>

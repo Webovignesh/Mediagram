@@ -2,6 +2,8 @@
 // calls in through ctx, so node:test can load this file.
 import fs from 'node:fs'
 import path from 'node:path'
+import crypto from 'node:crypto'
+import { spawn } from 'node:child_process'
 import {
   type AppError, checkSettings, type DB, downloadStates, type Emit, fail, jobsList, mediaExts, type MediaItem, mediaQuery,
   putSetting, readSetting, setSettings, statsActivity, statsChats, statsOverview, type StoredSettings,
@@ -23,7 +25,7 @@ export type Native = {
   /** Files the user chose this session (file dialog or drag-drop, handed over by preload). uploads.add reads nothing else. */
   grants: { add(paths: unknown): void, has(path: string): boolean }
   /** Folders chosen in the Browse dialog this session. settings.set only accepts one of these as the download root. */
-  picks: { add(path: string): void, has(path: string): boolean }
+  picks: { add(path: string): void, has(path: string): boolean, isUnder?(path: string): boolean }
   /** The API keys, encrypted by main: saved automatically when a sign-in reaches `ready`, kept through logout,
    *  forgotten when Telegram rejects them or Clear All Data runs. `get` is the pair the next sign-in starts with. */
   keys: { save(apiId: number, apiHash: string): void, forget(): void, get(): { apiId: number, apiHash: string } | null }
@@ -599,12 +601,219 @@ export function createMethods(ctx: Ctx) {
       invalidate(...topics)
       return settings()
     }),
+
+    'dedupe.hasSubfolders': method(shape({ folderPath: text(4096) }), async ({ folderPath }) => {
+      try {
+        const entries = await fs.promises.readdir(folderPath, { withFileTypes: true })
+        return { hasSubfolders: entries.some((e) => e.isDirectory() && !e.name.startsWith('.')) }
+      } catch { return { hasSubfolders: false } }
+    }),
+    'dedupe.scan': method(shape({ folderPath: opt(text(4096)), recursive: opt(bool) }), async ({ folderPath, recursive }) => {
+      const rootDir = folderPath ? path.resolve(folderPath) : ctx.settings().downloadRoot
+      const allowed = ctx.native.picks.isUnder?.(rootDir) || within(ctx.settings().downloadRoot, rootDir)
+      if (!allowed) throw fail(403, "That folder isn't authorized. Please pick it via the folder picker.")
+      try { putSetting(ctx.db, 'dedupeFolder', rootDir) } catch {}
+      ctx.native.picks.add(rootDir)
+      const isRec = recursive ?? true
+      const out: { path: string, name: string, size: number, mtime: number, kind: 'image' | 'video' }[] = []
+      const DEDUPE_VIDEO_EXTS = new Set(['.mp4', '.mkv', '.avi', '.mov', '.webm', '.m4v', '.wmv', '.flv', '.ts', '.m2ts', '.mts', '.mpg', '.mpeg', '.3gp', '.3g2', '.ogv'])
+      const DEDUPE_IMAGE_EXTS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.avif', '.jfif', '.tif', '.tiff', '.heic', '.heif', '.svg'])
+      const SKIP_DIRS = new Set(['$RECYCLE.BIN', 'System Volume Information', '.git', 'node_modules'])
+
+      async function walkDir(dir: string, depth = 0) {
+        if (depth > 12 || out.length > 50000) return
+        let entries: fs.Dirent[] = []
+        try { entries = await fs.promises.readdir(dir, { withFileTypes: true }) } catch { return }
+        const subdirs: string[] = []
+        const files: { full: string, name: string, ext: string }[] = []
+        for (const e of entries) {
+          const full = path.join(dir, e.name)
+          if (e.isDirectory()) {
+            if (e.name.startsWith('.') || SKIP_DIRS.has(e.name)) continue
+            subdirs.push(full)
+          } else if (e.isFile()) {
+            const ext = path.extname(e.name).toLowerCase()
+            if (DEDUPE_VIDEO_EXTS.has(ext) || DEDUPE_IMAGE_EXTS.has(ext)) {
+              files.push({ full, name: e.name, ext })
+            }
+          }
+        }
+        for (let i = 0; i < files.length; i += 256) {
+          const batch = files.slice(i, i + 256)
+          const stats = await Promise.all(batch.map((f) => fs.promises.stat(f.full).catch(() => null)))
+          for (let j = 0; j < batch.length; j++) {
+            const st = stats[j]
+            if (st && st.size > 0) {
+              out.push({
+                path: batch[j].full,
+                name: batch[j].name,
+                size: st.size,
+                mtime: st.mtimeMs,
+                kind: DEDUPE_IMAGE_EXTS.has(batch[j].ext) ? 'image' : 'video'
+              })
+            }
+          }
+        }
+        if (isRec) {
+          for (const sub of subdirs) {
+            if (out.length > 50000) break
+            await walkDir(sub, depth + 1)
+          }
+        }
+      }
+
+      await walkDir(rootDir)
+      out.sort((a, b) => a.name.localeCompare(b.name))
+      return { files: out, folder: rootDir }
+    }),
+    'dedupe.trash': method(shape({ paths: list(filePath, 1, 1000) }), async ({ paths }) => {
+      let trashed = 0, freed = 0
+      const failed: string[] = []
+      for (const p of paths) {
+        try {
+          const st = await fs.promises.stat(p).catch(() => null)
+          if (!st?.isFile()) { failed.push(path.basename(p)); continue }
+          await ctx.native.trashItem(p)
+          trashed++
+          freed += st.size
+        } catch {
+          failed.push(path.basename(p))
+        }
+      }
+      return { trashed, freed, failed }
+    }),
+    'dedupe.reveal': method(shape({ path: filePath }), ({ path: target }) => {
+      ctx.native.reveal(target)
+      return { ok: true }
+    }),
+    'dedupe.open': method(shape({ path: filePath }), async ({ path: target }) => {
+      const err = await ctx.native.openPath(target)
+      if (err) throw fail(400, err)
+      return { ok: true }
+    }),
+    'dedupe.thumb': method(shape({ path: filePath }), async ({ path: target }) => {
+      const resolved = path.resolve(target)
+      const allowed = ctx.native.picks.isUnder?.(resolved) || within(ctx.settings().downloadRoot, resolved)
+      if (!allowed) throw fail(403, 'Path not authorized')
+
+      let bin: string | null = null
+      try {
+        if (process.resourcesPath) {
+          const prodPath = path.join(process.resourcesPath, 'bin', 'ffmpeg.exe')
+          if (fs.existsSync(prodPath)) bin = prodPath
+        }
+      } catch {}
+      if (!bin) {
+        try {
+          const devPath = path.resolve(import.meta.dirname, '../../node_modules/ffmpeg-static/ffmpeg.exe')
+          if (fs.existsSync(devPath)) bin = devPath
+        } catch {}
+      }
+      if (!bin) {
+        try {
+          const devPath2 = path.resolve(process.cwd(), 'node_modules/ffmpeg-static/ffmpeg.exe')
+          if (fs.existsSync(devPath2)) bin = devPath2
+        } catch {}
+      }
+      if (!bin) return null
+
+      const st = await fs.promises.stat(resolved).catch(() => null)
+      if (!st || st.size === 0) return null
+
+      const isImage = (['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.avif', '.jfif', '.tif', '.tiff', '.heic', '.heif'] as const)
+        .some((ext) => resolved.toLowerCase().endsWith(ext))
+
+      const thumbCacheDir = path.join(ctx.paths.tmp, 'mediagram-dedupe-thumbs')
+      await fs.promises.mkdir(thumbCacheDir, { recursive: true })
+      const key = crypto.createHash('sha1').update(resolved + '|' + st.size + '|' + st.mtimeMs).digest('hex')
+      const outJpg = path.join(thumbCacheDir, `${key}.jpg`)
+      const outJpg2 = path.join(thumbCacheDir, `${key}_75.jpg`)
+      const metaJson = path.join(thumbCacheDir, `${key}.json`)
+
+      const runFf = (args: string[]) => new Promise<{ code: number, log: string }>((resolve) => {
+        let out = ''
+        try {
+          const p = spawn(bin!, args, { windowsHide: true })
+          p.stderr.on('data', (d) => { out += d.toString() })
+          p.on('error', () => resolve({ code: 1, log: out }))
+          p.on('close', (code) => resolve({ code: code ?? 0, log: out }))
+        } catch { resolve({ code: 1, log: out }) }
+      })
+
+      // Fast-path: return cached thumbnail and metadata
+      if (fs.existsSync(outJpg) && fs.existsSync(metaJson)) {
+        try {
+          const [buf, metaRaw] = await Promise.all([
+            fs.promises.readFile(outJpg),
+            fs.promises.readFile(metaJson, 'utf8'),
+          ])
+          const meta = JSON.parse(metaRaw)
+          let thumb2: string | null = null
+          if (!isImage && meta.duration && meta.duration > 1) {
+            if (fs.existsSync(outJpg2)) {
+              const buf2 = await fs.promises.readFile(outJpg2).catch(() => null)
+              if (buf2) thumb2 = `data:image/jpeg;base64,${buf2.toString('base64')}`
+            } else {
+              const t75 = (meta.duration * 0.75).toFixed(2)
+              await runFf(['-y', '-ss', t75, '-i', resolved, '-frames:v', '1', '-vf', 'scale=240:-2', '-q:v', '6', outJpg2])
+              if (fs.existsSync(outJpg2)) {
+                const buf2 = await fs.promises.readFile(outJpg2).catch(() => null)
+                if (buf2) thumb2 = `data:image/jpeg;base64,${buf2.toString('base64')}`
+              }
+            }
+          }
+          return {
+            thumb: `data:image/jpeg;base64,${buf.toString('base64')}`,
+            thumb2,
+            duration: meta.duration,
+            width: meta.width,
+            height: meta.height,
+          }
+        } catch {}
+      }
+
+      const baseArgs = ['-y', ...(isImage ? [] : ['-ss', '0.5']), '-i', resolved, '-frames:v', '1', '-vf', 'scale=240:-2', '-q:v', '6', outJpg]
+      let res = await runFf(baseArgs)
+      if (!fs.existsSync(outJpg) && !isImage) {
+        res = await runFf(['-y', '-i', resolved, '-frames:v', '1', '-vf', 'scale=240:-2', '-q:v', '6', outJpg])
+      }
+
+      if (!fs.existsSync(outJpg)) return null
+
+      const dm = /Duration:\s*(\d+):(\d+):([\d.]+)/.exec(res.log || '')
+      const duration = dm ? (+dm[1]) * 3600 + (+dm[2]) * 60 + parseFloat(dm[3]) : null
+      const vm = /Video:[^\n]*?(\d{3,5})x(\d{3,5})/.exec(res.log || '')
+      const width = vm ? +vm[1] : null
+      const height = vm ? +vm[2] : null
+
+      fs.promises.writeFile(metaJson, JSON.stringify({ duration, width, height })).catch(() => {})
+
+      // Extract 75% video frame for multi-point visual duplicate checking
+      let thumb2: string | null = null
+      if (!isImage && duration && duration > 1) {
+        const t75 = (duration * 0.75).toFixed(2)
+        await runFf(['-y', '-ss', t75, '-i', resolved, '-frames:v', '1', '-vf', 'scale=240:-2', '-q:v', '6', outJpg2])
+        if (fs.existsSync(outJpg2)) {
+          const buf2 = await fs.promises.readFile(outJpg2).catch(() => null)
+          if (buf2) thumb2 = `data:image/jpeg;base64,${buf2.toString('base64')}`
+        }
+      }
+
+      const buf = await fs.promises.readFile(outJpg)
+      return {
+        thumb: `data:image/jpeg;base64,${buf.toString('base64')}`,
+        thumb2,
+        duration,
+        width,
+        height,
+      }
+    }),
   }
 }
 export type Methods = ReturnType<typeof createMethods>
 
 /** mediagram:// or teleflow:// URL → local file, or null for a 404 (ARCHITECTURE > mediagram:// protocol). */
-export async function protocolFile(url: string, ctx: Pick<Ctx, 'tg' | 'paths' | 'settings' | 'db'>): Promise<string | null> {
+export async function protocolFile(url: string, ctx: Pick<Ctx, 'tg' | 'paths' | 'settings' | 'db' | 'native'>): Promise<string | null> {
   const u = new URL(url)
   const arg = decodeURIComponent(u.pathname.slice(1))
   const isFile = async (f: string) => !!(await fs.promises.stat(f).catch(() => null))?.isFile()
@@ -665,7 +874,12 @@ export async function protocolFile(url: string, ctx: Pick<Ctx, 'tg' | 'paths' | 
 
     // 3. Playback URLs carry absolute paths, so they go through the library rule: an existing file inside the root
     // after realpath, or a recorded download. A forged URL names nothing outside those two (ARCHITECTURE > Security).
-    try { return await libraryFile(ctx.db, ctx.settings().downloadRoot, arg) } catch { return null }
+    try { return await libraryFile(ctx.db, ctx.settings().downloadRoot, arg) } catch { }
+    try {
+      const resolved = path.resolve(arg)
+      if (ctx.native.picks.isUnder?.(resolved) && (await isFile(resolved))) return resolved
+    } catch { }
+    return null
   }
   return null
 }

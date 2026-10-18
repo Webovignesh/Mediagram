@@ -127,6 +127,7 @@ const phase3 = ['app.clearCache', 'app.clearData', 'app.clearAll', 'chats.leave'
 const phase4 = ['chats.archive', 'chats.mute', 'chats.pin', 'chats.sendTyping', 'messages.delete', 'messages.edit', 'messages.forward', 'messages.pin', 'messages.react', 'messages.read', 'messages.search', 'messages.send']
 const phase5 = ['chats.checkUsername', 'chats.create', 'chats.getSettings', 'chats.updateSettings']
 const updaterMethods = ['updater.check', 'updater.dismiss', 'updater.install', 'updater.status']
+const dedupeMethods = ['dedupe.hasSubfolders', 'dedupe.open', 'dedupe.reveal', 'dedupe.scan', 'dedupe.thumb', 'dedupe.trash']
 const validate = (name: string, args: unknown) => (methods as Record<string, { validate(a: unknown): unknown }>)[name].validate(args)
 const rejects400 = (cases: [string, unknown, string][]) => {
   for (const [name, args, field] of cases) {
@@ -135,7 +136,7 @@ const rejects400 = (cases: [string, unknown, string][]) => {
 }
 
 test('validators: all methods are registered; the Phase 3 & 4 methods accept valid args and reject bad ones naming the field', () => {
-  assert.deepEqual(Object.keys(methods).sort(), [...phase2, ...phase3, ...phase4, ...phase5, ...updaterMethods].sort())
+  assert.deepEqual(Object.keys(methods).sort(), [...phase2, ...phase3, ...phase4, ...phase5, ...updaterMethods, ...dedupeMethods].sort())
   const items = (n: number) => Array.from({ length: n }, (_, i) => ({ chatId: -100, messageId: (i + 1) * 2 ** 20 }))
   const good: [string, unknown, unknown?][] = [
     ['app.clearCache', undefined, {}], ['app.clearData', {}], ['app.clearAll', { deleteDownloads: false }, { deleteDownloads: false }],

@@ -8,7 +8,9 @@ import Overview from './pages/Overview.tsx'
 import Downloads from './pages/Downloads.tsx'
 import Uploads from './pages/Uploads.tsx'
 import Queue from './pages/Queue.tsx'
+import Dedupe from './pages/Dedupe.tsx'
 import Settings from './pages/Settings.tsx'
+import { CopyCheck } from 'lucide-react'
 import { UpdatePill } from './UpdatePill.tsx'
 
 // Native window drag bar for seamless color match with native controls without creating layout gap
@@ -70,6 +72,7 @@ function Sidebar({
     { id: '/downloads', icon: Download, label: 'Downloads' },
     { id: '/uploads', icon: Upload, label: 'Uploads' },
     { id: '/queue', icon: ListOrdered, label: 'Queue', badge: activeCount },
+    { id: '/dedupe', icon: CopyCheck, label: 'Dedupe' },
     { id: '/settings', icon: SettingsIcon, label: 'Settings' },
   ]
 
@@ -322,8 +325,9 @@ export default function App() {
           {page === '/downloads' && <Downloads />}
           {page === '/uploads' && <Uploads />}
           {page === '/queue' && <Queue />}
+          {page === '/dedupe' && <Dedupe />}
           {page === '/settings' && <Settings />}
-          {!['/overview', '/downloads', '/uploads', '/queue', '/settings'].includes(page) && (
+          {!['/overview', '/downloads', '/uploads', '/queue', '/dedupe', '/settings'].includes(page) && (
             <div className="flex h-full items-center justify-center">
               <Empty message="Page not found" action={{ label: 'Go to Overview', onClick: () => navigate('/overview') }} />
             </div>

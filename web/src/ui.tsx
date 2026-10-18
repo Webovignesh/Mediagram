@@ -1324,7 +1324,7 @@ function logMediaFailure(where: string, v: HTMLVideoElement | null, err: MediaEr
   console.warn(`[player] ${where}: ${JSON.stringify(detail)}`)
 }
 
-function CustomVideoPlayer({
+export function CustomVideoPlayer({
   src,
   speed,
   onSpeedChange,
@@ -1332,6 +1332,7 @@ function CustomVideoPlayer({
   initialDuration,
   downloadProgress,
   isCompleted,
+  className,
 }: {
   src: string
   speed: number
@@ -1340,6 +1341,7 @@ function CustomVideoPlayer({
   initialDuration?: number
   downloadProgress?: { downloaded: number, total: number } | null
   isCompleted?: boolean
+  className?: string
 }) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -1628,15 +1630,58 @@ function CustomVideoPlayer({
   }
 
   const toggleFullscreen = () => {
-    if (!containerRef.current) return
-    if (!document.fullscreenElement) {
-      containerRef.current.requestFullscreen?.()
-      setFullscreen(true)
+    const el = containerRef.current || videoRef.current
+    if (!el) return
+    if (!document.fullscreenElement && !fullscreen) {
+      if (el.requestFullscreen) {
+        el.requestFullscreen().catch(() => {
+          videoRef.current?.requestFullscreen?.().catch(() => {
+            setFullscreen(true)
+          })
+        })
+      } else if ((el as any).webkitRequestFullscreen) {
+        (el as any).webkitRequestFullscreen()
+      } else if ((videoRef.current as any)?.webkitEnterFullscreen) {
+        (videoRef.current as any).webkitEnterFullscreen()
+      } else {
+        setFullscreen(true)
+      }
     } else {
-      document.exitFullscreen?.()
+      if (document.fullscreenElement) {
+        if (document.exitFullscreen) {
+          document.exitFullscreen().catch(() => {})
+        } else if ((document as any).webkitExitFullscreen) {
+          (document as any).webkitExitFullscreen()
+        }
+      }
       setFullscreen(false)
     }
   }
+
+  useEffect(() => {
+    const onFs = () => {
+      setFullscreen(Boolean(document.fullscreenElement))
+    }
+    document.addEventListener('fullscreenchange', onFs)
+    document.addEventListener('webkitfullscreenchange', onFs)
+    return () => {
+      document.removeEventListener('fullscreenchange', onFs)
+      document.removeEventListener('webkitfullscreenchange', onFs)
+    }
+  }, [])
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && fullscreen) {
+        if (document.fullscreenElement) {
+          document.exitFullscreen?.().catch?.(() => {})
+        }
+        setFullscreen(false)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [fullscreen])
 
   const handleSeek = (posFraction: number) => {
     if (duration <= 0) return // metadata unknown: a seek would silently resolve to 0
@@ -1717,9 +1762,16 @@ function CustomVideoPlayer({
   return (
     <div
       ref={containerRef}
+      data-player-root
       tabIndex={0}
       aria-label="Video player"
-      className="relative flex items-center justify-center w-full max-w-5xl aspect-video min-h-[360px] max-h-[86vh] rounded-2xl overflow-hidden group select-none bg-black shadow-2xl cursor-default focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+      className={`relative flex items-center justify-center overflow-hidden group select-none bg-black cursor-default focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary ${
+        fullscreen
+          ? '!fixed !inset-0 !z-[99999] !w-screen !h-screen !max-w-none !max-h-none !rounded-none !shadow-none !m-0'
+          : className
+          ? className
+          : 'w-full aspect-video shadow-2xl max-w-5xl min-h-[360px] max-h-[86vh] rounded-2xl'
+      }`}
       onMouseMove={resetHideTimer}
       onMouseLeave={() => {
         if (playing && hasStarted && !buffering) {
@@ -1859,7 +1911,7 @@ function CustomVideoPlayer({
 
       {/* Sleek Custom Bottom Video Controls Bar - always visible when showControls is true */}
       <div
-        className={`absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/95 via-black/75 to-transparent px-4 pb-3.5 pt-8 flex flex-col gap-2 transition-opacity duration-300 z-30 ${
+        className={`absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/95 via-black/75 to-transparent px-3 sm:px-4 pb-2 pt-5 flex flex-col gap-1 transition-opacity duration-300 z-30 ${
           showControls ? 'opacity-100' : 'opacity-0 pointer-events-none'
         }`}
         onClick={(e) => e.stopPropagation()}

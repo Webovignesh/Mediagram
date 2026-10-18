@@ -626,3 +626,16 @@ img {
   user-select: none;
   -webkit-user-select: none;
 }
+
+/* Ensure video player takes full screen edge-to-edge when in HTML5 fullscreen mode */
+[data-player-root]:fullscreen,
+[data-player-root]:-webkit-full-screen {
+  width: 100vw !important;
+  height: 100vh !important;
+  max-width: none !important;
+  max-height: none !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  margin: 0 !important;
+}
+
