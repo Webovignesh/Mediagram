@@ -1,12 +1,52 @@
 import { useState, useRef, useEffect } from 'react'
 import { Download, Loader2, ChevronDown, X, Sparkles, AlertCircle, RefreshCw } from 'lucide-react'
-import { useUpdater } from './api.ts'
+import { useUpdater, useCall } from './api.ts'
+
+function checkFreshOpenChangelog(version: string | undefined): boolean {
+  if (!version) return false
+  const LAST_SEEN_KEY = 'mediagram_last_seen_version'
+  const DISMISSED_KEY = 'mediagram_changelog_dismissed_version'
+  const SESSION_KEY = `mediagram_fresh_update_${version}`
+
+  try {
+    const prevVersion = localStorage.getItem(LAST_SEEN_KEY)
+    const dismissed = localStorage.getItem(DISMISSED_KEY)
+    const sessionFresh = sessionStorage.getItem(SESSION_KEY)
+
+    if (dismissed === version) return false
+    if (sessionFresh === 'true') return true
+
+    // If user had a previously recorded version and now opened a newer/different version
+    if (prevVersion && prevVersion !== version) {
+      sessionStorage.setItem(SESSION_KEY, 'true')
+      localStorage.setItem(LAST_SEEN_KEY, version)
+      return true
+    }
+
+    if (!prevVersion) {
+      // Brand new installation: mark current version so future updates trigger the pill
+      localStorage.setItem(LAST_SEEN_KEY, version)
+      return false
+    }
+  } catch {
+    // Storage unavailable or disabled
+  }
+  return false
+}
 
 export function UpdatePill() {
   const { update, checkForUpdates, quitAndInstall, dismiss } = useUpdater()
+  const { data: appInfo } = useCall<{ version: string; repository: string | null }>('app.info')
   const [showFlyout, setShowFlyout] = useState(false)
   const [isRestarting, setIsRestarting] = useState(false)
+  const [dismissedVersion, setDismissedVersion] = useState<string | null>(null)
   const flyoutRef = useRef<HTMLDivElement>(null)
+
+  const showChangelog = Boolean(
+    appInfo?.version &&
+    dismissedVersion !== appInfo.version &&
+    checkFreshOpenChangelog(appInfo.version)
+  )
 
   // Close flyout when clicking outside
   useEffect(() => {
@@ -29,25 +69,28 @@ export function UpdatePill() {
     }
   }
 
-  // 1. Idle state: zero footprint, pristine top bar
-  if (update.status === 'idle') {
-    return null
+  const handleDismissChangelog = () => {
+    if (appInfo?.version) {
+      try {
+        localStorage.setItem('mediagram_changelog_dismissed_version', appInfo.version)
+        sessionStorage.removeItem(`mediagram_fresh_update_${appInfo.version}`)
+      } catch {}
+      setDismissedVersion(appInfo.version)
+    }
   }
 
-  // 2. Checking state: subtle minimal spinner
-  if (update.status === 'checking') {
-    return (
-      <div
-        className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-surface-raised/80 border border-border/40 text-[11px] text-muted select-none shadow-sm backdrop-blur-md"
-        title="Checking for updates..."
-      >
-        <Loader2 className="w-3 h-3 animate-spin text-primary" />
-        <span className="font-medium">Checking updates...</span>
-      </div>
-    )
+  const handleOpenChangelog = () => {
+    if (!appInfo?.version) return
+    const repo = appInfo.repository || 'https://github.com/Webovignesh/Mediagram'
+    const rawVersion = appInfo.version
+    const tag = rawVersion.startsWith('v') ? rawVersion : `v${rawVersion}`
+    const releaseUrl = `${repo}/releases/tag/${tag}`
+
+    window.open(releaseUrl, '_blank')
+    handleDismissChangelog()
   }
 
-  // 3. Downloading / Available state: micro-progress bar and percent
+  // 1. Downloading / Available state: micro-progress bar and percent (only shown when an update is really available)
   if (update.status === 'downloading' || update.status === 'available') {
     const percent = Math.min(100, Math.max(0, update.percent ?? 0))
     return (
@@ -68,7 +111,7 @@ export function UpdatePill() {
     )
   }
 
-  // 4. Ready state: interactive pill with glowing pulse badge & flyout card
+  // 2. Ready state: interactive pill with glowing pulse badge & flyout card
   if (update.status === 'ready') {
     return (
       <div className="relative" ref={flyoutRef}>
@@ -168,7 +211,7 @@ export function UpdatePill() {
     )
   }
 
-  // 5. Error state
+  // 3. Error state (only shown if a manual check failed)
   if (update.status === 'error') {
     return (
       <div className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-destructive/10 border border-destructive/30 text-[11px] text-destructive shadow-sm select-none">
@@ -196,5 +239,41 @@ export function UpdatePill() {
     )
   }
 
+  // 4. Fresh open changelog pill (only shown once on the fresh launch after an update is installed)
+  if (showChangelog) {
+    const rawVersion = appInfo?.version || ''
+    const tag = rawVersion ? (rawVersion.startsWith('v') ? rawVersion : `v${rawVersion}`) : ''
+
+    return (
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={handleOpenChangelog}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            handleOpenChangelog()
+          }
+        }}
+        className="group flex items-center gap-1.5 pl-3 pr-1.5 py-0.5 rounded-full bg-[#0078d4] hover:bg-[#0271c6] active:scale-95 text-white select-none transition-all shadow-md cursor-pointer border border-[#0078d4]/40 animate-in fade-in duration-200"
+        title={tag ? `View changelog for ${tag} on GitHub` : 'View changelog on GitHub'}
+      >
+        <span className="text-[12px] font-semibold tracking-tight text-white">View Changelog</span>
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation()
+            handleDismissChangelog()
+          }}
+          className="p-0.5 rounded-full hover:bg-white/20 active:scale-90 transition-all text-white/90 hover:text-white cursor-pointer ml-0.5"
+          title="Dismiss"
+          aria-label="Dismiss changelog"
+        >
+          <X className="w-3.5 h-3.5 stroke-[2.5]" />
+        </button>
+      </div>
+    )
+  }
+
+  // 5. Idle / Checking state: completely silent in the background
   return null
 }

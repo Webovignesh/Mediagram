@@ -53,9 +53,11 @@ export function createUpdater({ emit, paths: _paths, isPackaged, prepareForQuit 
     log('info', 'updater: running in development mode (automatic background check disabled)')
     return {
       getStatus: () => state,
-      checkForUpdates: async (_manual?: boolean) => {
-        setState({ status: 'checking' })
-        await new Promise((r) => setTimeout(r, 800))
+      checkForUpdates: async (manual?: boolean) => {
+        if (manual) {
+          setState({ status: 'checking' })
+          await new Promise((r) => setTimeout(r, 800))
+        }
         setState({ status: 'idle' })
         return state
       },
@@ -93,15 +95,20 @@ export function createUpdater({ emit, paths: _paths, isPackaged, prepareForQuit 
     autoUpdater.disableWebInstaller = true
 
     autoUpdater.on('checking-for-update', () => {
-      setState({ status: 'checking', version: state.version })
+      // Background checks remain silent; only manual checks report checking state
+      if (isManualCheck) {
+        setState({ status: 'checking', version: state.version })
+      }
     })
 
     autoUpdater.on('update-not-available', () => {
       log('info', 'updater: app is up to date')
       setState({ status: 'idle' })
+      isManualCheck = false
     })
 
     autoUpdater.on('update-available', (info: any) => {
+      isManualCheck = false
       const releaseNotes = typeof info.releaseNotes === 'string'
         ? info.releaseNotes
         : Array.isArray(info.releaseNotes)
@@ -145,6 +152,7 @@ export function createUpdater({ emit, paths: _paths, isPackaged, prepareForQuit 
       if (isNotFound) {
         log('info', 'updater: no newer release found on GitHub (app is up to date)')
         setState({ status: 'idle' })
+        isManualCheck = false
         return
       }
 
@@ -155,6 +163,7 @@ export function createUpdater({ emit, paths: _paths, isPackaged, prepareForQuit 
         return
       }
 
+      isManualCheck = false
       setState({
         status: 'error',
         version: state.version,
@@ -183,6 +192,7 @@ export function createUpdater({ emit, paths: _paths, isPackaged, prepareForQuit 
       } else {
         setState({ status: 'error', error: msg })
       }
+      isManualCheck = false
     }
     return state
   }
