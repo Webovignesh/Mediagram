@@ -80,12 +80,12 @@ test('getSettings: defaults, stored values win; apiHash, window, and startWithSy
 test('checkSettings: accepts and rejects each key by its rule, naming the key', () => {
   const booleans = ['skipExisting', 'datePrefix', 'uploadAlbum', 'keepNames', 'showArchived', 'autoRetry', 'notifyComplete', 'notifyFailed', 'closeToTray', 'startWithSystem', 'prebufferVideo']
   const good: Record<string, unknown[]> = {
-    maxDownloads: [1, 5], maxUploads: [1, 3], retryAttempts: [1, 10], stallSeconds: [5, 10, 30, 60], clearCompletedDays: [0, 1, 7, 30],
+    maxDownloads: [1, 10], maxUploads: [1, 3], retryAttempts: [1, 10], stallSeconds: [5, 10, 30, 60], clearCompletedDays: [0, 1, 7, 30],
     defaultUploadChat: [null, 42, -1009876543210], downloadRoot: ['X:\\Fixture'],
     ...Object.fromEntries(booleans.map((k) => [k, [true, false]])),
   }
   const bad: Record<string, unknown[]> = {
-    maxDownloads: [0, 6, 2.5, '2', null], maxUploads: [0, 4], retryAttempts: [0, 11], stallSeconds: [15, '10'], clearCompletedDays: [2, -1],
+    maxDownloads: [0, 11, 2.5, '2', null], maxUploads: [0, 4], retryAttempts: [0, 11], stallSeconds: [15, '10'], clearCompletedDays: [2, -1],
     defaultUploadChat: [0, 1.5, '5'], downloadRoot: ['', '   ', 5, 'x'.repeat(1001)],
     ...Object.fromEntries(booleans.map((k) => [k, ['yes', 1, null]])),
   }

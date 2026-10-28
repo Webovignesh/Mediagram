@@ -176,7 +176,7 @@ export const folderTemplate: Rule = (v, k) => {
 // canPost check from the chat cache, both in settings.set before anything is written.
 const rules: Record<keyof SettingsPatch, Rule> = {
   downloadRoot: (v, k) => { if (typeof v !== 'string' || !v.trim() || v.length > 1000) throw bad(k, 'must be a folder path') },
-  maxDownloads: range(1, 5), skipExisting: bool, datePrefix: bool, folderTemplate,
+  maxDownloads: range(1, 10), skipExisting: bool, datePrefix: bool, folderTemplate,
   defaultUploadChat: (v, k) => { if (v !== null && (!Number.isSafeInteger(v) || v === 0)) throw bad(k, 'must be a chat or none') },
   uploadAlbum: bool, keepNames: bool, maxUploads: range(1, 3), showArchived: bool, autoRetry: bool,
   retryAttempts: range(1, 10), stallSeconds: choice(5, 10, 30, 60), clearCompletedDays: choice(0, 1, 7, 30),

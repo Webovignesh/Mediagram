@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useRef } from 'react'
 import {
   FolderSearch, FolderPlus, Play, Trash2,
   Sparkles, Film, Image as ImageIcon, CheckCircle2, Loader2, ArrowLeft,
-  Columns2
+  Columns2, XCircle
 } from 'lucide-react'
 import { call } from '../api.ts'
 import { fmtBytes, Button, SearchInput, Select, Dialog, toast, CustomVideoPlayer, MediaPreviewModal } from '../ui.tsx'
@@ -44,7 +44,7 @@ const DUP_DIST_VID = 40
 const DUP_DIST_VID_NODUR = 12
 const CSIG_MAX = 96
 const SCAN_CONC = 4
-const STORAGE_KEY = 'mediagram_dedupe_session_v3'
+const STORAGE_KEY = 'mediagram_dedupe_session_v5'
 
 function extOf(name: string) {
   const i = name.lastIndexOf('.')
@@ -173,19 +173,66 @@ export default function Dedupe() {
   // 1. Restore session from localStorage on initial load
   useEffect(() => {
     try {
+      // Clean up any legacy or fake mock sessions
+      for (const legacyKey of [
+        'mediagram_dedupe_session_v1',
+        'mediagram_dedupe_session_v2',
+        'mediagram_dedupe_session_v3',
+        'mediagram_dedupe_session_v4',
+      ]) {
+        localStorage.removeItem(legacyKey)
+      }
+      for (let i = localStorage.length - 1; i >= 0; i--) {
+        const k = localStorage.key(i)
+        if (k && k.startsWith('mediagram_dedupe_session')) {
+          try {
+            const v = localStorage.getItem(k)
+            if (
+              v &&
+              (v.includes('Mediagram\\Downloads') ||
+                v.includes('Mediagram/Downloads') ||
+                v.includes('Dune.Part') ||
+                v.includes('Interstellar'))
+            ) {
+              localStorage.removeItem(k)
+            }
+          } catch {}
+        }
+      }
+
       const raw = localStorage.getItem(STORAGE_KEY)
       if (raw) {
         const s = JSON.parse(raw)
+        // Check if this is mock/fake data
+        const isMock =
+          !s.folder ||
+          s.folder.toLowerCase().includes('mediagram\\downloads') ||
+          s.folder.toLowerCase().includes('mediagram/downloads') ||
+          (Array.isArray(s.files) &&
+            s.files.some((f: any) => f?.name?.includes('Dune') || f?.name?.includes('Interstellar')))
+
+        if (isMock) {
+          clearSession()
+          return
+        }
+
         if (s.folder && Array.isArray(s.files) && s.files.length > 0) {
-          setFolder(s.folder)
-          setPhase(s.phase || (s.dupGroups?.length > 0 ? 'scanned' : 'staged'))
-          setRecursive(s.recursive ?? true)
-          setDupGroups(s.dupGroups || [])
-          setFreedStats(s.freedStats || { count: 0, bytes: 0 })
-          setView(s.view || 'duplicates')
-          setFiles(s.files)
-          if (s.compareGroupId) setCompareGroupId(s.compareGroupId)
-          setStatusText(`Loaded folder: ${s.folder} (${s.files.length} files).`)
+          // Verify that folder exists on system
+          call<{ hasSubfolders: boolean }>('dedupe.hasSubfolders', { folderPath: s.folder })
+            .then(() => {
+              setFolder(s.folder)
+              setPhase(s.phase || (s.dupGroups?.length > 0 ? 'scanned' : 'staged'))
+              setRecursive(s.recursive ?? true)
+              setDupGroups(s.dupGroups || [])
+              setFreedStats(s.freedStats || { count: 0, bytes: 0 })
+              setView(s.view || 'duplicates')
+              setFiles(s.files)
+              if (s.compareGroupId) setCompareGroupId(s.compareGroupId)
+              setStatusText(`Loaded folder: ${s.folder} (${s.files.length} files).`)
+            })
+            .catch(() => {
+              clearSession()
+            })
         }
       }
     } catch {}
@@ -268,7 +315,24 @@ export default function Dedupe() {
     setCompareGroupId(null)
     setPhase('idle')
     setStatusText('Select a folder to begin visual duplicate scanning.')
-    try { localStorage.removeItem(STORAGE_KEY) } catch {}
+    try {
+      localStorage.removeItem(STORAGE_KEY)
+      for (const legacyKey of [
+        'mediagram_dedupe_session_v1',
+        'mediagram_dedupe_session_v2',
+        'mediagram_dedupe_session_v3',
+        'mediagram_dedupe_session_v4',
+        'mediagram_dedupe_session_v5',
+      ]) {
+        localStorage.removeItem(legacyKey)
+      }
+      for (let i = localStorage.length - 1; i >= 0; i--) {
+        const k = localStorage.key(i)
+        if (k && k.startsWith('mediagram_dedupe_session')) {
+          localStorage.removeItem(k)
+        }
+      }
+    } catch {}
   }
 
   // Visual capture of thumbnail + dhash using backend ffmpeg + canvas
@@ -494,6 +558,43 @@ export default function Dedupe() {
     }
   }
 
+  // Dismiss a duplicate group without deleting files (for false positives / fake entries)
+  const dismissGroup = (groupId: string) => {
+    setDupGroups((prev) => prev.filter((g) => g.id !== groupId))
+    if (compareGroupId === groupId) {
+      setCompareGroupId(null)
+    }
+    toast('Duplicate group dismissed. Files kept untouched.', 'success')
+  }
+
+  // Dismiss a single file from a duplicate group without deleting the file
+  const dismissItem = (groupId: string, itemId: string) => {
+    setDupGroups((prev) => {
+      const next: DupGroup[] = []
+      for (const g of prev) {
+        if (g.id !== groupId) {
+          next.push(g)
+          continue
+        }
+        const remaining = g.files.filter((f) => f.id !== itemId)
+        if (remaining.length <= 1) {
+          if (compareGroupId === groupId) {
+            setCompareGroupId(null)
+          }
+          continue
+        }
+        const nextKeepId = g.keepId === itemId ? remaining[0].id : g.keepId
+        next.push({
+          ...g,
+          files: remaining,
+          keepId: nextKeepId,
+        })
+      }
+      return next
+    })
+    toast('File removed from duplicate group.', 'success')
+  }
+
   // Request delete for single file (triggers Mediagram confirmation dialog)
   const requestDelete = (item: MediaItem) => {
     if (item.deleted || item.deleting) return
@@ -635,7 +736,7 @@ export default function Dedupe() {
               disabled={phase === 'scanning'}
               className="text-[12px]"
             >
-              Change Folder
+              Clear / Change Folder
             </Button>
           )}
           <Button
@@ -659,6 +760,8 @@ export default function Dedupe() {
             activeCompareGroup.keepId = itemId
             setDupGroups([...dupGroups])
           }}
+          onDismissGroup={dismissGroup}
+          onDismissItem={dismissItem}
         />
       ) : (
         <>
@@ -916,14 +1019,24 @@ export default function Dedupe() {
                             )}
                           </div>
 
-                          <Button
-                            variant="secondary"
-                            onClick={() => setCompareGroupId(group.id)}
-                            className="flex items-center gap-1.5 text-[11.5px] py-1 px-3 h-7"
-                          >
-                            <Columns2 size={13} />
-                            Compare Side-by-Side
-                          </Button>
+                          <div className="flex items-center gap-2">
+                            <Button
+                              variant="secondary"
+                              onClick={() => dismissGroup(group.id)}
+                              className="text-[11.5px] py-1 px-2.5 h-7 text-muted hover:text-text hover:border-danger/40 transition-colors"
+                              title="Dismiss this duplicate group without deleting any files"
+                            >
+                              Dismiss / Not Duplicate
+                            </Button>
+                            <Button
+                              variant="secondary"
+                              onClick={() => setCompareGroupId(group.id)}
+                              className="flex items-center gap-1.5 text-[11.5px] py-1 px-3 h-7"
+                            >
+                              <Columns2 size={13} />
+                              Compare Side-by-Side
+                            </Button>
+                          </div>
                         </div>
 
                         {/* Cards side by side */}
@@ -1217,11 +1330,15 @@ function CompareView({
   onBack,
   onDelete,
   onSetKeeper,
+  onDismissGroup,
+  onDismissItem,
 }: {
   group: DupGroup
   onBack: () => void
   onDelete: (item: MediaItem) => void
   onSetKeeper: (itemId: string) => void
+  onDismissGroup: (groupId: string) => void
+  onDismissItem: (groupId: string, itemId: string) => void
 }) {
   const [speed, setSpeed] = useState<number>(1)
   const groupFiles = group.files.filter((f) => !f.deleted)
@@ -1245,8 +1362,19 @@ function CompareView({
           </span>
         </div>
 
-        <div className="text-[12px] text-muted">
-          Review files side-by-side · Set one keeper
+        <div className="flex items-center gap-3">
+          <span className="text-[12px] text-muted hidden sm:inline">
+            Review files side-by-side · Set one keeper
+          </span>
+          <Button
+            variant="secondary"
+            onClick={() => onDismissGroup(group.id)}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-[12px] text-muted hover:text-text hover:border-border font-medium"
+            title="Remove this group from duplicates without deleting files"
+          >
+            <XCircle size={14} className="text-warning" />
+            <span>Dismiss Group (Not Duplicates)</span>
+          </Button>
         </div>
       </div>
 
@@ -1327,7 +1455,7 @@ function CompareView({
                     </div>
                   </div>
 
-                  <div className="flex items-center justify-between pt-1">
+                  <div className="flex items-center justify-between pt-1 gap-2 flex-wrap">
                     <Button
                       variant="secondary"
                       onClick={() => call('dedupe.reveal', { path: p.path })}
@@ -1335,14 +1463,24 @@ function CompareView({
                     >
                       Reveal in Folder
                     </Button>
-                    <Button
-                      variant="danger"
-                      onClick={() => onDelete(p)}
-                      className="text-[11.5px] py-1 px-2.5 h-7 flex items-center gap-1"
-                    >
-                      <Trash2 size={12} />
-                      Delete to Recycle Bin
-                    </Button>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        variant="secondary"
+                        onClick={() => onDismissItem(group.id, p.id)}
+                        className="text-[11.5px] py-1 px-2.5 h-7 text-muted hover:text-text"
+                        title="Remove from this duplicate group without deleting file"
+                      >
+                        Not a Duplicate
+                      </Button>
+                      <Button
+                        variant="danger"
+                        onClick={() => onDelete(p)}
+                        className="text-[11.5px] py-1 px-2.5 h-7 flex items-center gap-1"
+                      >
+                        <Trash2 size={12} />
+                        Delete to Recycle Bin
+                      </Button>
+                    </div>
                   </div>
                 </div>
               </div>

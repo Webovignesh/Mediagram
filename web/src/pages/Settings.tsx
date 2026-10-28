@@ -513,7 +513,7 @@ export default function Settings() {
               <div className="flex items-center justify-between py-3">
                 <div>
                   <div className="text-[13px] font-semibold text-text">Max concurrent downloads</div>
-                  <div className="text-[12px] text-muted">Number of files to download at the same time (1–5)</div>
+                  <div className="text-[12px] text-muted">Number of files to download at the same time (1–10)</div>
                 </div>
                 <div className="flex items-center gap-2">
                   <button
@@ -523,8 +523,8 @@ export default function Settings() {
                   >−</button>
                   <span className="w-6 text-center tabular-nums font-bold">{settings?.maxDownloads || 2}</span>
                   <button
-                    disabled={(settings?.maxDownloads || 2) >= 5}
-                    onClick={() => setSetting('maxDownloads', Math.min(5, (settings?.maxDownloads || 2) + 1))}
+                    disabled={(settings?.maxDownloads || 2) >= 10}
+                    onClick={() => setSetting('maxDownloads', Math.min(10, (settings?.maxDownloads || 2) + 1))}
                     className="flex size-7 items-center justify-center rounded-lg border border-border bg-tile hover:border-primary disabled:opacity-40"
                   >+</button>
                 </div>
@@ -1010,7 +1010,14 @@ export default function Settings() {
                   <div className="text-[13px] font-semibold text-text">Enable Notifications</div>
                   <div className="text-[12px] text-muted">Master switch for all in-app and desktop alerts</div>
                 </div>
-                <Toggle checked={notifSettings.enabled} onChange={(v) => updateNotifSettings({ enabled: v })} />
+                <Toggle
+                  checked={notifSettings.enabled}
+                  onChange={(v) => {
+                    updateNotifSettings({ enabled: v })
+                    setSetting('notifyComplete', v && notifSettings.notifyComplete)
+                    setSetting('notifyFailed', v && notifSettings.notifyFailed)
+                  }}
+                />
               </div>
 
               {/* Sub-controls grouped under master */}
@@ -1051,7 +1058,11 @@ export default function Settings() {
                     <Toggle
                       disabled={!notifSettings.enabled}
                       checked={notifSettings.desktopNotifications ?? true}
-                      onChange={(v) => updateNotifSettings({ desktopNotifications: v })}
+                      onChange={(v) => {
+                        updateNotifSettings({ desktopNotifications: v })
+                        setSetting('notifyComplete', v && notifSettings.enabled && notifSettings.notifyComplete)
+                        setSetting('notifyFailed', v && notifSettings.enabled && notifSettings.notifyFailed)
+                      }}
                     />
                   </div>
                 </div>

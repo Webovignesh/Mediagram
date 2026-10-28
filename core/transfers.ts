@@ -648,12 +648,10 @@ export function createEngine(d: EngineDeps) {
     const defaultDir = chat
       ? path.join(s.downloadRoot, folderFor(s.folderTemplate, { id: chat.id, title: chat.title }))
       : s.downloadRoot
-    // A scan folder is a library folder: the IPC layer has already checked the picker's provenance,
-    // and here it is confined to the download root so no caller can walk an unrelated tree (and no
-    // recursive read hangs on a whole drive).
+    // The IPC layer has already checked provenance (either chosen via the native folder dialog or within download root).
     const customDir = a.customPath && typeof a.customPath === 'string' && a.customPath.trim()
       ? path.resolve(a.customPath.trim()) : null
-    const targetDir = customDir && within(s.downloadRoot, customDir) ? customDir : defaultDir
+    const targetDir = customDir || defaultDir
 
     let filesScanned = 0
     const diskFiles = new Map<string, string[]>()
@@ -665,6 +663,7 @@ export function createEngine(d: EngineDeps) {
           if (dirent.isFile()) {
             const full = path.join(dirent.parentPath || (dirent as any).path || targetDir, dirent.name)
             if (dirent.name.startsWith('.') || /^(desktop\.ini|thumbs\.db)$/i.test(dirent.name)) continue
+            if (full.includes('$RECYCLE.BIN') || full.includes('System Volume Information') || full.includes('node_modules')) continue
             filesScanned++
             const lower = dirent.name.toLowerCase()
             const existing = diskFiles.get(lower)
@@ -718,10 +717,10 @@ export function createEngine(d: EngineDeps) {
         } catch {}
       }
 
-      // 2. Check history table (same chat & message)
+      // 2. Check history table (same chat & message) - if a custom folder was audited, only match if the history file is inside targetDir
       if (!matchedPath) {
         const hist = historyMap.get(`${item.chatId}:${item.messageId}`)
-        if (hist) {
+        if (hist && (!customDir || within(targetDir, hist.path))) {
           try {
             const st = await fs.promises.stat(hist.path)
             if (st.isFile() && (item.size === 0 || st.size === item.size)) {

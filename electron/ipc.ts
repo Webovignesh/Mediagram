@@ -498,7 +498,7 @@ export function createMethods(ctx: Ctx) {
       const withCustom = a as typeof a & { customPath?: string }
       if (typeof withCustom.customPath === 'string') {
         const abs = path.resolve(withCustom.customPath.trim())
-        if (!ctx.native.picks.has(abs) && !within(ctx.settings().downloadRoot, abs)) {
+        if (!ctx.native.picks.has(abs) && !ctx.native.picks.isUnder?.(abs) && !within(ctx.settings().downloadRoot, abs)) {
           throw fail(400, "That isn't a folder you picked. Choose it again with Browse, or scan the download folder.")
         }
         return engine.checkDuplicates({ ...withCustom, customPath: abs })

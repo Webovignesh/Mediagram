@@ -118,6 +118,12 @@ function setConnection(c: AuthState['connection']) {
 /** The renderer saw the OS network come and go. TDLib can sit on dead sockets long after the OS notices, so a
  *  recovered network clears the failed-scan hold and pings the chat's scan and the chat lists to ask again. */
 export function networkChanged(online: boolean) {
+  if (client) {
+    void client.invoke({
+      _: 'setNetworkType',
+      type: { _: online ? 'networkTypeWiFi' : 'networkTypeNone' },
+    }).catch(() => {})
+  }
   if (!online) return
   failedScans.clear()
   if (auth.step !== 'ready') return
@@ -208,6 +214,8 @@ export function start(c: Creds, fresh = false) {
 }
 
 async function applySpeedOptimizations(cl: Client) {
+  // Inform TDLib of unmetered high-throughput network to optimize socket buffers and keep DC channels open
+  await cl.invoke({ _: 'setNetworkType', type: { _: 'networkTypeWiFi' } }).catch(() => {})
   // Enable Quick ACK for low-latency outgoing message & packet acknowledgments (accelerates upload window scaling)
   await cl.invoke({ _: 'setOption', name: 'use_quick_ack', value: { _: 'optionValueBoolean', value: true } }).catch(() => {})
   // Enable Perfect Forward Secrecy for faster and robust session crypto

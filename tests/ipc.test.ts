@@ -43,6 +43,13 @@ function fixture(tg: Partial<Ctx['tg']> = {}) {
       picks: {
         add: (p: string) => { if (p) picked.add(path.resolve(p).toLowerCase()) },
         has: (p: string) => picked.has(path.resolve(p).toLowerCase()),
+        isUnder: (p: string) => {
+          const norm = path.resolve(p).toLowerCase()
+          for (const f of picked) {
+            if (norm === f || norm.startsWith(f + path.sep)) return true
+          }
+          return false
+        },
       },
       keys: { // main's store: an in-memory copy plus the row settings.get reads for apiHashSaved
         save: (apiId: number, apiHash: string) => { keysStore.value = { apiId, apiHash }; putSetting(db, 'apiId', apiId); putSetting(db, 'apiHash', `test:${apiHash}`) },
@@ -257,7 +264,7 @@ test('validators: the 22 Phase 2 methods accept valid args and reject bad ones w
     ['library.list', { q: 'x'.repeat(201) }, 'q'], ['library.list', { page: 0 }, 'page'], ['library.list', { pageSize: 101 }, 'pageSize'],
     ['library.open', { path: '' }, 'path'], ['library.reveal', { path: 'x'.repeat(4097) }, 'path'], ['library.open', {}, 'path'],
     ['library.trash', { paths: [] }, 'paths'], ['library.trash', { paths: Array(1001).fill('a') }, 'paths'], ['library.trash', { paths: ['ok', 5] }, 'paths[1]'],
-    ['settings.set', { maxDownloads: 6 }, 'maxDownloads'], ['settings.set', { apiId: 5 }, 'apiId'],
+    ['settings.set', { maxDownloads: 11 }, 'maxDownloads'], ['settings.set', { apiId: 5 }, 'apiId'],
     ...['app.info', 'app.storage', 'auth.get', 'auth.logout', 'auth.saveKeys', 'auth.forgetKeys', 'chats.list', 'library.missing', 'settings.get'].map((m): [string, unknown, string] => [m, { x: 1 }, 'Unknown field x']),
   ]
   for (const [name, args, field] of bad) {
@@ -467,7 +474,10 @@ test('downloads.checkDuplicates: the scan folder must be picked or inside the do
   assert.equal(typeof await call(f, 'downloads.checkDuplicates', { items, customPath: f.root }), 'object')
   // Once the user picks it in the Browse dialog it is fair game.
   f.pick(outside)
-  assert.equal(typeof await call(f, 'downloads.checkDuplicates', { items, customPath: outside }), 'object')
+  const res = await call(f, 'downloads.checkDuplicates', { items, customPath: outside })
+  assert.equal(typeof res, 'object')
+  assert.equal(res.scannedPath, outside)
+  assert.equal(res.filesScanned, 1)
 })
 
 test('downloads.checkDuplicates: identifies both on-disk duplicates and in-selection duplicate items', async () => {
