@@ -223,20 +223,23 @@ export function addNotification(
   const nextList = [newNotif, ...list.slice(0, 59)]
   saveNotifications(nextList)
 
-  if (!newNotif.read && (settings.desktopNotifications ?? true)) {
-    try {
-      if ((window as any).mediagram?.call) {
-        ;(window as any).mediagram.call('app.notify', { title: newNotif.title, body: newNotif.body }).catch(() => {})
-      } else if (typeof window !== 'undefined' && 'Notification' in window) {
-        if (Notification.permission === 'granted') {
-          new Notification(newNotif.title, { body: newNotif.body })
-        } else if (Notification.permission !== 'denied') {
-          Notification.requestPermission().then((perm) => {
-            if (perm === 'granted') new Notification(newNotif.title, { body: newNotif.body })
-          }).catch(() => {})
+  if (!newNotif.read && (settings.desktopNotifications ?? true) && settings.enabled) {
+    // Only invoke app.notify for chat messages; download/upload notifications are handled natively by main process
+    if (newNotif.type !== 'download' && newNotif.type !== 'upload' && newNotif.type !== 'failed') {
+      try {
+        if ((window as any).mediagram?.call) {
+          ;(window as any).mediagram.call('app.notify', { title: newNotif.title, body: newNotif.body }).catch(() => {})
+        } else if (typeof window !== 'undefined' && 'Notification' in window) {
+          if (Notification.permission === 'granted') {
+            new Notification(newNotif.title, { body: newNotif.body })
+          } else if (Notification.permission !== 'denied') {
+            Notification.requestPermission().then((perm) => {
+              if (perm === 'granted') new Notification(newNotif.title, { body: newNotif.body })
+            }).catch(() => {})
+          }
         }
-      }
-    } catch {}
+      } catch {}
+    }
   }
 
   return newNotif

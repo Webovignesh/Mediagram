@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url'
 import { app, BrowserWindow, dialog, ipcMain, Menu, MenuItem, Notification, protocol, safeStorage, screen, session, shell, Tray } from 'electron'
 import { getTdjson } from 'prebuilt-tdlib'
 import icon from '../assets/icon.png?asset'
-import { type AppError, type AppEvent, type DB, getSettings, type Kind, openDb, putSetting, readSetting } from '../core/db.ts'
+import { type AppError, type AppEvent, type DB, getSettings, type Kind, openDb, putSetting, readSetting, type StoredSettings } from '../core/db.ts'
 import { isUnc, library, log, onLibraryChange, openLog, pageKey, realRoots, resolvePaths } from '../core/storage.ts'
 import * as telegram from '../core/telegram.ts'
 import { createEngine, type Engine, type LiveStats } from '../core/transfers.ts'
@@ -80,11 +80,17 @@ function showWindow() {
   win.focus()
 }
 
-// Notifications: one per 3-second batch, so a large queue does not flood the screen. Clicking shows the window.
+// Notifications: aggregated completion notification. Clicking shows the window.
 const batch = { download: 0, upload: 0, failed: 0 }
 let notifyTimer: NodeJS.Timeout | undefined
+let currentSettings: (() => StoredSettings) | undefined
 function flushNotifications() {
   notifyTimer = undefined
+  const s = currentSettings ? currentSettings() : null
+  if (s && !s.notifyComplete && !s.notifyFailed) {
+    Object.assign(batch, { download: 0, upload: 0, failed: 0 })
+    return
+  }
   const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`
   const lines = [batch.download && `${plural(batch.download, 'download')} completed`, batch.upload && `${plural(batch.upload, 'upload')} completed`,
   batch.failed && `${plural(batch.failed, 'transfer')} failed`].filter(Boolean)
@@ -127,6 +133,7 @@ function startup() {
     if (!path.isAbsolute(s.downloadRoot) || isUnc(s.downloadRoot)) s.downloadRoot = defaultRoot
     return s
   }
+  currentSettings = settings
   const env = process.env
   const roots = realRoots({
     sealed: [paths.home, paths.appDir, path.dirname(app.getPath('appData')), env.SystemRoot, env.ProgramFiles, env['ProgramFiles(x86)'], env.ProgramData]
@@ -163,17 +170,42 @@ function startup() {
     hasSavedCredentials: hasSaved,
   })
   const finished = (kind: Kind, ok: boolean) => {
-    emit({
-      type: 'notification',
-      title: ok ? `${kind === 'download' ? 'Download' : 'Upload'} Completed` : `${kind === 'download' ? 'Download' : 'Upload'} Failed`,
-      body: ok ? `Your ${kind} transfer finished successfully.` : `A ${kind} transfer failed. Check Queue for details.`,
-      kind: ok ? kind : 'failed',
-    })
     const s = settings()
+    // Suppress all notifications if disabled in settings
     if (ok ? !s.notifyComplete : !s.notifyFailed) return
+
     if (ok) batch[kind]++
     else batch.failed++
-    notifyTimer ??= setTimeout(flushNotifications, 3000)
+
+    let remaining = 0
+    try {
+      const row = db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE kind = ? AND status IN ('queued', 'active')").get(kind) as { n: number } | undefined
+      remaining = row?.n ?? 0
+    } catch {}
+
+    // Only notify when ALL jobs for this kind have completed
+    if (remaining === 0) {
+      if (notifyTimer) {
+        clearTimeout(notifyTimer)
+        notifyTimer = undefined
+      }
+      const count = batch[kind]
+      const title = ok
+        ? (count > 1 ? `All ${count} ${kind === 'download' ? 'Downloads' : 'Uploads'} Completed` : `${kind === 'download' ? 'Download' : 'Upload'} Completed`)
+        : `${kind === 'download' ? 'Download' : 'Upload'} Failed`
+      const body = ok
+        ? (count > 1 ? `All ${count} ${kind} files finished successfully.` : `Your ${kind} transfer finished successfully.`)
+        : `A ${kind} transfer failed. Check Queue for details.`
+
+      emit({
+        type: 'notification',
+        title,
+        body,
+        kind: ok ? kind : 'failed',
+      })
+
+      flushNotifications()
+    }
   }
   engine = createEngine({
     db, invoke: telegram.invoke, onUpdate: telegram.onUpdate, auth: telegram.authState, chat: telegram.chat,
@@ -269,6 +301,8 @@ function startup() {
       clearCache: async () => { await session.defaultSession.clearCache(); await session.defaultSession.clearCodeCaches({}) },
       clearStorageData: () => session.defaultSession.clearStorageData(),
       notify: (title: string, body: string) => {
+        const s = settings()
+        if (!s.notifyComplete && !s.notifyFailed) return
         if (Notification.isSupported()) {
           const n = new Notification({ title: title || 'Mediagram', body, icon })
           n.on('click', showWindow)
