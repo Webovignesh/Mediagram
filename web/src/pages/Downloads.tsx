@@ -158,6 +158,7 @@ const MediaGridCard = React.memo(function MediaGridCard({
   isSelected,
   selectedCount,
   aspectClass,
+  isHighlighted,
   onToggleSelect,
   onPreview,
   onDownload,
@@ -167,6 +168,7 @@ const MediaGridCard = React.memo(function MediaGridCard({
   isSelected: boolean
   selectedCount: number
   aspectClass: string
+  isHighlighted?: boolean
   onToggleSelect: () => void
   onPreview: () => void
   onDownload: (force: boolean, e?: React.MouseEvent) => void
@@ -178,12 +180,19 @@ const MediaGridCard = React.memo(function MediaGridCard({
     <div
       data-testid="media-grid-card"
       data-message-id={item.messageId}
-      className={`group relative flex flex-col rounded-xl border transition-all duration-200 overflow-hidden ${
-        isSelected
+      className={`group relative flex flex-col rounded-xl border transition-all duration-300 overflow-hidden ${
+        isHighlighted
+          ? 'border-primary bg-primary/20 ring-2 ring-primary ring-offset-2 ring-offset-panel shadow-[0_0_24px_rgba(56,189,248,0.55)] scale-[1.03] z-20'
+          : isSelected
           ? 'border-primary bg-primary/10 ring-2 ring-primary/40 shadow-lg shadow-primary/10'
           : 'border-border/80 bg-tile/60 hover:bg-tile hover:border-primary/50 hover:shadow-md'
       }`}
     >
+      {isHighlighted && (
+        <div className="absolute top-2 right-2 z-30 rounded-full bg-primary text-white text-[10.5px] font-semibold px-2 py-0.5 shadow-lg shadow-primary/40 animate-pulse">
+          Highlighted
+        </div>
+      )}
       {/* Thumbnail Area with Overlays */}
       <div
         className="relative cursor-pointer overflow-hidden"
@@ -400,15 +409,30 @@ export default function Downloads() {
 
   // `#/downloads?chat=2` (Overview cards, notification clicks). The query lives in the hash: App routing
   // strips it before the page name, so it is read from the route and not from window.location.search.
-  const deepLinkChat = useRouteQuery().get('chat')
+  const routeQuery = useRouteQuery()
+  const deepLinkChat = routeQuery.get('chat')
+  const deepLinkMessageId = routeQuery.get('messageId')
+  const deepLinkView = routeQuery.get('view')
+  const deepLinkName = routeQuery.get('name')
+
+  const [highlightedMessageId, setHighlightedMessageId] = useState<number | null>(null)
+
   useEffect(() => {
     if (!deepLinkChat) return
     const id = Number(deepLinkChat)
     if (!isNaN(id) && id !== 0) {
       setChatId(id)
-      setView('chat')
+      const targetView = (deepLinkView === 'files' || deepLinkMessageId) ? 'files' : (deepLinkView === 'chat' ? 'chat' : 'files')
+      setView(targetView)
+      setChatViewModes((prev) => ({ ...prev, [id]: targetView }))
     }
-  }, [deepLinkChat])
+    if (deepLinkMessageId) {
+      const msgId = Number(deepLinkMessageId)
+      if (!isNaN(msgId) && msgId > 0) {
+        setHighlightedMessageId(msgId)
+      }
+    }
+  }, [deepLinkChat, deepLinkMessageId, deepLinkView])
 
   useEffect(() => {
     try {
@@ -455,7 +479,7 @@ export default function Downloads() {
   const [customScanPath, setCustomScanPath] = useState<string | null>(null)
   const lastDedupeTargetRef = useRef<
     | { type: 'items', items: { chatId: number, messageId: number }[] }
-    | { type: 'matching' }
+    | { type: 'matching', chatId?: number, filters?: any }
     | { type: 'folder' }
     | null
   >(null)
@@ -858,6 +882,37 @@ export default function Downloads() {
     try { await call(method, { chatId: activeChatId }) } catch (e) { toast((e as Error).message); return }
     mediaReload()
   }
+
+  // Scroll and highlight entry in Files View when navigating via deep link
+  useEffect(() => {
+    if (!highlightedMessageId || !mediaItems.length) return
+    const found = mediaItems.some((m: any) => m.messageId === highlightedMessageId)
+    if (found) {
+      const timer = setTimeout(() => {
+        const el = document.querySelector(`[data-message-id="${highlightedMessageId}"]`)
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' })
+          const scrollWrap = el.closest('.overflow-x-auto')
+          if (scrollWrap) {
+            scrollWrap.scrollLeft = 0
+          }
+        }
+      }, 150)
+      return () => clearTimeout(timer)
+    } else if (deepLinkName && !fileSearch) {
+      // If the target message is not on page 1 of mediaItems, search for its filename to reveal it
+      setFileSearch(deepLinkName)
+    }
+  }, [highlightedMessageId, mediaItems, deepLinkName, fileSearch])
+
+  useEffect(() => {
+    if (!highlightedMessageId) return
+    const timer = setTimeout(() => {
+      setHighlightedMessageId(null)
+    }, 8000)
+    return () => clearTimeout(timer)
+  }, [highlightedMessageId])
+
   const resetFilters = () => {
     if (activeChatId) {
       updateActiveChatFilter({
@@ -1108,7 +1163,7 @@ export default function Downloads() {
   }, [selectedIds])
 
   async function runDuplicateCheck(
-    target: { type: 'items', items: { chatId: number, messageId: number }[] } | { type: 'matching' } | { type: 'folder' } | null,
+    target: { type: 'items', items: { chatId: number, messageId: number }[] } | { type: 'matching', chatId?: number, filters?: any } | { type: 'folder' } | null,
     scanPath: string | null
   ) {
     if (!target) return
@@ -1121,10 +1176,11 @@ export default function Downloads() {
         })
         setDedupeResult(res)
       } else if (target.type === 'matching') {
-        if (!activeChatId) return
+        const cId = target.chatId || activeChatId
+        if (!cId) return
         const res = await call<DuplicateCheckResult>('downloads.checkDuplicates', {
-          chatId: activeChatId,
-          filters: dupFilters,
+          chatId: cId,
+          filters: target.filters || dupFilters,
           ...(scanPath ? { customPath: scanPath } : {}),
         })
         setDedupeResult(res)
@@ -1203,10 +1259,10 @@ export default function Downloads() {
     setDedupeLoading(true)
     setDedupeModalOpen(true)
     setDedupeResult(null)
+    setCustomScanPath(null)
     try {
       const res = await call<DuplicateCheckResult>('downloads.checkDuplicates', {
         items,
-        ...(customScanPath ? { customPath: customScanPath } : {}),
       })
       setDedupeResult(res)
       setDedupeLoading(false)
@@ -1219,6 +1275,8 @@ export default function Downloads() {
   async function handleDedupeContinue(itemsToDownload: { chatId: number, messageId: number }[], force: boolean) {
     setDedupeModalOpen(false)
     setDedupeResult(null)
+    setCustomScanPath(null)
+    lastDedupeTargetRef.current = null
     if (!itemsToDownload.length) {
       toast('All duplicate files were skipped.', 'info')
       return
@@ -1237,17 +1295,17 @@ export default function Downloads() {
 
   async function downloadAllMatching() {
     if (!activeChatId) return
-    lastDedupeTargetRef.current = { type: 'matching' }
+    lastDedupeTargetRef.current = { type: 'matching', chatId: activeChatId, filters: dupFilters }
     const total = mediaData?.total ?? 0
     setDedupeSelectedCount(total)
     setDedupeLoading(true)
     setDedupeModalOpen(true)
     setDedupeResult(null)
+    setCustomScanPath(null)
     try {
       const res = await call<DuplicateCheckResult>('downloads.checkDuplicates', {
         chatId: activeChatId,
         filters: dupFilters,
-        ...(customScanPath ? { customPath: customScanPath } : {}),
       })
       setDedupeResult(res)
       setDedupeLoading(false)
@@ -1397,7 +1455,12 @@ export default function Downloads() {
         selectedCount={dedupeSelectedCount}
         result={dedupeResult}
         customPath={customScanPath}
-        onClose={() => { setDedupeModalOpen(false); setDedupeResult(null) }}
+        onClose={() => {
+          setDedupeModalOpen(false)
+          setDedupeResult(null)
+          setCustomScanPath(null)
+          lastDedupeTargetRef.current = null
+        }}
         onContinue={handleDedupeContinue}
         onPickCustomPath={handlePickCustomScanPath}
         onResetCustomPath={handleResetCustomScanPath}
@@ -2541,6 +2604,7 @@ export default function Downloads() {
                               key={m.messageId}
                               item={m}
                               isSelected={isSelected}
+                              isHighlighted={m.messageId === highlightedMessageId}
                               selectedCount={selectedIds.length}
                               aspectClass={aspectClass}
                               onToggleSelect={() => toggleSelect(m.messageId)}
@@ -2554,7 +2618,7 @@ export default function Downloads() {
                     </div>
                   ) : (
                     <div className="overflow-x-auto">
-                      <table className="w-full text-[13px]">
+                      <table className="w-full text-[13px] table-fixed">
                         <thead className="border-b border-border text-[12px] text-muted">
                           <tr>
                             <th className="py-2.5 px-1 text-center w-10">
@@ -2567,11 +2631,11 @@ export default function Downloads() {
                               </button>
                             </th>
                             <th className="py-2.5 px-1 text-center w-10 text-muted font-normal">#</th>
-                            <th className="py-2.5 px-2 text-center w-16 font-medium">Preview</th>
-                            <th className="py-2.5 px-3 text-left w-[36%] font-medium">File Name</th>
+                            <th className="py-2.5 px-2 text-center w-14 font-medium">Preview</th>
+                            <th className="py-2.5 px-3 text-left w-auto font-medium">File Name</th>
                             <th className="py-2.5 px-2 text-center w-20 font-medium">Type</th>
                             <th className="py-2.5 px-2 text-center w-24 font-medium">Size</th>
-                            <th className="py-2.5 px-2 text-center w-24 font-medium">Duration</th>
+                            <th className="py-2.5 px-2 text-center w-20 font-medium">Duration</th>
                             <th className="py-2.5 px-2 text-center w-32 font-medium">Status</th>
                             <th className="py-2.5 px-3 text-right w-24 font-medium">Action</th>
                           </tr>
@@ -2579,12 +2643,19 @@ export default function Downloads() {
                         <tbody className="divide-y divide-border">
                         {mediaItems.map((m: any, i: number) => {
                             const isSelected = selectedIds.includes(m.messageId)
+                            const isHighlighted = m.messageId === highlightedMessageId
                             return (
                               <tr
                                 key={m.messageId}
                                 data-message-id={m.messageId}
                                 data-testid="media-table-row"
-                                className={`hover:bg-tile/70 transition-colors ${isSelected ? 'bg-primary/10' : ''}`}
+                                className={`transition-all duration-300 ${
+                                  isHighlighted
+                                    ? 'bg-primary/20 ring-2 ring-primary ring-inset shadow-md font-medium text-text'
+                                    : isSelected
+                                    ? 'bg-primary/10 hover:bg-tile/70'
+                                    : 'hover:bg-tile/70'
+                                }`}
                               >
                                 <td className="py-2.5 px-1 text-center">
                                   <button onClick={() => toggleSelect(m.messageId)} className="text-muted hover:text-text">
@@ -2601,13 +2672,20 @@ export default function Downloads() {
                                     <Thumb src={m.thumb ? `teleflow://thumb/${m.thumb}` : null} name={m.name} />
                                   </div>
                                 </td>
-                                <td className="py-2.5 px-3 min-w-0">
-                                  <div
-                                    className="font-medium truncate text-text cursor-pointer hover:text-primary transition-colors text-[13px]"
-                                    title={m.name}
-                                    onClick={() => setPreviewItem({ name: m.name, path: m.path, thumb: m.thumb, type: m.type, size: m.size, duration: m.duration, chatId: activeChatId || m.chatId, messageId: m.messageId })}
-                                  >
-                                    {m.name}
+                                <td className="py-2.5 px-3 min-w-0 overflow-hidden">
+                                  <div className="flex items-center gap-2 min-w-0 w-full">
+                                    <div
+                                      className="font-medium truncate text-text cursor-pointer hover:text-primary transition-colors text-[13px] min-w-0"
+                                      title={m.name}
+                                      onClick={() => setPreviewItem({ name: m.name, path: m.path, thumb: m.thumb, type: m.type, size: m.size, duration: m.duration, chatId: activeChatId || m.chatId, messageId: m.messageId })}
+                                    >
+                                      {m.name}
+                                    </div>
+                                    {isHighlighted && (
+                                      <span className="shrink-0 rounded-full bg-primary/20 border border-primary/40 px-2 py-0.5 text-[10px] font-semibold text-primary animate-pulse">
+                                        Highlighted
+                                      </span>
+                                    )}
                                   </div>
                                 </td>
                                 <td className="py-2.5 px-2 text-center">

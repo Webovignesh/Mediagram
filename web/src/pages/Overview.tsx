@@ -609,7 +609,7 @@ export default function Overview() {
                           onClick={() => jobAction(j.status === 'paused' ? 'resume' : 'pause', j.id)} variant="secondary" />
                         <Menu trigger={<IconButton icon={<MoreVertical size={13} />} label="More" onClick={() => {}} variant="secondary" />}
                           items={[
-                            { label: 'Open chat', onClick: () => navigate(`/${j.kind}s?chat=${j.chatId}`) },
+                            { label: 'Open in Files', onClick: () => navigate(`/${j.kind}s?chat=${j.chatId}${j.messageId ? `&messageId=${j.messageId}&name=${encodeURIComponent(j.name)}` : ''}&view=files`) },
                             { label: 'Cancel', onClick: () => jobAction('cancel', j.id), danger: true },
                           ]} />
                       </div>

@@ -83,11 +83,18 @@ export default function Queue() {
   }
 
   return (
-    <div className="h-full overflow-y-auto [scrollbar-gutter:stable] p-6 space-y-5">
+    <div className="h-full overflow-y-auto overflow-x-hidden [scrollbar-gutter:stable] p-6 space-y-5">
       <MediaPreviewModal open={!!preview} item={preview ? { ...preview, messageId: preview.messageId ?? undefined } : null} onClose={() => setPreview(null)} />
-      <div className="pr-36">
-        <h1 className="text-[26px] font-bold text-text">Queue</h1>
-        <p className="text-[13px] text-text-2 mt-1">Manage every transfer, from waiting to sent or saved.</p>
+      <div className="flex items-center justify-between flex-wrap gap-4">
+        <div>
+          <h1 className="text-[26px] font-bold text-text">Queue</h1>
+          <p className="text-[13px] text-text-2 mt-1">Manage every transfer, from waiting to sent or saved.</p>
+        </div>
+        <section aria-label="Queue Actions" className="flex flex-wrap gap-2 items-center">
+          <Button variant="secondary" disabled={busy || count('active') + count('queued') === 0} onClick={() => action('pause')}>Pause All</Button>
+          <Button variant="secondary" disabled={busy || count('paused') === 0} onClick={() => action('resume')}>Resume All</Button>
+          <Button variant="tint" tone="danger" disabled={busy} onClick={clearAll}>Clear All</Button>
+        </section>
       </div>
 
       <section aria-label="Queue Overview" className="grid grid-cols-2 xl:grid-cols-4 gap-3">
@@ -144,16 +151,16 @@ export default function Queue() {
         </div>}
 
         {error ? <ErrorState error={error} onRetry={reload} /> : !jobs ? <div className="p-4 space-y-3">{[1, 2, 3].map((i) => <Skeleton key={i} className="h-20 w-full" />)}</div> : list.length === 0 ? <div className="py-12"><Empty message={search ? 'No transfers match your search' : tab === 'downloads' ? 'No downloads in the queue' : tab === 'uploads' ? 'No uploads in the queue' : tab === 'completed' ? 'Nothing completed yet' : 'No failed jobs'} /></div> : <>
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[880px] text-[13px] table-fixed">
+          <div className="overflow-x-hidden">
+            <table className="w-full text-[13px] table-fixed">
               <colgroup>
                 <col className="w-10" />
                 <col className="w-[28%]" />
                 <col className="w-[18%]" />
                 <col className="w-[15%]" />
-                <col className="w-[15%]" />
-                <col className="w-[12%]" />
-                <col className="w-24" />
+                <col className="w-[14%]" />
+                <col className="w-[11%]" />
+                <col className="w-[14%]" />
               </colgroup>
               <thead className="bg-tile/50 text-muted text-[11px] border-b border-border select-none">
                 <tr>
@@ -179,7 +186,7 @@ export default function Queue() {
                     <td className="px-3 py-3.5 align-middle">
                       <div className="flex items-center gap-3 min-w-0"><Thumb src={j.thumb} name={j.name} /><div className="min-w-0 flex-1">
                         <button disabled={!canPreview} onClick={() => setPreview(j)} className={`text-left font-semibold text-text truncate max-w-full block leading-snug ${canPreview ? 'hover:text-primary cursor-pointer' : ''}`} title={j.name}>{j.name}</button>
-                        <a href={`#/downloads?chat=${j.chatId}`} className="mt-0.5 flex items-center gap-1 text-[11px] text-primary hover:underline truncate" title={`Open ${j.chatTitle}`}><ArrowUpRight size={12} className="shrink-0" /><span className="truncate">{j.chatTitle || 'Chat'}</span></a>
+                        <a href={`#/downloads?chat=${j.chatId}${j.messageId ? `&messageId=${j.messageId}&name=${encodeURIComponent(j.name)}` : ''}&view=files`} className="mt-0.5 flex items-center gap-1 text-[11px] text-primary hover:underline truncate" title={`Open ${j.chatTitle} in Files`}><ArrowUpRight size={12} className="shrink-0" /><span className="truncate">{j.chatTitle || 'Chat'}</span></a>
                         <div className="mt-0.5 text-[10px] text-muted flex items-center gap-1">{j.kind === 'upload' ? <Upload size={10} /> : <Download size={10} />}{j.kind === 'upload' ? 'Upload' : 'Download'} · {j.type}</div>
                       </div></div>
                     </td>
@@ -220,17 +227,35 @@ export default function Queue() {
                         {j.finishedAt && <div className="mt-1 text-[10px] text-muted tabular-nums text-center">{time(j.finishedAt)}</div>}
                       </div>
                     </td>
-                    <td className="px-3 py-3.5 text-center align-middle">
-                      <div className="flex items-center justify-center gap-1">
-                        {canPause && <button aria-label={`Pause ${j.name}`} title="Pause" disabled={busy} onClick={() => action('pause', [j.id])} className="p-1.5 rounded hover:bg-tile text-text-2 cursor-pointer"><Pause size={15} /></button>}
-                        {j.status === 'paused' && <button aria-label={`Resume ${j.name}`} title="Resume" disabled={busy} onClick={() => action('resume', [j.id])} className="p-1.5 rounded hover:bg-tile text-primary cursor-pointer"><Play size={15} /></button>}
-                        {j.status === 'failed' && <button aria-label={`Retry ${j.name}`} title="Retry" disabled={busy} onClick={() => action('retry', [j.id])} className="p-1.5 rounded hover:bg-tile text-warning cursor-pointer"><RotateCcw size={15} /></button>}
-                        {j.status === 'completed' && j.kind === 'download' && j.path && <button aria-label={`Show ${j.name} in folder`} title="Show in folder" onClick={() => reveal(j.path!)} className="p-1.5 rounded hover:bg-tile text-primary cursor-pointer"><FolderOpen size={15} /></button>}
-                        <button aria-label={`Remove ${j.name}`} title="Remove" disabled={busy || finalizing} onClick={() => action('cancel', [j.id])} className="p-1.5 rounded hover:bg-danger/10 text-muted hover:text-danger cursor-pointer"><X size={15} /></button>
-                        {j.status === 'queued' && <>
-                          <button aria-label={`Move ${j.name} up`} title="Move up" disabled={busy} onClick={() => action('up', [j.id])} className="p-1.5 rounded hover:bg-tile text-muted cursor-pointer"><ArrowUp size={13} /></button>
-                          <button aria-label={`Move ${j.name} down`} title="Move down" disabled={busy} onClick={() => action('down', [j.id])} className="p-1.5 rounded hover:bg-tile text-muted cursor-pointer"><ArrowDown size={13} /></button>
-                        </>}
+                    <td className="px-2 py-3.5 text-center align-middle">
+                      <div className="flex items-center justify-center gap-1.5">
+                        {canPause && <button aria-label={`Pause ${j.name}`} title="Pause" disabled={busy} onClick={() => action('pause', [j.id])} className="p-1.5 rounded hover:bg-tile text-text-2 cursor-pointer transition-colors active:scale-95"><Pause size={14} /></button>}
+                        {j.status === 'paused' && <button aria-label={`Resume ${j.name}`} title="Resume" disabled={busy} onClick={() => action('resume', [j.id])} className="p-1.5 rounded hover:bg-tile text-primary cursor-pointer transition-colors active:scale-95"><Play size={14} /></button>}
+                        {j.status === 'failed' && <button aria-label={`Retry ${j.name}`} title="Retry" disabled={busy} onClick={() => action('retry', [j.id])} className="p-1.5 rounded hover:bg-tile text-warning cursor-pointer transition-colors active:scale-95"><RotateCcw size={14} /></button>}
+                        {j.status === 'completed' && j.kind === 'download' && j.path && <button aria-label={`Show ${j.name} in folder`} title="Show in folder" onClick={() => reveal(j.path!)} className="p-1.5 rounded hover:bg-tile text-primary cursor-pointer transition-colors active:scale-95"><FolderOpen size={14} /></button>}
+                        <button aria-label={`Remove ${j.name}`} title="Remove" disabled={busy || finalizing} onClick={() => action('cancel', [j.id])} className="p-1.5 rounded hover:bg-danger/10 text-muted hover:text-danger cursor-pointer transition-colors active:scale-95"><X size={14} /></button>
+                        {j.status === 'queued' && (
+                          <div className="inline-flex flex-col border border-border/60 rounded bg-tile/40 overflow-hidden shrink-0">
+                            <button
+                              aria-label={`Move ${j.name} up`}
+                              title="Move up"
+                              disabled={busy}
+                              onClick={() => action('up', [j.id])}
+                              className="px-1 py-0.5 hover:bg-primary/20 hover:text-primary text-muted transition-colors cursor-pointer leading-none flex items-center justify-center border-b border-border/40 active:scale-95"
+                            >
+                              <ArrowUp size={11} />
+                            </button>
+                            <button
+                              aria-label={`Move ${j.name} down`}
+                              title="Move down"
+                              disabled={busy}
+                              onClick={() => action('down', [j.id])}
+                              className="px-1 py-0.5 hover:bg-primary/20 hover:text-primary text-muted transition-colors cursor-pointer leading-none flex items-center justify-center active:scale-95"
+                            >
+                              <ArrowDown size={11} />
+                            </button>
+                          </div>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -244,12 +269,6 @@ export default function Queue() {
 
       <div className="flex items-center justify-between gap-3 flex-wrap text-[12px]">
         <div className="text-muted"><span className="font-medium text-text-2">Live Activity</span> · {count('active')} active · {count('queued')} waiting · {count('completed')} completed</div>
-        <section aria-label="Queue Actions" className="flex flex-wrap gap-2 items-center">
-          <span className="sr-only">Queue Actions</span>
-          <Button variant="secondary" disabled={busy || count('active') + count('queued') === 0} onClick={() => action('pause')}>Pause All</Button>
-          <Button variant="secondary" disabled={busy || count('paused') === 0} onClick={() => action('resume')}>Resume All</Button>
-          <Button variant="tint" tone="danger" disabled={busy} onClick={clearAll}>Clear All</Button>
-        </section>
       </div>
     </div>
   )
