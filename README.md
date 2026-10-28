@@ -15,7 +15,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.1.0-blue.svg?style=flat-square" alt="Version 1.1.0" />
+  <img src="https://img.shields.io/badge/version-1.1.1-blue.svg?style=flat-square" alt="Version 1.1.1" />
   <img src="https://img.shields.io/badge/Electron-44.5.1-47848F?style=flat-square&logo=electron&logoColor=white" alt="Electron" />
   <img src="https://img.shields.io/badge/React-18.3-61DAFB?style=flat-square&logo=react&logoColor=black" alt="React 18" />
   <img src="https://img.shields.io/badge/TDLib-1.8.66-2CA5E0?style=flat-square&logo=telegram&logoColor=white" alt="TDLib" />
@@ -233,7 +233,7 @@ Mediagram includes six themes. Click any screenshot to open it in full resolutio
 **Requirements:** Windows 10 or 11 (x64) and a Telegram account.
 
 1. **Download the installer**
-   Get the latest `Mediagram-Setup-1.1.0.exe` from the [Releases](https://github.com/Webovignesh/Mediagram/releases) page.
+   Get the latest `Mediagram-Setup-1.1.1.exe` from the [Releases](https://github.com/Webovignesh/Mediagram/releases) page.
 2. **Run setup**
    Install Mediagram. No administrator privileges are required.
 3. **Sign in**
